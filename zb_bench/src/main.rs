@@ -32,6 +32,12 @@ enum Commands {
         #[arg(default_value = "jq")]
         formula: String,
     },
+    /// Run benchmark suite against popular packages
+    Suite {
+        /// Number of top packages to test (default: 10)
+        #[arg(short, long, default_value = "10")]
+        count: usize,
+    },
 }
 
 #[derive(Serialize)]
@@ -329,6 +335,114 @@ async fn run_real_bench(formula: &str) -> Result<BenchResult, Box<dyn std::error
     })
 }
 
+// Top 100 Homebrew packages (based on homebrew-formulae analytics)
+const POPULAR_PACKAGES: &[&str] = &[
+    "wget", "jq", "git", "node", "python", "go", "rust", "cmake",
+    "openssl", "curl", "htop", "tree", "ffmpeg", "imagemagick",
+    "sqlite", "postgresql", "mysql", "redis", "nginx", "httpd",
+    "vim", "neovim", "tmux", "zsh", "fish", "bash",
+    "ripgrep", "fd", "bat", "exa", "fzf", "zoxide",
+    "gh", "hub", "git-lfs", "git-delta",
+    "docker", "docker-compose", "kubernetes-cli", "helm",
+    "awscli", "azure-cli", "gcloud",
+    "terraform", "ansible", "vagrant",
+    "yarn", "pnpm", "deno", "bun",
+    "ruby", "rbenv", "pyenv", "nvm",
+    "gradle", "maven", "ant",
+    "protobuf", "grpc", "graphql",
+    "jemalloc", "boost", "zlib", "brotli", "lz4", "zstd",
+    "libpng", "jpeg", "webp", "giflib",
+    "openssl@3", "gnutls", "libssh2",
+    "pcre", "pcre2", "oniguruma",
+    "readline", "ncurses", "gettext",
+    "libyaml", "libxml2", "libxslt",
+    "icu4c", "utf8proc",
+    "gmp", "mpfr", "isl",
+    "autoconf", "automake", "libtool", "pkg-config", "make",
+    "llvm", "gcc", "clang-format",
+    "pandoc", "hugo", "jekyll",
+    "graphviz", "gnuplot", "plantuml",
+    "shellcheck", "shfmt", "prettier",
+    "black", "flake8", "mypy", "pylint",
+    "eslint", "typescript",
+    "rustfmt", "clippy",
+    "gofmt", "golangci-lint",
+];
+
+async fn run_suite_bench(count: usize) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    println!("Running benchmark suite ({} packages)...\n", count);
+
+    let packages: Vec<&str> = POPULAR_PACKAGES.iter().take(count).copied().collect();
+    let mut results: Vec<BenchResult> = Vec::new();
+    let mut failures: Vec<(String, String)> = Vec::new();
+
+    for (i, formula) in packages.iter().enumerate() {
+        println!("[{}/{}] Benchmarking: {}", i + 1, count, formula);
+
+        // Clean up
+        let _ = Command::new("brew")
+            .args(["uninstall", "--ignore-dependencies", formula])
+            .output();
+        let _ = Command::new("zb").args(["uninstall", formula]).output();
+        let _ = Command::new("rm")
+            .args(["-rf", "/opt/zerobrew/db"])
+            .output();
+
+        match run_real_bench(formula).await {
+            Ok(result) => results.push(result),
+            Err(e) => {
+                println!("  FAILED: {}", e);
+                failures.push((formula.to_string(), e.to_string()));
+            }
+        }
+        println!();
+    }
+
+    // Summary
+    println!("\n=== Suite Summary ===");
+    println!("Tested: {} packages", count);
+    println!("Passed: {}", results.len());
+    println!("Failed: {}", failures.len());
+
+    if !results.is_empty() {
+        let avg_speedup: f64 = results.iter().map(|r| r.speedup).sum::<f64>() / results.len() as f64;
+        let avg_warm_speedup: f64 = results.iter().map(|r| {
+            if r.warm_reinstall_ms > 0 {
+                r.cold_install_ms as f64 / r.warm_reinstall_ms as f64
+            } else {
+                1.0
+            }
+        }).sum::<f64>() / results.len() as f64;
+
+        println!("\nPerformance:");
+        println!("  Avg cold speedup vs Homebrew: {:.1}x", avg_speedup);
+        println!("  Avg warm speedup vs cold:     {:.1}x", avg_warm_speedup);
+    }
+
+    if !failures.is_empty() {
+        println!("\nFailed packages:");
+        for (name, err) in &failures {
+            println!("  {} - {}", name, err);
+        }
+    }
+
+    // Clean up all installed packages
+    println!("\nCleaning up...");
+    for formula in &packages {
+        let _ = Command::new("brew")
+            .args(["uninstall", "--ignore-dependencies", formula])
+            .output();
+        let _ = Command::new("zb").args(["uninstall", formula]).output();
+    }
+    // Also uninstall all zb packages (in case of dependencies)
+    let _ = Command::new("zb").args(["uninstall"]).output();
+    println!("Done.");
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -371,12 +485,18 @@ async fn main() {
             match run_real_bench(&formula).await {
                 Ok(result) => {
                     let json = serde_json::to_string_pretty(&result).unwrap();
-                    println!("{}", json);
+                    println!("\n{}", json);
                 }
                 Err(e) => {
                     eprintln!("Benchmark failed: {}", e);
                     std::process::exit(1);
                 }
+            }
+        }
+        Commands::Suite { count } => {
+            if let Err(e) = run_suite_bench(count).await {
+                eprintln!("Suite benchmark failed: {}", e);
+                std::process::exit(1);
             }
         }
     }

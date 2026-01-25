@@ -75,6 +75,19 @@ async fn main() {
     }
 }
 
+fn suggest_homebrew(formula: &str, error: &zb_core::Error) {
+    eprintln!();
+    eprintln!(
+        "{} This package can't be installed with zerobrew.",
+        style("Note:").yellow().bold()
+    );
+    eprintln!("      Error: {}", error);
+    eprintln!();
+    eprintln!("      Try installing with Homebrew instead:");
+    eprintln!("      {}", style(format!("brew install {}", formula)).cyan());
+    eprintln!();
+}
+
 async fn run(cli: Cli) -> Result<(), zb_core::Error> {
     // Use homebrew cellar if it exists and path is non-empty
     let homebrew_cellar = if cli.homebrew_cellar.as_os_str().is_empty() {
@@ -96,7 +109,13 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 style(&formula).bold()
             );
 
-            let plan = installer.plan(&formula).await?;
+            let plan = match installer.plan(&formula).await {
+                Ok(p) => p,
+                Err(e) => {
+                    suggest_homebrew(&formula, &e);
+                    return Err(e);
+                }
+            };
 
             println!(
                 "{} Resolving dependencies ({} packages)...",
@@ -212,9 +231,16 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 }
             }));
 
-            let result = installer
+            let result = match installer
                 .execute_with_progress(plan, !no_link, Some(progress_callback))
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    suggest_homebrew(&formula, &e);
+                    return Err(e);
+                }
+            };
 
             // Finish any remaining bars
             {
