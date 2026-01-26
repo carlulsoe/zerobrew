@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use zb_io::install::create_installer;
 use zb_io::search::search_formulas;
-use zb_io::{ApiClient, ApiCache, InstallProgress, ProgressCallback};
+use zb_io::{ApiClient, ApiCache, InstallProgress, ProgressCallback, ServiceManager, ServiceStatus};
 
 #[derive(Parser)]
 #[command(name = "zb")]
@@ -209,6 +209,42 @@ enum Commands {
 
     /// Diagnose common issues with the zerobrew installation
     Doctor,
+
+    /// Manage background services for installed formulas
+    Services {
+        #[command(subcommand)]
+        action: Option<ServicesAction>,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum ServicesAction {
+    /// List all managed services and their status
+    List,
+
+    /// Start a service
+    Start {
+        /// Formula name to start
+        formula: String,
+    },
+
+    /// Stop a service
+    Stop {
+        /// Formula name to stop
+        formula: String,
+    },
+
+    /// Restart a service (stop then start)
+    Restart {
+        /// Formula name to restart
+        formula: String,
+    },
+
+    /// Run a service in the foreground (useful for debugging)
+    Run {
+        /// Formula name to run
+        formula: String,
+    },
 }
 
 #[tokio::main]
@@ -1925,6 +1961,228 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         style(result.warnings).yellow().bold(),
                         if result.warnings == 1 { "warning" } else { "warnings" }
                     );
+                }
+            }
+        }
+
+        Commands::Services { action } => {
+            let service_manager = ServiceManager::new(&cli.prefix);
+
+            match action {
+                None | Some(ServicesAction::List) => {
+                    // List all services
+                    let services = service_manager.list()?;
+
+                    if services.is_empty() {
+                        println!("{} No services available.", style("==>").cyan().bold());
+                        println!();
+                        println!("    To start a service, first install a formula that provides one.");
+                        println!("    Then run: {} services start <formula>", style("zb").cyan());
+                    } else {
+                        println!(
+                            "{} {} services:",
+                            style("==>").cyan().bold(),
+                            services.len()
+                        );
+                        println!();
+
+                        // Header
+                        println!(
+                            "{:<20} {:<10} {:<10} {}",
+                            style("Name").bold(),
+                            style("Status").bold(),
+                            style("PID").bold(),
+                            style("File").bold()
+                        );
+                        println!("{}", "-".repeat(60));
+
+                        for service in &services {
+                            let status_display = match &service.status {
+                                ServiceStatus::Running => style("running").green().to_string(),
+                                ServiceStatus::Stopped => style("stopped").dim().to_string(),
+                                ServiceStatus::Unknown => style("unknown").yellow().to_string(),
+                                ServiceStatus::Error(msg) => {
+                                    format!("{} ({})", style("error").red(), msg)
+                                }
+                            };
+
+                            let pid_display = service
+                                .pid
+                                .map(|p| p.to_string())
+                                .unwrap_or_else(|| "-".to_string());
+
+                            println!(
+                                "{:<20} {:<10} {:<10} {}",
+                                service.name,
+                                status_display,
+                                pid_display,
+                                service.file_path.display()
+                            );
+                        }
+                    }
+                }
+
+                Some(ServicesAction::Start { formula }) => {
+                    // Check if formula is installed
+                    if !installer.is_installed(&formula) {
+                        eprintln!(
+                            "{} Formula '{}' is not installed.",
+                            style("error:").red().bold(),
+                            formula
+                        );
+                        std::process::exit(1);
+                    }
+
+                    // Check if service file exists, if not try to create it
+                    let service_info = service_manager.get_service_info(&formula);
+                    let needs_setup = match &service_info {
+                        Ok(info) => !info.file_path.exists(),
+                        Err(_) => true,
+                    };
+
+                    if needs_setup {
+                        // Try to auto-detect service config from installed files
+                        let keg = installer.get_installed(&formula).ok_or_else(|| {
+                            zb_core::Error::NotInstalled {
+                                name: formula.clone(),
+                            }
+                        })?;
+                        let keg_path = cli.prefix.join("Cellar").join(&formula).join(&keg.version);
+
+                        if let Some(config) =
+                            service_manager.detect_service_config(&formula, &keg_path)
+                        {
+                            println!(
+                                "{} Creating service file for {}...",
+                                style("==>").cyan().bold(),
+                                style(&formula).bold()
+                            );
+                            service_manager.create_service(&formula, &config)?;
+                        } else {
+                            eprintln!(
+                                "{} Formula '{}' does not have a service definition.",
+                                style("error:").red().bold(),
+                                formula
+                            );
+                            eprintln!();
+                            eprintln!("    Not all formulas provide services.");
+                            eprintln!("    Check the formula's caveats with: {} info {}", style("zb").cyan(), formula);
+                            std::process::exit(1);
+                        }
+                    }
+
+                    println!(
+                        "{} Starting {}...",
+                        style("==>").cyan().bold(),
+                        style(&formula).bold()
+                    );
+
+                    service_manager.start(&formula)?;
+
+                    println!(
+                        "{} {} Started {}",
+                        style("==>").cyan().bold(),
+                        style("✓").green(),
+                        style(&formula).bold()
+                    );
+                }
+
+                Some(ServicesAction::Stop { formula }) => {
+                    println!(
+                        "{} Stopping {}...",
+                        style("==>").cyan().bold(),
+                        style(&formula).bold()
+                    );
+
+                    service_manager.stop(&formula)?;
+
+                    println!(
+                        "{} {} Stopped {}",
+                        style("==>").cyan().bold(),
+                        style("✓").green(),
+                        style(&formula).bold()
+                    );
+                }
+
+                Some(ServicesAction::Restart { formula }) => {
+                    println!(
+                        "{} Restarting {}...",
+                        style("==>").cyan().bold(),
+                        style(&formula).bold()
+                    );
+
+                    service_manager.restart(&formula)?;
+
+                    println!(
+                        "{} {} Restarted {}",
+                        style("==>").cyan().bold(),
+                        style("✓").green(),
+                        style(&formula).bold()
+                    );
+                }
+
+                Some(ServicesAction::Run { formula }) => {
+                    // Check if formula is installed
+                    if !installer.is_installed(&formula) {
+                        eprintln!(
+                            "{} Formula '{}' is not installed.",
+                            style("error:").red().bold(),
+                            formula
+                        );
+                        std::process::exit(1);
+                    }
+
+                    // Get service config to find the command to run
+                    let keg = installer.get_installed(&formula).ok_or_else(|| {
+                        zb_core::Error::NotInstalled {
+                            name: formula.clone(),
+                        }
+                    })?;
+                    let keg_path = cli.prefix.join("Cellar").join(&formula).join(&keg.version);
+
+                    if let Some(config) =
+                        service_manager.detect_service_config(&formula, &keg_path)
+                    {
+                        println!(
+                            "{} Running {} in foreground...",
+                            style("==>").cyan().bold(),
+                            style(&formula).bold()
+                        );
+                        println!("    Command: {} {}", config.program.display(), config.args.join(" "));
+                        println!("    Press Ctrl+C to stop.");
+                        println!();
+
+                        // Execute the command
+                        let mut cmd = Command::new(&config.program);
+                        cmd.args(&config.args);
+
+                        if let Some(wd) = &config.working_directory {
+                            cmd.current_dir(wd);
+                        }
+
+                        for (key, value) in &config.environment {
+                            cmd.env(key, value);
+                        }
+
+                        let status = cmd.status().map_err(|e| zb_core::Error::StoreCorruption {
+                            message: format!("failed to run service: {}", e),
+                        })?;
+
+                        if !status.success() {
+                            eprintln!(
+                                "\n{} Service exited with status: {}",
+                                style("==>").cyan().bold(),
+                                status.code().unwrap_or(-1)
+                            );
+                        }
+                    } else {
+                        eprintln!(
+                            "{} Formula '{}' does not have a service definition.",
+                            style("error:").red().bold(),
+                            formula
+                        );
+                        std::process::exit(1);
+                    }
                 }
             }
         }

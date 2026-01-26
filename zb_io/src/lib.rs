@@ -9,6 +9,7 @@ pub mod link;
 pub mod materialize;
 pub mod progress;
 pub mod search;
+pub mod services;
 pub mod store;
 pub mod tap;
 
@@ -22,5 +23,6 @@ pub use install::{CleanupResult, DepsTree, DoctorCheck, DoctorResult, DoctorStat
 pub use link::Linker;
 pub use materialize::Cellar;
 pub use progress::{InstallProgress, ProgressCallback};
+pub use services::{ServiceConfig, ServiceInfo, ServiceManager, ServiceStatus};
 pub use store::Store;
 pub use tap::{TapFormula, TapInfo, TapManager};

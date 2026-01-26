@@ -81,6 +81,16 @@ impl Database {
                 url TEXT NOT NULL,
                 added_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS services (
+                name TEXT PRIMARY KEY,
+                formula TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'stopped',
+                pid INTEGER,
+                started_at INTEGER,
+                config TEXT,
+                FOREIGN KEY (formula) REFERENCES installed_kegs(name) ON DELETE CASCADE
+            );
             ",
         )
         .map_err(|e| Error::StoreCorruption {
@@ -92,6 +102,9 @@ impl Database {
 
         // Migration: add explicit column if it doesn't exist (for existing databases)
         Self::migrate_add_explicit_column(conn)?;
+
+        // Migration: create services table if it doesn't exist (for existing databases)
+        Self::migrate_add_services_table(conn)?;
 
         Ok(())
     }
@@ -137,6 +150,37 @@ impl Database {
             )
             .map_err(|e| Error::StoreCorruption {
                 message: format!("failed to add explicit column: {e}"),
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn migrate_add_services_table(conn: &Connection) -> Result<(), Error> {
+        // Check if services table exists
+        let has_services: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='services'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !has_services {
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS services (
+                    name TEXT PRIMARY KEY,
+                    formula TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'stopped',
+                    pid INTEGER,
+                    started_at INTEGER,
+                    config TEXT,
+                    FOREIGN KEY (formula) REFERENCES installed_kegs(name) ON DELETE CASCADE
+                )",
+                [],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to create services table: {e}"),
             })?;
         }
 
@@ -531,6 +575,160 @@ impl Database {
 
         Ok(taps)
     }
+
+    // ========== Service Operations ==========
+
+    /// Record a service for a formula
+    pub fn record_service(&self, name: &str, formula: &str, config: Option<&str>) -> Result<(), Error> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO services (name, formula, status, config)
+                 VALUES (?1, ?2, 'stopped', ?3)",
+                params![name, formula, config],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to record service: {e}"),
+            })?;
+
+        Ok(())
+    }
+
+    /// Update service status
+    pub fn update_service_status(&self, name: &str, status: &str, pid: Option<u32>) -> Result<bool, Error> {
+        let started_at = if status == "running" {
+            Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64,
+            )
+        } else {
+            None
+        };
+
+        let rows_affected = self
+            .conn
+            .execute(
+                "UPDATE services SET status = ?1, pid = ?2, started_at = ?3 WHERE name = ?4",
+                params![status, pid, started_at, name],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to update service status: {e}"),
+            })?;
+
+        Ok(rows_affected > 0)
+    }
+
+    /// Get service by name
+    pub fn get_service(&self, name: &str) -> Option<ServiceRecord> {
+        self.conn
+            .query_row(
+                "SELECT name, formula, status, pid, started_at, config FROM services WHERE name = ?1",
+                params![name],
+                |row| {
+                    Ok(ServiceRecord {
+                        name: row.get(0)?,
+                        formula: row.get(1)?,
+                        status: row.get(2)?,
+                        pid: row.get(3)?,
+                        started_at: row.get(4)?,
+                        config: row.get(5)?,
+                    })
+                },
+            )
+            .ok()
+    }
+
+    /// Get service for a formula
+    pub fn get_service_for_formula(&self, formula: &str) -> Option<ServiceRecord> {
+        self.conn
+            .query_row(
+                "SELECT name, formula, status, pid, started_at, config FROM services WHERE formula = ?1",
+                params![formula],
+                |row| {
+                    Ok(ServiceRecord {
+                        name: row.get(0)?,
+                        formula: row.get(1)?,
+                        status: row.get(2)?,
+                        pid: row.get(3)?,
+                        started_at: row.get(4)?,
+                        config: row.get(5)?,
+                    })
+                },
+            )
+            .ok()
+    }
+
+    /// List all services
+    pub fn list_services(&self) -> Result<Vec<ServiceRecord>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, formula, status, pid, started_at, config FROM services ORDER BY name")
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to prepare statement: {e}"),
+            })?;
+
+        let services = stmt
+            .query_map([], |row| {
+                Ok(ServiceRecord {
+                    name: row.get(0)?,
+                    formula: row.get(1)?,
+                    status: row.get(2)?,
+                    pid: row.get(3)?,
+                    started_at: row.get(4)?,
+                    config: row.get(5)?,
+                })
+            })
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to query services: {e}"),
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to collect results: {e}"),
+            })?;
+
+        Ok(services)
+    }
+
+    /// Remove a service
+    pub fn remove_service(&self, name: &str) -> Result<bool, Error> {
+        let rows_affected = self
+            .conn
+            .execute("DELETE FROM services WHERE name = ?1", params![name])
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to remove service: {e}"),
+            })?;
+
+        Ok(rows_affected > 0)
+    }
+
+    /// Check if formula has a service
+    pub fn has_service(&self, formula: &str) -> bool {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM services WHERE formula = ?1",
+                params![formula],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+}
+
+/// Information about a service stored in the database
+#[derive(Debug, Clone)]
+pub struct ServiceRecord {
+    /// Service name (e.g., "zerobrew.redis")
+    pub name: String,
+    /// Formula this service is for
+    pub formula: String,
+    /// Last known status
+    pub status: String,
+    /// Last known PID
+    pub pid: Option<u32>,
+    /// Unix timestamp when last started
+    pub started_at: Option<i64>,
+    /// JSON configuration (optional)
+    pub config: Option<String>,
 }
 
 pub struct InstallTransaction<'a> {

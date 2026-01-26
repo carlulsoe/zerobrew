@@ -949,13 +949,109 @@ $ zb doctor
 
 ---
 
-## Next Steps (Phase 3)
+### 18. Implemented Services Command (Phase 3.1) ✅
 
-Phase 3 focuses on service management:
-1. Implement `zb services list` - Show running services
-2. Implement `zb services start/stop/restart` - Control services
-3. Add systemd integration for Linux
-4. Add launchd integration for macOS
+**Files created/modified:**
+- `zb_io/src/services.rs` (NEW) - ServiceManager with cross-platform service management
+- `zb_io/src/lib.rs` - Exported services module and types
+- `zb_io/src/db.rs` - Added services table for tracking service state
+- `zb_cli/src/main.rs` - Added `zb services` command with subcommands
+
+**Database changes:**
+- Added `services` table with columns: name, formula, status, pid, started_at, config
+- Foreign key to installed_kegs for formula reference
+
+**Features:**
+- List services: `zb services` or `zb services list` - Shows all managed services with status
+- Start service: `zb services start <formula>` - Start a service for a formula
+- Stop service: `zb services stop <formula>` - Stop a running service
+- Restart service: `zb services restart <formula>` - Stop and start a service
+- Run in foreground: `zb services run <formula>` - Run service command directly (for debugging)
+- Auto-detect service config from installed formula files
+- Cross-platform support: Linux (systemd user services) and macOS (launchd LaunchAgents)
+
+**Linux systemd integration:**
+- Creates service files in `~/.config/systemd/user/zerobrew.<formula>.service`
+- Uses `systemctl --user` for managing services
+- Supports `daemon-reload`, `enable`, `disable` commands
+- Generates proper unit file format with [Unit], [Service], [Install] sections
+- Logging to `~/.local/share/zerobrew/logs/<formula>.log`
+
+**macOS launchd integration:**
+- Creates plist files in `~/Library/LaunchAgents/com.zerobrew.<formula>.plist`
+- Uses `launchctl` for managing services
+- Generates proper XML plist format
+- Logging to `~/Library/Logs/zerobrew/<formula>.log`
+
+**Service configuration:**
+- Program path and arguments
+- Working directory
+- Environment variables
+- Restart on failure
+- Run at load (auto-start)
+- Keep alive
+- Stdout/stderr logging paths
+
+**Example usage:**
+```bash
+# List all services
+$ zb services
+==> 2 services:
+Name                 Status     PID        File
+------------------------------------------------------------
+redis                running    12345      ~/.config/systemd/user/zerobrew.redis.service
+postgresql@14        stopped    -          ~/.config/systemd/user/zerobrew.postgresql@14.service
+
+# Start a service
+$ zb services start redis
+==> Starting redis...
+==> ✓ Started redis
+
+# Stop a service
+$ zb services stop redis
+==> Stopping redis...
+==> ✓ Stopped redis
+
+# Restart a service
+$ zb services restart redis
+==> Restarting redis...
+==> ✓ Restarted redis
+
+# Run in foreground (debugging)
+$ zb services run redis
+==> Running redis in foreground...
+    Command: /opt/zerobrew/prefix/opt/redis/bin/redis-server /opt/zerobrew/prefix/etc/redis.conf
+    Press Ctrl+C to stop.
+```
+
+**New tests (7 total):**
+- `test_service_status_display` - Tests ServiceStatus Display trait
+- `test_service_config_default` - Tests default ServiceConfig values
+- `test_service_manager_new` - Tests ServiceManager creation
+- `test_service_file_path_linux` - Tests Linux service file path generation
+- `test_service_label_linux` - Tests Linux service label format
+- `test_extract_formula_name_linux` - Tests formula name extraction from service file
+- `test_generate_service_file_linux` - Tests systemd unit file generation
+
+---
+
+## Phase 3.1 Complete! 🎉
+
+| Task | Status |
+|------|--------|
+| 3.1 Services list/start/stop/restart | ✅ Complete |
+| 3.2 Systemd integration (Linux) | ✅ Complete |
+| 3.3 Launchd integration (macOS) | ✅ Complete |
+
+---
+
+## Next Steps (Phase 3 continued)
+
+Additional service features to consider:
+1. `zb services info <formula>` - Show detailed service information
+2. `zb services cleanup` - Remove services for uninstalled formulas
+3. Service dependency ordering
+4. Log viewing: `zb services log <formula>`
 
 ---
 
@@ -974,3 +1070,4 @@ Phase 3 focuses on service management:
 - Tap support now works with both JSON and Ruby formulas
 - Cleanup command now includes HTTP cache cleanup with prune days support
 - Link/unlink commands allow fine-grained control over symlink creation
+- Services module provides cross-platform service management (systemd/launchd)
