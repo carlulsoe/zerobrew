@@ -65,7 +65,8 @@ fn compute_closure(
             .get(&name)
             .ok_or_else(|| Error::MissingFormula { name: name.clone() })?;
 
-        let mut deps = formula.dependencies.clone();
+        // Use effective_dependencies() to include uses_from_macos on Linux
+        let mut deps = formula.effective_dependencies();
         deps.sort();
         for dep in deps {
             if !closure.contains(&dep) {
@@ -88,7 +89,8 @@ fn build_graph(
         let formula = formulas
             .get(name)
             .ok_or_else(|| Error::MissingFormula { name: name.clone() })?;
-        let mut deps = formula.dependencies.clone();
+        // Use effective_dependencies() to include uses_from_macos on Linux
+        let mut deps = formula.effective_dependencies();
         deps.sort();
         for dep in deps {
             if !closure.contains(&dep) {
@@ -111,6 +113,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn formula(name: &str, deps: &[&str]) -> Formula {
+        formula_with_macos_deps(name, deps, &[])
+    }
+
+    fn formula_with_macos_deps(name: &str, deps: &[&str], macos_deps: &[&str]) -> Formula {
         let mut files = BTreeMap::new();
         files.insert(
             "arm64_sonoma".to_string(),
@@ -126,6 +132,7 @@ mod tests {
                 stable: "1.0.0".to_string(),
             },
             dependencies: deps.iter().map(|dep| dep.to_string()).collect(),
+            uses_from_macos: macos_deps.iter().map(|dep| dep.to_string()).collect(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },

@@ -6,6 +6,10 @@ pub struct Formula {
     pub name: String,
     pub versions: Versions,
     pub dependencies: Vec<String>,
+    /// Dependencies that macOS provides as system libraries.
+    /// On Linux, these must be installed explicitly.
+    #[serde(default)]
+    pub uses_from_macos: Vec<String>,
     pub bottle: Bottle,
 }
 
@@ -19,6 +23,24 @@ impl Formula {
         } else {
             self.versions.stable.clone()
         }
+    }
+
+    /// Returns the effective dependencies for the current platform.
+    /// On Linux, this includes `uses_from_macos` dependencies since they
+    /// aren't available as system libraries like on macOS.
+    pub fn effective_dependencies(&self) -> Vec<String> {
+        let mut deps = self.dependencies.clone();
+
+        #[cfg(target_os = "linux")]
+        {
+            for dep in &self.uses_from_macos {
+                if !deps.contains(dep) {
+                    deps.push(dep.clone());
+                }
+            }
+        }
+
+        deps
     }
 }
 
