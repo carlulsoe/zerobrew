@@ -42,6 +42,14 @@ enum Commands {
         /// Skip linking executables
         #[arg(long)]
         no_link: bool,
+
+        /// Build from source instead of using a bottle
+        #[arg(long, short = 's')]
+        build_from_source: bool,
+
+        /// Install the HEAD version (requires building from source)
+        #[arg(long, short = 'H')]
+        head: bool,
     },
 
     /// Uninstall a formula (or all formulas if no name given)
@@ -544,160 +552,207 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
     match cli.command {
         Commands::Init => unreachable!(), // Handled above
         Commands::Shellenv { .. } => unreachable!(), // Handled above
-        Commands::Install { formula, no_link } => {
+        Commands::Install { formula, no_link, build_from_source, head } => {
             let start = Instant::now();
-            println!(
-                "{} Installing {}...",
-                style("==>").cyan().bold(),
-                style(&formula).bold()
-            );
 
-            let plan = match installer.plan(&formula).await {
-                Ok(p) => p,
-                Err(e) => {
-                    suggest_homebrew(&formula, &e);
-                    return Err(e);
-                }
-            };
+            // HEAD implies building from source
+            let build_from_source = build_from_source || head;
 
-            println!(
-                "{} Resolving dependencies ({} packages)...",
-                style("==>").cyan().bold(),
-                plan.formulas.len()
-            );
-            for f in &plan.formulas {
+            if build_from_source {
+                // Source build path
+                let build_type = if head { "HEAD" } else { "source" };
                 println!(
-                    "    {} {}",
-                    style(&f.name).green(),
-                    style(&f.versions.stable).dim()
+                    "{} Building {} from {}...",
+                    style("==>").cyan().bold(),
+                    style(&formula).bold(),
+                    build_type
                 );
-            }
 
-            // Set up progress display
-            let multi = MultiProgress::new();
-            let bars: Arc<Mutex<HashMap<String, ProgressBar>>> =
-                Arc::new(Mutex::new(HashMap::new()));
+                println!(
+                    "{} Downloading source and dependencies...",
+                    style("==>").cyan().bold()
+                );
 
-            let download_style = ProgressStyle::default_bar()
-                .template(
-                    "    {prefix:<16} {bar:25.cyan/dim} {bytes:>10}/{total_bytes:<10} {eta:>6}",
-                )
-                .unwrap()
-                .progress_chars("━━╸");
-
-            let spinner_style = ProgressStyle::default_spinner()
-                .template("    {prefix:<16} {spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
-
-            let done_style = ProgressStyle::default_spinner()
-                .template("    {prefix:<16} {msg}")
-                .unwrap();
-
-            println!(
-                "{} Downloading and installing...",
-                style("==>").cyan().bold()
-            );
-
-            let bars_clone = bars.clone();
-            let multi_clone = multi.clone();
-            let download_style_clone = download_style.clone();
-            let spinner_style_clone = spinner_style.clone();
-            let done_style_clone = done_style.clone();
-
-            let progress_callback: Arc<ProgressCallback> = Arc::new(Box::new(move |event| {
-                let mut bars = bars_clone.lock().unwrap();
-                match event {
-                    InstallProgress::DownloadStarted { name, total_bytes } => {
-                        let pb = if let Some(total) = total_bytes {
-                            let pb = multi_clone.add(ProgressBar::new(total));
-                            pb.set_style(download_style_clone.clone());
-                            pb
-                        } else {
-                            let pb = multi_clone.add(ProgressBar::new_spinner());
-                            pb.set_style(spinner_style_clone.clone());
-                            pb.set_message("downloading...");
-                            pb.enable_steady_tick(std::time::Duration::from_millis(80));
-                            pb
-                        };
-                        pb.set_prefix(name.clone());
-                        bars.insert(name, pb);
+                let result = match installer.install_from_source(&formula, !no_link, head).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        suggest_homebrew(&formula, &e);
+                        return Err(e);
                     }
-                    InstallProgress::DownloadProgress {
-                        name,
-                        downloaded,
-                        total_bytes,
-                    } => {
-                        if let Some(pb) = bars.get(&name)
-                            && total_bytes.is_some()
-                        {
-                            pb.set_position(downloaded);
+                };
+
+                let elapsed = start.elapsed();
+                println!();
+                println!(
+                    "{} Built and installed {} {} ({} files) in {:.2}s",
+                    style("==>").cyan().bold(),
+                    style(&result.name).green().bold(),
+                    style(&result.version).dim(),
+                    result.files_installed,
+                    elapsed.as_secs_f64()
+                );
+                if result.files_linked > 0 {
+                    println!(
+                        "    {} Linked {} files",
+                        style("✓").green(),
+                        result.files_linked
+                    );
+                }
+            } else {
+                // Normal bottle install path
+                println!(
+                    "{} Installing {}...",
+                    style("==>").cyan().bold(),
+                    style(&formula).bold()
+                );
+
+                let plan = match installer.plan(&formula).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        suggest_homebrew(&formula, &e);
+                        return Err(e);
+                    }
+                };
+
+                println!(
+                    "{} Resolving dependencies ({} packages)...",
+                    style("==>").cyan().bold(),
+                    plan.formulas.len()
+                );
+                for f in &plan.formulas {
+                    println!(
+                        "    {} {}",
+                        style(&f.name).green(),
+                        style(&f.versions.stable).dim()
+                    );
+                }
+
+                // Set up progress display
+                let multi = MultiProgress::new();
+                let bars: Arc<Mutex<HashMap<String, ProgressBar>>> =
+                    Arc::new(Mutex::new(HashMap::new()));
+
+                let download_style = ProgressStyle::default_bar()
+                    .template(
+                        "    {prefix:<16} {bar:25.cyan/dim} {bytes:>10}/{total_bytes:<10} {eta:>6}",
+                    )
+                    .unwrap()
+                    .progress_chars("━━╸");
+
+                let spinner_style = ProgressStyle::default_spinner()
+                    .template("    {prefix:<16} {spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
+
+                let done_style = ProgressStyle::default_spinner()
+                    .template("    {prefix:<16} {msg}")
+                    .unwrap();
+
+                println!(
+                    "{} Downloading and installing...",
+                    style("==>").cyan().bold()
+                );
+
+                let bars_clone = bars.clone();
+                let multi_clone = multi.clone();
+                let download_style_clone = download_style.clone();
+                let spinner_style_clone = spinner_style.clone();
+                let done_style_clone = done_style.clone();
+
+                let progress_callback: Arc<ProgressCallback> = Arc::new(Box::new(move |event| {
+                    let mut bars = bars_clone.lock().unwrap();
+                    match event {
+                        InstallProgress::DownloadStarted { name, total_bytes } => {
+                            let pb = if let Some(total) = total_bytes {
+                                let pb = multi_clone.add(ProgressBar::new(total));
+                                pb.set_style(download_style_clone.clone());
+                                pb
+                            } else {
+                                let pb = multi_clone.add(ProgressBar::new_spinner());
+                                pb.set_style(spinner_style_clone.clone());
+                                pb.set_message("downloading...");
+                                pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                                pb
+                            };
+                            pb.set_prefix(name.clone());
+                            bars.insert(name, pb);
                         }
-                    }
-                    InstallProgress::DownloadCompleted { name, total_bytes } => {
-                        if let Some(pb) = bars.get(&name) {
-                            if total_bytes > 0 {
-                                pb.set_position(total_bytes);
+                        InstallProgress::DownloadProgress {
+                            name,
+                            downloaded,
+                            total_bytes,
+                        } => {
+                            if let Some(pb) = bars.get(&name)
+                                && total_bytes.is_some()
+                            {
+                                pb.set_position(downloaded);
                             }
-                            pb.set_style(spinner_style_clone.clone());
-                            pb.set_message("unpacking...");
-                            pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                        }
+                        InstallProgress::DownloadCompleted { name, total_bytes } => {
+                            if let Some(pb) = bars.get(&name) {
+                                if total_bytes > 0 {
+                                    pb.set_position(total_bytes);
+                                }
+                                pb.set_style(spinner_style_clone.clone());
+                                pb.set_message("unpacking...");
+                                pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                            }
+                        }
+                        InstallProgress::UnpackStarted { name } => {
+                            if let Some(pb) = bars.get(&name) {
+                                pb.set_message("unpacking...");
+                            }
+                        }
+                        InstallProgress::UnpackCompleted { name } => {
+                            if let Some(pb) = bars.get(&name) {
+                                pb.set_message("linking...");
+                            }
+                        }
+                        InstallProgress::LinkStarted { name } => {
+                            if let Some(pb) = bars.get(&name) {
+                                pb.set_message("linking...");
+                            }
+                        }
+                        InstallProgress::LinkCompleted { name } => {
+                            if let Some(pb) = bars.get(&name) {
+                                pb.set_style(done_style_clone.clone());
+                                pb.set_message(format!("{} installed", style("✓").green()));
+                                pb.finish();
+                            }
                         }
                     }
-                    InstallProgress::UnpackStarted { name } => {
-                        if let Some(pb) = bars.get(&name) {
-                            pb.set_message("unpacking...");
-                        }
+                }));
+
+                let result = match installer
+                    .execute_with_progress(plan, !no_link, Some(progress_callback))
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        suggest_homebrew(&formula, &e);
+                        return Err(e);
                     }
-                    InstallProgress::UnpackCompleted { name } => {
-                        if let Some(pb) = bars.get(&name) {
-                            pb.set_message("linking...");
-                        }
-                    }
-                    InstallProgress::LinkStarted { name } => {
-                        if let Some(pb) = bars.get(&name) {
-                            pb.set_message("linking...");
-                        }
-                    }
-                    InstallProgress::LinkCompleted { name } => {
-                        if let Some(pb) = bars.get(&name) {
-                            pb.set_style(done_style_clone.clone());
-                            pb.set_message(format!("{} installed", style("✓").green()));
+                };
+
+                // Finish any remaining bars
+                {
+                    let bars = bars.lock().unwrap();
+                    for (_, pb) in bars.iter() {
+                        if !pb.is_finished() {
                             pb.finish();
                         }
                     }
                 }
-            }));
 
-            let result = match installer
-                .execute_with_progress(plan, !no_link, Some(progress_callback))
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    suggest_homebrew(&formula, &e);
-                    return Err(e);
-                }
-            };
-
-            // Finish any remaining bars
-            {
-                let bars = bars.lock().unwrap();
-                for (_, pb) in bars.iter() {
-                    if !pb.is_finished() {
-                        pb.finish();
-                    }
-                }
+                let elapsed = start.elapsed();
+                println!();
+                println!(
+                    "{} Installed {} packages in {:.2}s",
+                    style("==>").cyan().bold(),
+                    style(result.installed).green().bold(),
+                    elapsed.as_secs_f64()
+                );
             }
-
-            let elapsed = start.elapsed();
-            println!();
-            println!(
-                "{} Installed {} packages in {:.2}s",
-                style("==>").cyan().bold(),
-                style(result.installed).green().bold(),
-                elapsed.as_secs_f64()
-            );
         }
 
         Commands::Uninstall { formula } => match formula {

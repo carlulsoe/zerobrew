@@ -1665,6 +1665,239 @@ impl Installer {
 
         checks
     }
+
+    /// Install a formula from source
+    ///
+    /// This method:
+    /// 1. Fetches the formula metadata
+    /// 2. Installs build dependencies (as bottles)
+    /// 3. Downloads and verifies the source tarball
+    /// 4. Builds using the detected build system
+    /// 5. Installs the built files to the cellar
+    /// 6. Links executables
+    pub async fn install_from_source(
+        &mut self,
+        name: &str,
+        link: bool,
+        head: bool,
+    ) -> Result<SourceBuildResult, Error> {
+        use crate::build::{
+            BuildEnvironment, Builder, clone_git_repo, download_source, extract_tarball,
+        };
+        use tempfile::TempDir;
+
+        // Fetch formula
+        let formula = self.fetch_formula(name).await?;
+
+        // Check source availability
+        let source_url = if head {
+            formula
+                .urls
+                .head
+                .as_ref()
+                .map(|h| h.url.clone())
+                .ok_or_else(|| Error::StoreCorruption {
+                    message: format!("formula '{}' does not have a HEAD source", name),
+                })?
+        } else {
+            formula
+                .urls
+                .stable
+                .as_ref()
+                .map(|s| s.url.clone())
+                .ok_or_else(|| Error::StoreCorruption {
+                    message: format!("formula '{}' does not have a stable source URL", name),
+                })?
+        };
+
+        // Get checksum for stable builds
+        let checksum = if head {
+            None
+        } else {
+            formula
+                .urls
+                .stable
+                .as_ref()
+                .and_then(|s| s.checksum.clone())
+        };
+
+        // Install build dependencies first (as bottles if available)
+        let all_deps: Vec<String> = formula
+            .dependencies
+            .iter()
+            .chain(formula.build_dependencies.iter())
+            .cloned()
+            .collect();
+
+        for dep in &all_deps {
+            if !self.is_installed(dep) {
+                // Try to install the dependency as a bottle
+                match self.install(dep, true).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!(
+                            "    Warning: failed to install build dependency '{}': {}",
+                            dep, e
+                        );
+                    }
+                }
+            }
+        }
+
+        // Create temporary directories for build
+        let build_tmp = TempDir::new().map_err(|e| Error::StoreCorruption {
+            message: format!("failed to create temp directory: {}", e),
+        })?;
+        let staging_tmp = TempDir::new().map_err(|e| Error::StoreCorruption {
+            message: format!("failed to create staging directory: {}", e),
+        })?;
+
+        // Download or clone source
+        let source_dir = if head {
+            let clone_dir = build_tmp.path().join("source");
+            let branch = formula
+                .urls
+                .head
+                .as_ref()
+                .and_then(|h| h.branch.as_deref());
+            clone_git_repo(&source_url, branch, &clone_dir)?;
+            clone_dir
+        } else {
+            let tarball_path = build_tmp.path().join("source.tar.gz");
+            download_source(&source_url, &tarball_path, checksum.as_deref())?;
+            extract_tarball(&tarball_path, build_tmp.path())?
+        };
+
+        // Determine version
+        let version = if head {
+            // For HEAD builds, use current timestamp or commit
+            let now = chrono::Utc::now();
+            format!("HEAD-{}", now.format("%Y%m%d%H%M%S"))
+        } else {
+            formula.versions.stable.clone()
+        };
+
+        // Create build environment
+        let opt_dir = self.prefix.join("opt");
+        let build_env = BuildEnvironment::new(
+            &formula,
+            source_dir.clone(),
+            &self.prefix,
+            &opt_dir,
+            staging_tmp.path().to_path_buf(),
+        );
+
+        // Build
+        let builder = Builder::new(build_env);
+        let build_result = builder.build_auto(&[])?;
+
+        if build_result.installed_files.is_empty() {
+            return Err(Error::StoreCorruption {
+                message: format!(
+                    "build succeeded but no files were installed for '{}'",
+                    name
+                ),
+            });
+        }
+
+        // Create keg in cellar from staging directory
+        let keg_path = self.cellar_path.join(&formula.name).join(&version);
+        if keg_path.exists() {
+            std::fs::remove_dir_all(&keg_path).map_err(|e| Error::StoreCorruption {
+                message: format!("failed to remove existing keg: {}", e),
+            })?;
+        }
+        std::fs::create_dir_all(&keg_path).map_err(|e| Error::StoreCorruption {
+            message: format!("failed to create keg directory: {}", e),
+        })?;
+
+        // Copy files from staging to keg
+        copy_dir_recursive(staging_tmp.path(), &keg_path)?;
+
+        // Generate a unique store key for source builds
+        let store_key = format!("source-{}-{}", formula.name, version);
+
+        // Link executables if requested
+        let linked_files = if link {
+            self.linker.link_keg(&keg_path)?
+        } else {
+            Vec::new()
+        };
+
+        // Record in database
+        {
+            let tx = self.db.transaction()?;
+            tx.record_install(&formula.name, &version, &store_key, true)?;
+
+            for linked in &linked_files {
+                tx.record_linked_file(
+                    &formula.name,
+                    &version,
+                    &linked.link_path.to_string_lossy(),
+                    &linked.target_path.to_string_lossy(),
+                )?;
+            }
+
+            tx.commit()?;
+        }
+
+        Ok(SourceBuildResult {
+            name: formula.name.clone(),
+            version,
+            files_installed: build_result.installed_files.len(),
+            files_linked: linked_files.len(),
+            head,
+        })
+    }
+}
+
+/// Result of a source build operation
+#[derive(Debug, Clone)]
+pub struct SourceBuildResult {
+    /// Formula name
+    pub name: String,
+    /// Version that was built
+    pub version: String,
+    /// Number of files installed
+    pub files_installed: usize,
+    /// Number of files linked
+    pub files_linked: usize,
+    /// Whether this was a HEAD build
+    pub head: bool,
+}
+
+/// Recursively copy a directory
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Error> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst).map_err(|e| Error::StoreCorruption {
+            message: format!("failed to create directory '{}': {}", dst.display(), e),
+        })?;
+    }
+
+    for entry in std::fs::read_dir(src).map_err(|e| Error::StoreCorruption {
+        message: format!("failed to read directory '{}': {}", src.display(), e),
+    })? {
+        let entry = entry.map_err(|e| Error::StoreCorruption {
+            message: format!("failed to read entry: {}", e),
+        })?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path).map_err(|e| Error::StoreCorruption {
+                message: format!(
+                    "failed to copy '{}' to '{}': {}",
+                    src_path.display(),
+                    dst_path.display(),
+                    e
+                ),
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Result of a link operation
@@ -4623,5 +4856,60 @@ mod tests {
         // On a fresh empty install, should be healthy
         // (prefix exists and is writable, etc.)
         assert_eq!(result.errors, 0);
+    }
+
+    #[test]
+    fn copy_dir_recursive_copies_all_files() {
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+
+        // Create source structure
+        fs::create_dir_all(src.path().join("bin")).unwrap();
+        fs::create_dir_all(src.path().join("lib/pkgconfig")).unwrap();
+        fs::write(src.path().join("bin/foo"), "binary").unwrap();
+        fs::write(src.path().join("lib/libfoo.so"), "library").unwrap();
+        fs::write(src.path().join("lib/pkgconfig/foo.pc"), "pkgconfig").unwrap();
+
+        // Copy
+        super::copy_dir_recursive(src.path(), dst.path()).unwrap();
+
+        // Verify
+        assert!(dst.path().join("bin/foo").exists());
+        assert!(dst.path().join("lib/libfoo.so").exists());
+        assert!(dst.path().join("lib/pkgconfig/foo.pc").exists());
+
+        // Verify content
+        assert_eq!(fs::read_to_string(dst.path().join("bin/foo")).unwrap(), "binary");
+    }
+
+    #[test]
+    fn source_build_result_fields() {
+        let result = super::SourceBuildResult {
+            name: "test".to_string(),
+            version: "1.0.0".to_string(),
+            files_installed: 10,
+            files_linked: 5,
+            head: false,
+        };
+
+        assert_eq!(result.name, "test");
+        assert_eq!(result.version, "1.0.0");
+        assert_eq!(result.files_installed, 10);
+        assert_eq!(result.files_linked, 5);
+        assert!(!result.head);
+    }
+
+    #[test]
+    fn source_build_result_head_build() {
+        let result = super::SourceBuildResult {
+            name: "test".to_string(),
+            version: "HEAD-20260126120000".to_string(),
+            files_installed: 5,
+            files_linked: 3,
+            head: true,
+        };
+
+        assert!(result.version.starts_with("HEAD-"));
+        assert!(result.head);
     }
 }

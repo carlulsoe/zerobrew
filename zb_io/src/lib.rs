@@ -21,7 +21,7 @@ pub use cache::ApiCache;
 pub use db::{Database, InstalledKeg, InstalledTap};
 pub use download::{DownloadProgressCallback, DownloadRequest, Downloader, ParallelDownloader};
 pub use extract::extract_tarball;
-pub use install::{CleanupResult, DepsTree, DoctorCheck, DoctorResult, DoctorStatus, Installer, LinkResult, UpgradeResult};
+pub use install::{CleanupResult, DepsTree, DoctorCheck, DoctorResult, DoctorStatus, Installer, LinkResult, SourceBuildResult, UpgradeResult};
 pub use link::Linker;
 pub use materialize::Cellar;
 pub use progress::{InstallProgress, ProgressCallback};
