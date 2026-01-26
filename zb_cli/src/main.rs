@@ -563,10 +563,18 @@ fn ensure_init(root: &Path, prefix: &Path) -> Result<(), zb_core::Error> {
 
     print!("Initialize now? [Y/n] ");
     use std::io::{self, Write};
-    io::stdout().flush().unwrap();
+    if io::stdout().flush().is_err() {
+        return Err(zb_core::Error::StoreCorruption {
+            message: "Failed to flush stdout".to_string(),
+        });
+    }
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
+    if io::stdin().read_line(&mut input).is_err() {
+        return Err(zb_core::Error::StoreCorruption {
+            message: "Failed to read user input".to_string(),
+        });
+    }
     let input = input.trim();
 
     if !input.is_empty() && !input.eq_ignore_ascii_case("y") && !input.eq_ignore_ascii_case("yes") {
@@ -1067,7 +1075,17 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     info.insert("keg_only".to_string(), serde_json::json!(f.keg_only));
                 }
 
-                println!("{}", serde_json::to_string_pretty(&info).unwrap());
+                match serde_json::to_string_pretty(&info) {
+                    Ok(json) => println!("{}", json),
+                    Err(e) => {
+                        eprintln!(
+                            "{} Failed to serialize JSON: {}",
+                            style("error:").red().bold(),
+                            e
+                        );
+                        std::process::exit(1);
+                    }
+                }
             } else {
                 // Human-readable output
                 if keg.is_none() && api_formula.is_none() {
@@ -1276,7 +1294,17 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+                match serde_json::to_string_pretty(&json_results) {
+                    Ok(json) => println!("{}", json),
+                    Err(e) => {
+                        eprintln!(
+                            "{} Failed to serialize JSON: {}",
+                            style("error:").red().bold(),
+                            e
+                        );
+                        std::process::exit(1);
+                    }
+                }
             } else if results.is_empty() {
                 if installed {
                     println!("No installed formulas found matching '{}'.", query);
@@ -1359,7 +1387,17 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
+                match serde_json::to_string_pretty(&json_output) {
+                    Ok(json) => println!("{}", json),
+                    Err(e) => {
+                        eprintln!(
+                            "{} Failed to serialize JSON: {}",
+                            style("error:").red().bold(),
+                            e
+                        );
+                        std::process::exit(1);
+                    }
+                }
             } else if outdated.is_empty() {
                 println!("All packages are up to date.");
                 if pinned_count > 0 {
@@ -1879,10 +1917,16 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 println!("      • {}", cli.prefix.display());
                 print!("Continue? [y/N] ");
                 use std::io::{self, Write};
-                io::stdout().flush().unwrap();
+                if io::stdout().flush().is_err() {
+                    eprintln!("{} Failed to flush stdout", style("error:").red().bold());
+                    std::process::exit(1);
+                }
 
                 let mut input = String::new();
-                io::stdin().read_line(&mut input).unwrap();
+                if io::stdin().read_line(&mut input).is_err() {
+                    eprintln!("{} Failed to read user input", style("error:").red().bold());
+                    std::process::exit(1);
+                }
                 if !input.trim().eq_ignore_ascii_case("y") {
                     println!("Aborted.");
                     return Ok(());
@@ -1907,7 +1951,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         .args(["rm", "-rf", &dir.to_string_lossy()])
                         .status();
 
-                    if status.is_err() || !status.unwrap().success() {
+                    let success = match status {
+                        Ok(s) => s.success(),
+                        Err(_) => false,
+                    };
+                    if !success {
                         eprintln!(
                             "{} Failed to remove {}",
                             style("error:").red().bold(),
@@ -2395,7 +2443,17 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                             })
                         })
                         .collect();
-                    println!("{}", serde_json::to_string_pretty(&json_services).unwrap());
+                    match serde_json::to_string_pretty(&json_services) {
+                        Ok(json) => println!("{}", json),
+                        Err(e) => {
+                            eprintln!(
+                                "{} Failed to serialize JSON: {}",
+                                style("error:").red().bold(),
+                                e
+                            );
+                            std::process::exit(1);
+                        }
+                    }
                 }
 
                 Some(ServicesAction::Start { formula }) => {
@@ -3615,49 +3673,42 @@ mod tests {
         use clap::Parser;
 
         // Test that --json flag is parsed correctly for services list
-        let cli = Cli::try_parse_from(["zb", "services", "list", "--json"]);
-        assert!(cli.is_ok());
-        if let Ok(cli) = cli {
-            match cli.command {
+        let cli = Cli::try_parse_from(["zb", "services", "list", "--json"]).unwrap();
+        assert!(
+            matches!(
+                cli.command,
                 Commands::Services {
-                    action: Some(ServicesAction::List { json }),
-                } => {
-                    assert!(json);
+                    action: Some(ServicesAction::List { json: true }),
                 }
-                _ => panic!("Expected Services List command"),
-            }
-        }
+            ),
+            "Expected Services List command with json=true"
+        );
 
         // Test services list without --json flag
-        let cli = Cli::try_parse_from(["zb", "services", "list"]);
-        assert!(cli.is_ok());
-        if let Ok(cli) = cli {
-            match cli.command {
+        let cli = Cli::try_parse_from(["zb", "services", "list"]).unwrap();
+        assert!(
+            matches!(
+                cli.command,
                 Commands::Services {
-                    action: Some(ServicesAction::List { json }),
-                } => {
-                    assert!(!json);
+                    action: Some(ServicesAction::List { json: false }),
                 }
-                _ => panic!("Expected Services List command"),
-            }
-        }
+            ),
+            "Expected Services List command with json=false"
+        );
     }
 
     #[test]
     fn test_services_enable_parsing() {
         use clap::Parser;
 
-        let cli = Cli::try_parse_from(["zb", "services", "enable", "redis"]);
-        assert!(cli.is_ok());
-        if let Ok(cli) = cli {
-            match cli.command {
-                Commands::Services {
-                    action: Some(ServicesAction::Enable { formula }),
-                } => {
-                    assert_eq!(formula, "redis");
-                }
-                _ => panic!("Expected Services Enable command"),
+        let cli = Cli::try_parse_from(["zb", "services", "enable", "redis"]).unwrap();
+        match cli.command {
+            Commands::Services {
+                action: Some(ServicesAction::Enable { formula }),
+            } => {
+                assert_eq!(formula, "redis");
             }
+            _ => panic!("Expected Services Enable command"),
         }
     }
 
@@ -3665,17 +3716,14 @@ mod tests {
     fn test_services_disable_parsing() {
         use clap::Parser;
 
-        let cli = Cli::try_parse_from(["zb", "services", "disable", "postgresql"]);
-        assert!(cli.is_ok());
-        if let Ok(cli) = cli {
-            match cli.command {
-                Commands::Services {
-                    action: Some(ServicesAction::Disable { formula }),
-                } => {
-                    assert_eq!(formula, "postgresql");
-                }
-                _ => panic!("Expected Services Disable command"),
+        let cli = Cli::try_parse_from(["zb", "services", "disable", "postgresql"]).unwrap();
+        match cli.command {
+            Commands::Services {
+                action: Some(ServicesAction::Disable { formula }),
+            } => {
+                assert_eq!(formula, "postgresql");
             }
+            _ => panic!("Expected Services Disable command"),
         }
     }
 }
