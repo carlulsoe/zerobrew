@@ -1,5 +1,7 @@
-use serde::Deserialize;
+use serde::de::{self, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
+use std::fmt;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Formula {
@@ -8,9 +10,113 @@ pub struct Formula {
     pub dependencies: Vec<String>,
     /// Dependencies that macOS provides as system libraries.
     /// On Linux, these must be installed explicitly.
-    #[serde(default)]
+    /// Can be either strings or objects like {"pkg": "build"}.
+    #[serde(default, deserialize_with = "deserialize_uses_from_macos")]
     pub uses_from_macos: Vec<String>,
     pub bottle: Bottle,
+}
+
+/// Deserialize uses_from_macos which can contain either strings or objects.
+/// - Strings like "zlib" are runtime dependencies
+/// - Objects like {"flex": "build"} or {"python": "test"} are build/test-time only
+///   and are skipped since we use prebuilt bottles
+fn deserialize_uses_from_macos<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct UsesFromMacosVisitor;
+
+    impl<'de> Visitor<'de> for UsesFromMacosVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a sequence of strings or objects with package names as keys")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut result = Vec::new();
+
+            while let Some(item) = seq.next_element::<UsesFromMacosItem>()? {
+                // Only include runtime dependencies (plain strings)
+                // Skip build-time or test-time only dependencies (objects)
+                if let Some(name) = item.runtime_dependency() {
+                    result.push(name);
+                }
+            }
+
+            Ok(result)
+        }
+    }
+
+    deserializer.deserialize_seq(UsesFromMacosVisitor)
+}
+
+/// An item in uses_from_macos: either a string or an object like {"pkg": "build"}.
+/// Objects indicate the dependency is only needed at a specific phase (build/test).
+#[derive(Debug, Clone)]
+enum UsesFromMacosItem {
+    /// Runtime dependency - always needed
+    Runtime(String),
+    /// Build or test time only dependency - not needed for prebuilt bottles
+    BuildOrTestOnly,
+}
+
+impl UsesFromMacosItem {
+    /// Returns the package name if this is a runtime dependency, None otherwise
+    fn runtime_dependency(self) -> Option<String> {
+        match self {
+            UsesFromMacosItem::Runtime(s) => Some(s),
+            UsesFromMacosItem::BuildOrTestOnly => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UsesFromMacosItem {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ItemVisitor;
+
+        impl<'de> Visitor<'de> for ItemVisitor {
+            type Value = UsesFromMacosItem;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string or an object with a package name as key")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(UsesFromMacosItem::Runtime(value.to_string()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(UsesFromMacosItem::Runtime(value))
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                // Objects like {"flex": "build"} or {"python": "test"} indicate
+                // the dependency is only needed at build/test time, not runtime.
+                // Since we use prebuilt bottles, we skip these.
+                // Drain all entries
+                while map.next_entry::<String, String>()?.is_some() {}
+                Ok(UsesFromMacosItem::BuildOrTestOnly)
+            }
+        }
+
+        deserializer.deserialize_any(ItemVisitor)
+    }
 }
 
 impl Formula {
@@ -114,5 +220,37 @@ mod tests {
         let fixture = include_str!("../fixtures/formula_foo.json");
         let formula: Formula = serde_json::from_str(fixture).unwrap();
         assert_eq!(formula.bottle.stable.rebuild, 0);
+    }
+
+    #[test]
+    fn uses_from_macos_handles_mixed_formats() {
+        // Test that uses_from_macos handles both strings and objects:
+        // - Strings like "zlib" are runtime dependencies and included
+        // - Objects like {"flex": "build"} are build/test-time only and excluded
+        let json = r#"{
+            "name": "test",
+            "versions": {"stable": "1.0.0"},
+            "dependencies": [],
+            "uses_from_macos": [
+                {"flex": "build"},
+                "libffi",
+                {"python": "test"},
+                "zlib"
+            ],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        "arm64_sonoma": {
+                            "url": "https://example.com/test.tar.gz",
+                            "sha256": "abc123"
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let formula: Formula = serde_json::from_str(json).unwrap();
+        // Only runtime deps (strings) should be included, not build/test-time (objects)
+        assert_eq!(formula.uses_from_macos, vec!["libffi", "zlib"]);
     }
 }

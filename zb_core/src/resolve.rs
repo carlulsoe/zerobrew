@@ -61,9 +61,16 @@ fn compute_closure(
             continue;
         }
 
-        let formula = formulas
-            .get(&name)
-            .ok_or_else(|| Error::MissingFormula { name: name.clone() })?;
+        // Root package must exist; dependencies can be skipped if missing
+        // (e.g., uses_from_macos deps that don't have Homebrew formulas)
+        let Some(formula) = formulas.get(&name) else {
+            if name == root {
+                return Err(Error::MissingFormula { name });
+            }
+            // Skip missing dependency - remove from closure since we can't process it
+            closure.remove(&name);
+            continue;
+        };
 
         // Use effective_dependencies() to include uses_from_macos on Linux
         let mut deps = formula.effective_dependencies();
@@ -86,9 +93,10 @@ fn build_graph(
     let mut adjacency: AdjacencyMap = BTreeMap::new();
 
     for name in closure {
-        let formula = formulas
-            .get(name)
-            .ok_or_else(|| Error::MissingFormula { name: name.clone() })?;
+        // Skip formulas not in the map (shouldn't happen after compute_closure filtering)
+        let Some(formula) = formulas.get(name) else {
+            continue;
+        };
         // Use effective_dependencies() to include uses_from_macos on Linux
         let mut deps = formula.effective_dependencies();
         deps.sort();

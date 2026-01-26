@@ -166,13 +166,15 @@ impl Installer {
 
         let mut formulas = BTreeMap::new();
         let mut fetched: HashSet<String> = HashSet::new();
+        let mut skipped: HashSet<String> = HashSet::new();
         let mut to_fetch: Vec<String> = vec![name.to_string()];
+        let root_name = name.to_string();
 
         while !to_fetch.is_empty() {
             // Fetch current batch in parallel
             let batch: Vec<String> = to_fetch
                 .drain(..)
-                .filter(|n| !fetched.contains(n))
+                .filter(|n| !fetched.contains(n) && !skipped.contains(n))
                 .collect();
 
             if batch.is_empty() {
@@ -194,16 +196,31 @@ impl Installer {
 
             // Process results and queue new dependencies
             for (i, result) in results.into_iter().enumerate() {
-                let formula = result?;
+                let pkg_name = &batch[i];
 
-                // Queue dependencies for next batch
-                for dep in &formula.dependencies {
-                    if !fetched.contains(dep) && !to_fetch.contains(dep) {
-                        to_fetch.push(dep.clone());
+                match result {
+                    Ok(formula) => {
+                        // Queue dependencies for next batch
+                        // Use effective_dependencies() to include uses_from_macos on Linux
+                        for dep in formula.effective_dependencies() {
+                            if !fetched.contains(&dep)
+                                && !to_fetch.contains(&dep)
+                                && !skipped.contains(&dep)
+                            {
+                                to_fetch.push(dep);
+                            }
+                        }
+
+                        formulas.insert(pkg_name.clone(), formula);
                     }
+                    Err(Error::MissingFormula { .. }) if *pkg_name != root_name => {
+                        // For dependencies (not the root package), skip missing formulas.
+                        // This can happen with uses_from_macos deps like "python" that
+                        // don't have an exact Homebrew formula match.
+                        skipped.insert(pkg_name.clone());
+                    }
+                    Err(e) => return Err(e),
                 }
-
-                formulas.insert(batch[i].clone(), formula);
             }
         }
 
