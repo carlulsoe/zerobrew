@@ -151,6 +151,26 @@ enum Commands {
         /// Tap to remove (in user/repo format)
         user_repo: String,
     },
+
+    /// Create symlinks for a keg (installed formula)
+    Link {
+        /// Formula name to link
+        formula: String,
+
+        /// Overwrite existing symlinks from other kegs
+        #[arg(long)]
+        overwrite: bool,
+
+        /// Link keg-only formulas that are normally not linked
+        #[arg(long, short)]
+        force: bool,
+    },
+
+    /// Remove symlinks for a keg (keeps the formula installed)
+    Unlink {
+        /// Formula name to unlink
+        formula: String,
+    },
 }
 
 #[tokio::main]
@@ -1574,6 +1594,143 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 style("✓").green().bold(),
                 style(&user_repo).bold()
             );
+        }
+
+        Commands::Link { formula, overwrite, force } => {
+            // Check if installed
+            if !installer.is_installed(&formula) {
+                eprintln!(
+                    "{} Formula '{}' is not installed.",
+                    style("error:").red().bold(),
+                    formula
+                );
+                std::process::exit(1);
+            }
+
+            // Check if it's a keg-only formula (if not force)
+            if !force {
+                if let Ok(api_formula) = installer.get_formula(&formula).await {
+                    if api_formula.keg_only {
+                        eprintln!(
+                            "{} {} is keg-only, which means it was not symlinked into {}",
+                            style("Warning:").yellow().bold(),
+                            formula,
+                            cli.prefix.display()
+                        );
+                        if let Some(ref reason) = api_formula.keg_only_reason {
+                            if !reason.explanation.is_empty() {
+                                eprintln!();
+                                eprintln!("{}", reason.explanation);
+                            }
+                        }
+                        eprintln!();
+                        eprintln!(
+                            "If you need to have {} first in your PATH, run:",
+                            formula
+                        );
+                        eprintln!(
+                            "  {} link --force {}",
+                            style("zb").cyan(),
+                            formula
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            println!(
+                "{} Linking {}...",
+                style("==>").cyan().bold(),
+                style(&formula).bold()
+            );
+
+            match installer.link(&formula, overwrite, force) {
+                Ok(result) => {
+                    if result.already_linked {
+                        println!(
+                            "{} {} is already linked",
+                            style("==>").cyan().bold(),
+                            style(&formula).bold()
+                        );
+                    } else if result.files_linked == 0 {
+                        println!(
+                            "{} {} has no files to link",
+                            style("==>").cyan().bold(),
+                            style(&formula).bold()
+                        );
+                    } else {
+                        println!(
+                            "{} {} Linked {} files for {}",
+                            style("==>").cyan().bold(),
+                            style("✓").green(),
+                            result.files_linked,
+                            style(&formula).bold()
+                        );
+                        if result.keg_only_forced {
+                            println!(
+                                "    {} This is a keg-only formula - it was linked with --force",
+                                style("→").dim()
+                            );
+                        }
+                    }
+                }
+                Err(zb_core::Error::LinkConflict { path }) => {
+                    eprintln!(
+                        "{} Could not link {}:",
+                        style("error:").red().bold(),
+                        formula
+                    );
+                    eprintln!();
+                    eprintln!(
+                        "  {} already exists",
+                        path.display()
+                    );
+                    eprintln!();
+                    eprintln!(
+                        "To overwrite existing files, run:\n  {} link --overwrite {}",
+                        style("zb").cyan(),
+                        formula
+                    );
+                    std::process::exit(1);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Commands::Unlink { formula } => {
+            // Check if installed
+            if !installer.is_installed(&formula) {
+                eprintln!(
+                    "{} Formula '{}' is not installed.",
+                    style("error:").red().bold(),
+                    formula
+                );
+                std::process::exit(1);
+            }
+
+            println!(
+                "{} Unlinking {}...",
+                style("==>").cyan().bold(),
+                style(&formula).bold()
+            );
+
+            let unlinked = installer.unlink(&formula)?;
+
+            if unlinked == 0 {
+                println!(
+                    "{} {} has no linked files",
+                    style("==>").cyan().bold(),
+                    style(&formula).bold()
+                );
+            } else {
+                println!(
+                    "{} {} Unlinked {} files for {}",
+                    style("==>").cyan().bold(),
+                    style("✓").green(),
+                    unlinked,
+                    style(&formula).bold()
+                );
+            }
         }
     }
 

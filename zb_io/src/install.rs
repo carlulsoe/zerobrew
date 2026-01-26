@@ -1093,6 +1093,114 @@ impl Installer {
     pub fn tap_manager(&self) -> &TapManager {
         &self.tap_manager
     }
+
+    // ========== Link Operations ==========
+
+    /// Link an installed keg's executables to the prefix.
+    ///
+    /// This creates symlinks in `prefix/bin` and `prefix/opt` for the installed package.
+    /// By default, will error if conflicting symlinks exist (from other packages).
+    ///
+    /// # Arguments
+    /// * `name` - The package name to link
+    /// * `overwrite` - If true, overwrite any existing symlinks that conflict
+    /// * `force` - If true, link even if the formula is keg-only
+    ///
+    /// Returns the number of files linked
+    pub fn link(&mut self, name: &str, overwrite: bool, force: bool) -> Result<LinkResult, Error> {
+        // Check if installed
+        let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
+            name: name.to_string(),
+        })?;
+
+        let keg_path = self.cellar.keg_path(name, &installed.version);
+
+        // Check if already linked
+        if self.linker.is_linked(&keg_path) {
+            return Ok(LinkResult {
+                files_linked: 0,
+                already_linked: true,
+                keg_only_forced: false,
+            });
+        }
+
+        // If overwrite is requested, unlink first (removes any conflicting symlinks)
+        if overwrite {
+            // First unlink this package's old links if any exist in the database
+            let _ = self.linker.unlink_keg(&keg_path);
+            self.db.clear_linked_files(name)?;
+        }
+
+        // Perform the link
+        let linked_files = self.linker.link_keg(&keg_path)?;
+
+        // Record the links in the database
+        for linked in &linked_files {
+            self.db.record_linked_file(
+                name,
+                &installed.version,
+                &linked.link_path.to_string_lossy(),
+                &linked.target_path.to_string_lossy(),
+            )?;
+        }
+
+        Ok(LinkResult {
+            files_linked: linked_files.len(),
+            already_linked: false,
+            keg_only_forced: force,
+        })
+    }
+
+    /// Unlink an installed keg's executables from the prefix.
+    ///
+    /// This removes symlinks in `prefix/bin` and `prefix/opt` for the installed package
+    /// but keeps the package installed in the Cellar.
+    ///
+    /// Returns the number of files unlinked
+    pub fn unlink(&mut self, name: &str) -> Result<usize, Error> {
+        // Check if installed
+        let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
+            name: name.to_string(),
+        })?;
+
+        let keg_path = self.cellar.keg_path(name, &installed.version);
+
+        // Unlink the keg
+        let unlinked = self.linker.unlink_keg(&keg_path)?;
+
+        // Clear linked files from database
+        self.db.clear_linked_files(name)?;
+
+        Ok(unlinked.len())
+    }
+
+    /// Check if a keg is currently linked
+    pub fn is_linked(&self, name: &str) -> bool {
+        if let Some(installed) = self.db.get_installed(name) {
+            let keg_path = self.cellar.keg_path(name, &installed.version);
+            self.linker.is_linked(&keg_path)
+        } else {
+            false
+        }
+    }
+
+    /// Get the keg path for an installed package
+    pub fn keg_path(&self, name: &str) -> Option<PathBuf> {
+        self.db.get_installed(name).map(|keg| {
+            self.cellar.keg_path(name, &keg.version)
+        })
+    }
+}
+
+/// Result of a link operation
+#[derive(Debug, Clone)]
+pub struct LinkResult {
+    /// Number of files that were linked
+    pub files_linked: usize,
+    /// True if the keg was already linked (no changes made)
+    pub already_linked: bool,
+    /// True if --force was used to link a keg-only formula
+    pub keg_only_forced: bool,
 }
 
 /// Create an Installer with standard paths
@@ -3380,5 +3488,405 @@ mod tests {
         // Should NOT have removed the blob (package still installed)
         assert_eq!(result.blobs_removed, 0);
         assert!(blob_path.exists());
+    }
+
+    // ========== Link/Unlink Tests ==========
+
+    #[tokio::test]
+    async fn link_creates_symlinks() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("linkpkg");
+        let bottle_sha = sha256_hex(&bottle);
+
+        // Create formula JSON
+        let formula_json = format!(
+            r#"{{
+                "name": "linkpkg",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/linkpkg-1.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "{sha}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri(),
+            sha = bottle_sha
+        );
+
+        // Mount mocks
+        Mock::given(method("GET"))
+            .and(path("/linkpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/linkpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // Install without linking
+        installer.install("linkpkg", false).await.unwrap();
+
+        // Verify not linked
+        assert!(!prefix.join("bin/linkpkg").exists());
+        assert!(!installer.is_linked("linkpkg"));
+
+        // Link manually
+        let result = installer.link("linkpkg", false, false).unwrap();
+        assert_eq!(result.files_linked, 1);
+        assert!(!result.already_linked);
+
+        // Verify linked
+        assert!(prefix.join("bin/linkpkg").exists());
+        assert!(installer.is_linked("linkpkg"));
+
+        // Verify database records
+        let linked_files = installer.get_linked_files("linkpkg").unwrap();
+        assert_eq!(linked_files.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unlink_removes_symlinks_but_keeps_installed() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("unlinkpkg");
+        let bottle_sha = sha256_hex(&bottle);
+
+        // Create formula JSON
+        let formula_json = format!(
+            r#"{{
+                "name": "unlinkpkg",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/unlinkpkg-1.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "{sha}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri(),
+            sha = bottle_sha
+        );
+
+        // Mount mocks
+        Mock::given(method("GET"))
+            .and(path("/unlinkpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/unlinkpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // Install with linking
+        installer.install("unlinkpkg", true).await.unwrap();
+
+        // Verify linked
+        assert!(prefix.join("bin/unlinkpkg").exists());
+        assert!(installer.is_linked("unlinkpkg"));
+
+        // Unlink
+        let unlinked = installer.unlink("unlinkpkg").unwrap();
+        assert_eq!(unlinked, 1);
+
+        // Verify unlinked but still installed
+        assert!(!prefix.join("bin/unlinkpkg").exists());
+        assert!(!installer.is_linked("unlinkpkg"));
+        assert!(installer.is_installed("unlinkpkg"));
+
+        // Verify database cleared linked files
+        let linked_files = installer.get_linked_files("unlinkpkg").unwrap();
+        assert!(linked_files.is_empty());
+
+        // Keg should still exist
+        assert!(root.join("cellar/unlinkpkg/1.0.0").exists());
+    }
+
+    #[tokio::test]
+    async fn link_already_linked_returns_already_linked() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("alreadylinked");
+        let bottle_sha = sha256_hex(&bottle);
+
+        // Create formula JSON
+        let formula_json = format!(
+            r#"{{
+                "name": "alreadylinked",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/alreadylinked-1.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "{sha}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri(),
+            sha = bottle_sha
+        );
+
+        // Mount mocks
+        Mock::given(method("GET"))
+            .and(path("/alreadylinked.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/alreadylinked-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // Install with linking
+        installer.install("alreadylinked", true).await.unwrap();
+
+        // Try to link again
+        let result = installer.link("alreadylinked", false, false).unwrap();
+        assert!(result.already_linked);
+        assert_eq!(result.files_linked, 0);
+    }
+
+    #[tokio::test]
+    async fn link_not_installed_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::new();
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // Try to link non-existent package
+        let result = installer.link("notinstalled", false, false);
+        assert!(matches!(result, Err(Error::NotInstalled { .. })));
+    }
+
+    #[tokio::test]
+    async fn unlink_not_installed_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::new();
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // Try to unlink non-existent package
+        let result = installer.unlink("notinstalled");
+        assert!(matches!(result, Err(Error::NotInstalled { .. })));
+    }
+
+    #[tokio::test]
+    async fn unlink_then_relink_works() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("relinkpkg");
+        let bottle_sha = sha256_hex(&bottle);
+
+        // Create formula JSON
+        let formula_json = format!(
+            r#"{{
+                "name": "relinkpkg",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/relinkpkg-1.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "{sha}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri(),
+            sha = bottle_sha
+        );
+
+        // Mount mocks
+        Mock::given(method("GET"))
+            .and(path("/relinkpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/relinkpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // Install with linking
+        installer.install("relinkpkg", true).await.unwrap();
+        assert!(installer.is_linked("relinkpkg"));
+
+        // Unlink
+        installer.unlink("relinkpkg").unwrap();
+        assert!(!installer.is_linked("relinkpkg"));
+        assert!(!prefix.join("bin/relinkpkg").exists());
+
+        // Relink
+        let result = installer.link("relinkpkg", false, false).unwrap();
+        assert_eq!(result.files_linked, 1);
+        assert!(!result.already_linked);
+        assert!(installer.is_linked("relinkpkg"));
+        assert!(prefix.join("bin/relinkpkg").exists());
+
+        // Verify database has the linked files again
+        let linked_files = installer.get_linked_files("relinkpkg").unwrap();
+        assert_eq!(linked_files.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn is_linked_returns_false_for_uninstalled_package() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::new();
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // is_linked should return false for uninstalled package
+        assert!(!installer.is_linked("nonexistent"));
     }
 }

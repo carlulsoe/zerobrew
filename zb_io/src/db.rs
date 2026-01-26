@@ -410,6 +410,39 @@ impl Database {
         Ok(files)
     }
 
+    /// Clear all linked files records for a package (used when unlinking)
+    pub fn clear_linked_files(&self, name: &str) -> Result<usize, Error> {
+        let rows_affected = self
+            .conn
+            .execute("DELETE FROM keg_files WHERE name = ?1", params![name])
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to clear linked files: {e}"),
+            })?;
+
+        Ok(rows_affected)
+    }
+
+    /// Record a linked file for a package (non-transactional version)
+    pub fn record_linked_file(
+        &self,
+        name: &str,
+        version: &str,
+        linked_path: &str,
+        target_path: &str,
+    ) -> Result<(), Error> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO keg_files (name, version, linked_path, target_path)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![name, version, linked_path, target_path],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to record linked file: {e}"),
+            })?;
+
+        Ok(())
+    }
+
     // ========== Tap Operations ==========
 
     /// Add a tap to the database
@@ -1020,5 +1053,119 @@ mod tests {
         assert_eq!(taps[0].name, "alpha/utils");
         assert_eq!(taps[1].name, "mike/apps");
         assert_eq!(taps[2].name, "zulu/tools");
+    }
+
+    #[test]
+    fn clear_linked_files_removes_all_links_for_package() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("linktest", "1.0.0", "abc123", true).unwrap();
+            tx.record_linked_file(
+                "linktest",
+                "1.0.0",
+                "/opt/homebrew/bin/linktest",
+                "/opt/zerobrew/cellar/linktest/1.0.0/bin/linktest",
+            )
+            .unwrap();
+            tx.record_linked_file(
+                "linktest",
+                "1.0.0",
+                "/opt/homebrew/bin/linktest-tool",
+                "/opt/zerobrew/cellar/linktest/1.0.0/bin/linktest-tool",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Verify links recorded
+        let links = db.get_linked_files("linktest").unwrap();
+        assert_eq!(links.len(), 2);
+
+        // Clear links
+        let cleared = db.clear_linked_files("linktest").unwrap();
+        assert_eq!(cleared, 2);
+
+        // Verify links removed
+        let links_after = db.get_linked_files("linktest").unwrap();
+        assert!(links_after.is_empty());
+
+        // Package still installed
+        assert!(db.get_installed("linktest").is_some());
+    }
+
+    #[test]
+    fn clear_linked_files_returns_zero_for_no_links() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("nolinks", "1.0.0", "def456", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // No links to clear
+        let cleared = db.clear_linked_files("nolinks").unwrap();
+        assert_eq!(cleared, 0);
+    }
+
+    #[test]
+    fn record_linked_file_non_transactional() {
+        let mut db = Database::in_memory().unwrap();
+
+        // First install the package
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("nontx", "1.0.0", "ghi789", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Use non-transactional record_linked_file
+        db.record_linked_file(
+            "nontx",
+            "1.0.0",
+            "/opt/homebrew/bin/nontx",
+            "/opt/zerobrew/cellar/nontx/1.0.0/bin/nontx",
+        )
+        .unwrap();
+
+        // Verify recorded
+        let links = db.get_linked_files("nontx").unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "/opt/homebrew/bin/nontx");
+    }
+
+    #[test]
+    fn record_linked_file_non_transactional_replaces_existing() {
+        let mut db = Database::in_memory().unwrap();
+
+        // First install the package with a link
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("replace", "1.0.0", "jkl012", true).unwrap();
+            tx.record_linked_file(
+                "replace",
+                "1.0.0",
+                "/opt/homebrew/bin/replace",
+                "/opt/zerobrew/cellar/replace/1.0.0/bin/replace-old",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Use non-transactional to update the same link path
+        db.record_linked_file(
+            "replace",
+            "1.0.0",
+            "/opt/homebrew/bin/replace",
+            "/opt/zerobrew/cellar/replace/1.0.0/bin/replace-new",
+        )
+        .unwrap();
+
+        // Should have 1 link with new target
+        let links = db.get_linked_files("replace").unwrap();
+        assert_eq!(links.len(), 1);
+        assert!(links[0].1.contains("replace-new"));
     }
 }

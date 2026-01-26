@@ -718,6 +718,82 @@ $ zb cleanup
 - `test_format_bytes_megabytes` - Tests MB formatting
 - `test_format_bytes_gigabytes` - Tests GB formatting
 
+### 14. Implemented Link/Unlink Commands (Phase 2.4) ✅
+
+**Files modified:**
+- `zb_io/src/install.rs` - Added `link()`, `unlink()`, `is_linked()`, `keg_path()` methods and `LinkResult` type
+- `zb_io/src/lib.rs` - Exported `LinkResult` type
+- `zb_io/src/db.rs` - Added `clear_linked_files()` and non-transactional `record_linked_file()` methods
+- `zb_cli/src/main.rs` - Added `zb link` and `zb unlink` commands with `--force` and `--overwrite` flags
+
+**Features:**
+- Link keg executables: `zb link <formula>` - Creates symlinks in prefix/bin and prefix/opt
+- Unlink keg executables: `zb unlink <formula>` - Removes symlinks but keeps package installed
+- Force link keg-only formulas: `zb link --force <formula>` - Links formulas normally not linked
+- Overwrite conflicting symlinks: `zb link --overwrite <formula>` - Overwrites existing symlinks
+- Status tracking: `is_linked()` method checks if a keg is currently linked
+- Database tracking: Links are recorded in keg_files table for accurate tracking
+
+**Link command behavior:**
+- Checks if package is installed before linking
+- For keg-only formulas, shows warning and requires `--force` flag
+- Returns `already_linked: true` if keg is already linked (no changes made)
+- Creates symlinks via underlying Linker and records them in database
+- Handles link conflicts with helpful error messages suggesting `--overwrite`
+
+**Unlink command behavior:**
+- Checks if package is installed before unlinking
+- Removes all symlinks for the keg from prefix
+- Clears linked file records from database
+- Keeps package installed in Cellar
+
+**Example usage:**
+```bash
+# Link a package that was installed without linking
+$ zb link git
+==> Linking git...
+==> ✓ Linked 15 files for git
+
+# Try to link a keg-only formula (e.g., openssl)
+$ zb link openssl@3
+Warning: openssl@3 is keg-only, which means it was not symlinked into /opt/zerobrew/prefix
+
+If you need to have openssl@3 first in your PATH, run:
+  zb link --force openssl@3
+
+# Force link a keg-only formula
+$ zb link --force openssl@3
+==> Linking openssl@3...
+==> ✓ Linked 42 files for openssl@3
+    → This is a keg-only formula - it was linked with --force
+
+# Unlink a package (keeps it installed)
+$ zb unlink git
+==> Unlinking git...
+==> ✓ Unlinked 15 files for git
+
+# Package is still installed after unlinking
+$ zb list
+git 2.44.0 (not linked)
+```
+
+**New tests (15 total):**
+
+*Installer tests (8):*
+- `link_creates_symlinks` - Tests linking a package not initially linked
+- `unlink_removes_symlinks_but_keeps_installed` - Tests unlink keeps package in Cellar
+- `link_already_linked_returns_already_linked` - Tests idempotent linking
+- `link_not_installed_returns_error` - Tests NotInstalled error
+- `unlink_not_installed_returns_error` - Tests NotInstalled error
+- `unlink_then_relink_works` - Tests full unlink/relink cycle
+- `is_linked_returns_false_for_uninstalled_package` - Tests is_linked on nonexistent package
+
+*Database tests (4):*
+- `clear_linked_files_removes_all_links_for_package` - Tests clearing links
+- `clear_linked_files_returns_zero_for_no_links` - Tests empty case
+- `record_linked_file_non_transactional` - Tests non-tx version of record_linked_file
+- `record_linked_file_non_transactional_replaces_existing` - Tests upsert behavior
+
 ---
 
 ## Phase 2 Progress
@@ -727,7 +803,7 @@ $ zb cleanup
 | 2.1 Tap support | ✅ Complete |
 | 2.2 Formula Ruby parser | ✅ Complete |
 | 2.3 Cleanup command | ✅ Complete |
-| 2.4 Link/unlink commands | ⏳ Pending |
+| 2.4 Link/unlink commands | ✅ Complete |
 | 2.5 Deps/uses commands | ⏳ Pending |
 | 2.6 Leaves command | ⏳ Pending |
 | 2.7 Doctor command | ⏳ Pending |
@@ -736,10 +812,9 @@ $ zb cleanup
 
 ## Next Steps (Remaining Phase 2)
 
-1. Implement link/unlink commands (2.4)
-2. Implement deps/uses commands (2.5)
-3. Implement leaves command (2.6)
-4. Implement doctor command (2.7)
+1. Implement deps/uses commands (2.5)
+2. Implement leaves command (2.6)
+3. Implement doctor command (2.7)
 
 ---
 
@@ -757,3 +832,4 @@ $ zb cleanup
 - Ruby formula parser uses tree-sitter for reliable parsing without Ruby interpreter
 - Tap support now works with both JSON and Ruby formulas
 - Cleanup command now includes HTTP cache cleanup with prune days support
+- Link/unlink commands allow fine-grained control over symlink creation
