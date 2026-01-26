@@ -48,33 +48,27 @@ fn get_platform_tags() -> &'static [&'static str] {
 
 /// Check if a tag is for the current platform family (for fallback selection)
 fn is_compatible_fallback_tag(tag: &str) -> bool {
+    // macOS: any arm64 macOS bottle (but not linux)
     #[cfg(target_os = "macos")]
-    {
-        // Any arm64 macOS bottle, but not linux
-        tag.starts_with("arm64_") && !tag.contains("linux")
-    }
+    return tag.starts_with("arm64_") && !tag.contains("linux");
 
-    #[cfg(target_os = "linux")]
-    {
-        // Any linux bottle matching our architecture
-        #[cfg(target_arch = "aarch64")]
-        {
-            tag == "arm64_linux"
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            tag == "x86_64_linux"
-        }
-        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-        {
-            false
-        }
-    }
+    // Linux arm64: only arm64_linux
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    return tag == "arm64_linux";
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    // Linux x86_64: only x86_64_linux
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return tag == "x86_64_linux";
+
+    // Unsupported platforms
+    #[cfg(not(any(
+        target_os = "macos",
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+    )))]
     {
         let _ = tag;
-        false
+        return false;
     }
 }
 

@@ -88,6 +88,7 @@ impl Installer {
                 Err(Error::UnsupportedBottle { .. }) if formula_name != name => {
                     // Skip dependencies without compatible bottles (e.g., libiconv on Linux)
                     // But fail if the root package doesn't have a compatible bottle
+                    eprintln!("    Note: skipping dependency '{}' (no compatible bottle for this platform)", formula_name);
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -225,6 +226,7 @@ impl Installer {
                         // For dependencies (not the root package), skip missing formulas.
                         // This can happen with uses_from_macos deps like "python" that
                         // don't have an exact Homebrew formula match.
+                        eprintln!("    Note: skipping dependency '{}' (formula not found)", pkg_name);
                         skipped.insert(pkg_name.clone());
                     }
                     Err(e) => return Err(e),
@@ -1280,5 +1282,112 @@ mod tests {
         // - Second attempt: re-download, extraction fails (corruption)
         // - Third attempt: re-download, extraction fails (corruption)
         // - Returns error: "Failed after 3 attempts..."
+    }
+
+    /// Tests that uses_from_macos dependencies without Linux bottles are skipped on Linux.
+    /// On Linux, uses_from_macos dependencies are treated as regular dependencies,
+    /// but if a dependency only has macOS bottles (no Linux bottles), it should be
+    /// skipped rather than causing the install to fail.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn install_skips_macos_only_uses_from_macos_deps() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle for main package (has Linux bottle)
+        let main_bottle = create_bottle_tarball("mainpkg");
+        let main_sha = sha256_hex(&main_bottle);
+
+        // Main package formula that depends on a macOS-only package via uses_from_macos
+        let main_json = format!(
+            r#"{{
+                "name": "mainpkg",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "uses_from_macos": ["macos-only-dep"],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/mainpkg-1.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "{sha}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri(),
+            sha = main_sha
+        );
+
+        // macos-only-dep formula: only has macOS bottles, no Linux bottles
+        let macos_only_json = format!(
+            r#"{{
+                "name": "macos-only-dep",
+                "versions": {{ "stable": "2.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "arm64_sonoma": {{
+                                "url": "{base}/bottles/macos-only-dep-2.0.0.arm64_sonoma.bottle.tar.gz",
+                                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            base = mock_server.uri()
+        );
+
+        // Mount formula API mocks
+        Mock::given(method("GET"))
+            .and(path("/mainpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&main_json))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/macos-only-dep.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&macos_only_json))
+            .mount(&mock_server)
+            .await;
+
+        // Mount bottle download mock (only for main package)
+        let main_bottle_path = format!("/bottles/mainpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(main_bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(main_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install main package - should succeed despite macos-only-dep not having Linux bottles
+        let result = installer.install("mainpkg", true).await;
+        assert!(result.is_ok(), "Install should succeed: {:?}", result.err());
+
+        // Main package should be installed
+        assert!(installer.is_installed("mainpkg"));
+        assert!(root.join("cellar/mainpkg/1.0.0").exists());
+        assert!(prefix.join("bin/mainpkg").exists());
+
+        // macos-only-dep should NOT be installed (skipped due to no Linux bottle)
+        assert!(!installer.is_installed("macos-only-dep"));
+        assert!(!root.join("cellar/macos-only-dep").exists());
     }
 }

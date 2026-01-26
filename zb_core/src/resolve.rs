@@ -68,6 +68,7 @@ fn compute_closure(
                 return Err(Error::MissingFormula { name });
             }
             // Skip missing dependency - remove from closure since we can't process it
+            eprintln!("    Note: skipping unavailable dependency '{}'", name);
             closure.remove(&name);
             continue;
         };

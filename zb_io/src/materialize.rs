@@ -4,6 +4,69 @@ use std::path::{Path, PathBuf};
 
 use zb_core::Error;
 
+/// Helper to convert io::Result to Error::StoreCorruption with context
+fn store_err<T>(result: std::io::Result<T>, context: &str) -> Result<T, Error> {
+    result.map_err(|e| Error::StoreCorruption {
+        message: format!("{}: {}", context, e),
+    })
+}
+
+/// RAII guard that temporarily makes a file writable and restores original permissions on drop.
+///
+/// This is useful when modifying read-only files (common with Homebrew bottles).
+/// The guard will:
+/// 1. Check if the file is read-only (missing owner write permission)
+/// 2. If so, make it writable
+/// 3. On drop, restore the original permissions
+#[cfg(unix)]
+struct WriteGuard {
+    path: PathBuf,
+    original_mode: Option<u32>,
+}
+
+#[cfg(unix)]
+impl WriteGuard {
+    /// Create a new WriteGuard for the given path.
+    ///
+    /// If the file is read-only, it will be made writable.
+    /// Returns an error if the file metadata cannot be read or permissions cannot be changed.
+    fn new(path: &Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(path)?;
+        let mode = metadata.permissions().mode();
+
+        if mode & 0o200 == 0 {
+            // Read-only, make writable
+            let mut perms = metadata.permissions();
+            perms.set_mode(mode | 0o200);
+            fs::set_permissions(path, perms)?;
+            Ok(Self {
+                path: path.to_path_buf(),
+                original_mode: Some(mode),
+            })
+        } else {
+            Ok(Self {
+                path: path.to_path_buf(),
+                original_mode: None,
+            })
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for WriteGuard {
+    fn drop(&mut self) {
+        if let Some(mode) = self.original_mode {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = fs::metadata(&self.path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(mode);
+                let _ = fs::set_permissions(&self.path, perms);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyStrategy {
     Clonefile,
@@ -94,6 +157,66 @@ impl Cellar {
     }
 }
 
+/// Patch a single path string by replacing Homebrew placeholders and fixing version mismatches.
+///
+/// This is a shared helper used by both macOS (Mach-O) and Linux (ELF) patching functions.
+///
+/// # Arguments
+/// * `path` - The path string to patch (e.g., an RPATH entry or library path)
+/// * `cellar_str` - The replacement value for @@HOMEBREW_CELLAR@@
+/// * `prefix_str` - The replacement value for @@HOMEBREW_PREFIX@@
+/// * `version_regex` - Optional regex to match version mismatches in paths
+/// * `pkg_name` - The package name (used for version mismatch replacement)
+/// * `pkg_version` - The package version (used for version mismatch replacement)
+///
+/// # Returns
+/// * `Some(new_path)` if the path was modified
+/// * `None` if no changes were needed
+fn patch_homebrew_path(
+    path: &str,
+    cellar_str: &str,
+    prefix_str: &str,
+    version_regex: Option<&regex::Regex>,
+    pkg_name: &str,
+    pkg_version: &str,
+) -> Option<String> {
+    let mut new_path = path.to_string();
+    let mut changed = false;
+
+    // Replace Homebrew placeholders
+    if path.contains("@@HOMEBREW_CELLAR@@") || path.contains("@@HOMEBREW_PREFIX@@") {
+        new_path = new_path
+            .replace("@@HOMEBREW_CELLAR@@", cellar_str)
+            .replace("@@HOMEBREW_PREFIX@@", prefix_str);
+        changed = true;
+    }
+
+    // Fix version mismatches for this package
+    if let Some(re) = version_regex
+        && re.is_match(&new_path)
+    {
+        let replacement = format!("/{}/{}/", pkg_name, pkg_version);
+        let fixed = re.replace(&new_path, |caps: &regex::Captures| {
+            let matched_version = &caps[2];
+            if matched_version != pkg_version {
+                replacement.clone()
+            } else {
+                caps[0].to_string()
+            }
+        });
+        if fixed != new_path {
+            new_path = fixed.to_string();
+            changed = true;
+        }
+    }
+
+    if changed && new_path != path {
+        Some(new_path)
+    } else {
+        None
+    }
+}
+
 /// Find the bottle content directory inside a store entry.
 /// Homebrew bottles have structure {name}/{version}/ inside the tarball.
 /// This function finds that directory, falling back to the store_entry root
@@ -179,64 +302,16 @@ fn patch_homebrew_placeholders(
     // Track patch failures
     let patch_failures = AtomicUsize::new(0);
 
-    // Helper to patch a single path reference
-    let patch_path = |old_path: &str| -> Option<String> {
-        let mut new_path = old_path.to_string();
-        let mut changed = false;
-
-        // Replace Homebrew placeholders
-        if old_path.contains("@@HOMEBREW_CELLAR@@") || old_path.contains("@@HOMEBREW_PREFIX@@") {
-            new_path = new_path
-                .replace("@@HOMEBREW_CELLAR@@", &cellar_str)
-                .replace("@@HOMEBREW_PREFIX@@", &prefix_str);
-            changed = true;
-        }
-
-        // Fix version mismatches for this package
-        if let Some(re) = &version_regex
-            && re.is_match(&new_path)
-        {
-            let replacement = format!("/{}/{}/", pkg_name, pkg_version);
-            let fixed = re.replace(&new_path, |caps: &regex::Captures| {
-                let matched_version = &caps[2];
-                if matched_version != pkg_version {
-                    replacement.clone()
-                } else {
-                    caps[0].to_string()
-                }
-            });
-            if fixed != new_path {
-                new_path = fixed.to_string();
-                changed = true;
-            }
-        }
-
-        if changed && new_path != old_path {
-            Some(new_path)
-        } else {
-            None
-        }
-    };
-
     // Process Mach-O files in parallel
     macho_files.par_iter().for_each(|path| {
-        // Get file permissions and make writable if needed
-        let metadata = match fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let original_mode = metadata.permissions().mode();
-        let is_readonly = original_mode & 0o200 == 0;
-
-        // Make writable for patching
-        if is_readonly {
-            let mut perms = metadata.permissions();
-            perms.set_mode(original_mode | 0o200);
-            if fs::set_permissions(path, perms).is_err() {
+        // Make file writable if needed (permissions restored automatically on drop)
+        let _guard = match WriteGuard::new(path) {
+            Ok(g) => g,
+            Err(_) => {
                 patch_failures.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-        }
+        };
 
         let mut patched_any = false;
 
@@ -250,7 +325,14 @@ fn patch_homebrew_placeholders(
             for line in stdout.lines() {
                 let line = line.trim();
                 if let Some(old_path) = line.split_whitespace().next()
-                    && let Some(new_path) = patch_path(old_path)
+                    && let Some(new_path) = patch_homebrew_path(
+                        old_path,
+                        &cellar_str,
+                        &prefix_str,
+                        version_regex.as_ref(),
+                        pkg_name,
+                        pkg_version,
+                    )
                 {
                     let result = Command::new("install_name_tool")
                         .args(["-change", old_path, &new_path, &path.to_string_lossy()])
@@ -277,7 +359,14 @@ fn patch_homebrew_placeholders(
                 if line.is_empty() {
                     continue;
                 }
-                if let Some(new_id) = patch_path(line) {
+                if let Some(new_id) = patch_homebrew_path(
+                    line,
+                    &cellar_str,
+                    &prefix_str,
+                    version_regex.as_ref(),
+                    pkg_name,
+                    pkg_version,
+                ) {
                     let result = Command::new("install_name_tool")
                         .args(["-id", &new_id, &path.to_string_lossy()])
                         .output();
@@ -296,13 +385,7 @@ fn patch_homebrew_placeholders(
                 .args(["--force", "--sign", "-", &path.to_string_lossy()])
                 .output();
         }
-
-        // Restore original permissions
-        if is_readonly {
-            let mut perms = metadata.permissions();
-            perms.set_mode(original_mode);
-            let _ = fs::set_permissions(path, perms);
-        }
+        // _guard dropped here, restoring original permissions if needed
     });
 
     let failures = patch_failures.load(Ordering::Relaxed);
@@ -378,31 +461,14 @@ fn codesign_and_strip_xattrs(keg_path: &Path) -> Result<(), Error> {
             return; // Already signed
         }
 
-        // Get permissions and make writable
-        let metadata = match fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let original_mode = metadata.permissions().mode();
-        let is_readonly = original_mode & 0o200 == 0;
-
-        if is_readonly {
-            let mut perms = metadata.permissions();
-            perms.set_mode(original_mode | 0o200);
-            let _ = fs::set_permissions(path, perms);
-        }
+        // Make file writable if needed (permissions restored automatically on drop)
+        let _guard = WriteGuard::new(path).ok();
 
         // Sign the binary
         let _ = Command::new("codesign")
             .args(["--force", "--sign", "-", &path.to_string_lossy()])
             .output();
-
-        // Restore permissions
-        if is_readonly {
-            let mut perms = metadata.permissions();
-            perms.set_mode(original_mode);
-            let _ = fs::set_permissions(path, perms);
-        }
+        // _guard dropped here, restoring original permissions if needed
     });
 
     Ok(())
@@ -419,7 +485,6 @@ fn patch_homebrew_placeholders_linux(
 ) -> Result<(), Error> {
     use rayon::prelude::*;
     use regex::Regex;
-    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -430,8 +495,9 @@ fn patch_homebrew_placeholders_linux(
         .map(|o| !o.status.success())
         .unwrap_or(true)
     {
-        // patchelf not available - skip patching but don't fail
-        // Many simple packages work without rpath patching
+        // patchelf not available - skip patching but warn user
+        eprintln!("    Warning: patchelf not found, skipping ELF patching");
+        eprintln!("    Install patchelf for full Linux compatibility");
         return Ok(());
     }
 
@@ -468,64 +534,16 @@ fn patch_homebrew_placeholders_linux(
     // Track patch failures
     let patch_failures = AtomicUsize::new(0);
 
-    // Helper to patch a single rpath string
-    let patch_rpath = |rpath: &str| -> Option<String> {
-        let mut new_rpath = rpath.to_string();
-        let mut changed = false;
-
-        // Replace Homebrew placeholders
-        if rpath.contains("@@HOMEBREW_CELLAR@@") || rpath.contains("@@HOMEBREW_PREFIX@@") {
-            new_rpath = new_rpath
-                .replace("@@HOMEBREW_CELLAR@@", &cellar_str)
-                .replace("@@HOMEBREW_PREFIX@@", &prefix_str);
-            changed = true;
-        }
-
-        // Fix version mismatches for this package
-        if let Some(re) = &version_regex
-            && re.is_match(&new_rpath)
-        {
-            let replacement = format!("/{}/{}/", pkg_name, pkg_version);
-            let fixed = re.replace(&new_rpath, |caps: &regex::Captures| {
-                let matched_version = &caps[2];
-                if matched_version != pkg_version {
-                    replacement.clone()
-                } else {
-                    caps[0].to_string()
-                }
-            });
-            if fixed != new_rpath {
-                new_rpath = fixed.to_string();
-                changed = true;
-            }
-        }
-
-        if changed && new_rpath != rpath {
-            Some(new_rpath)
-        } else {
-            None
-        }
-    };
-
     // Process ELF files in parallel
     elf_files.par_iter().for_each(|path| {
-        // Get file permissions and make writable if needed
-        let metadata = match fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let original_mode = metadata.permissions().mode();
-        let is_readonly = original_mode & 0o200 == 0;
-
-        // Make writable for patching
-        if is_readonly {
-            let mut perms = metadata.permissions();
-            perms.set_mode(original_mode | 0o200);
-            if fs::set_permissions(path, perms).is_err() {
+        // Make file writable if needed (permissions restored automatically on drop)
+        let _guard = match WriteGuard::new(path) {
+            Ok(g) => g,
+            Err(_) => {
                 patch_failures.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-        }
+        };
 
         // Collect what needs to be patched - we'll apply everything in a single patchelf call
         // to avoid corrupting the binary with multiple invocations
@@ -546,7 +564,17 @@ fn patch_homebrew_placeholders_linux(
                 // Process each path in RPATH (colon-separated)
                 let new_rpath_parts: Vec<String> = current_rpath
                     .split(':')
-                    .map(|p| patch_rpath(p).unwrap_or_else(|| p.to_string()))
+                    .map(|p| {
+                        patch_homebrew_path(
+                            p,
+                            &cellar_str,
+                            &prefix_str,
+                            version_regex.as_ref(),
+                            pkg_name,
+                            pkg_version,
+                        )
+                        .unwrap_or_else(|| p.to_string())
+                    })
                     .collect();
 
                 let patched_rpath = new_rpath_parts.join(":");
@@ -606,20 +634,33 @@ fn patch_homebrew_placeholders_linux(
                 .args(&args)
                 .output();
 
-            if result.map(|o| !o.status.success()).unwrap_or(true) {
-                // Only count RPATH failures, interpreter failures on shared libs are expected
-                if new_rpath.is_some() {
-                    patch_failures.fetch_add(1, Ordering::Relaxed);
+            match result {
+                Ok(output) if !output.status.success() => {
+                    // Only count RPATH failures, interpreter failures on shared libs are expected
+                    if new_rpath.is_some() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        eprintln!(
+                            "    Warning: patchelf failed for {}: {}",
+                            path.display(),
+                            stderr.trim()
+                        );
+                        patch_failures.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
+                Err(e) => {
+                    if new_rpath.is_some() {
+                        eprintln!(
+                            "    Warning: patchelf failed for {}: {}",
+                            path.display(),
+                            e
+                        );
+                        patch_failures.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Ok(_) => {} // Success, nothing to do
             }
         }
-
-        // Restore original permissions
-        if is_readonly {
-            let mut perms = metadata.permissions();
-            perms.set_mode(original_mode);
-            let _ = fs::set_permissions(path, perms);
-        }
+        // _guard dropped here, restoring original permissions if needed
     });
 
     let failures = patch_failures.load(Ordering::Relaxed);
@@ -752,39 +793,34 @@ fn try_reflink_copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path, try_hardlink: bool) -> Result<(), Error> {
-    fs::create_dir_all(dst).map_err(|e| Error::StoreCorruption {
-        message: format!("failed to create directory {}: {e}", dst.display()),
-    })?;
+    store_err(
+        fs::create_dir_all(dst),
+        &format!("failed to create directory {}", dst.display()),
+    )?;
 
-    for entry in fs::read_dir(src).map_err(|e| Error::StoreCorruption {
-        message: format!("failed to read directory {}: {e}", src.display()),
-    })? {
-        let entry = entry.map_err(|e| Error::StoreCorruption {
-            message: format!("failed to read directory entry: {e}"),
-        })?;
+    for entry in store_err(
+        fs::read_dir(src),
+        &format!("failed to read directory {}", src.display()),
+    )? {
+        let entry = store_err(entry, "failed to read directory entry")?;
 
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        let file_type = entry.file_type().map_err(|e| Error::StoreCorruption {
-            message: format!("failed to get file type: {e}"),
-        })?;
+        let file_type = store_err(entry.file_type(), "failed to get file type")?;
 
         if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path, try_hardlink)?;
         } else if file_type.is_symlink() {
-            let target = fs::read_link(&src_path).map_err(|e| Error::StoreCorruption {
-                message: format!("failed to read symlink: {e}"),
-            })?;
+            let target = store_err(fs::read_link(&src_path), "failed to read symlink")?;
 
             #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &dst_path).map_err(|e| Error::StoreCorruption {
-                message: format!("failed to create symlink: {e}"),
-            })?;
+            store_err(
+                std::os::unix::fs::symlink(&target, &dst_path),
+                "failed to create symlink",
+            )?;
 
             #[cfg(not(unix))]
-            fs::copy(&src_path, &dst_path).map_err(|e| Error::StoreCorruption {
-                message: format!("failed to copy symlink as file: {e}"),
-            })?;
+            store_err(fs::copy(&src_path, &dst_path), "failed to copy symlink as file")?;
         } else {
             // Try hardlink first, then copy
             if try_hardlink && fs::hard_link(&src_path, &dst_path).is_ok() {
@@ -792,21 +828,16 @@ fn copy_dir_recursive(src: &Path, dst: &Path, try_hardlink: bool) -> Result<(), 
             }
 
             // Fall back to copy
-            fs::copy(&src_path, &dst_path).map_err(|e| Error::StoreCorruption {
-                message: format!("failed to copy file: {e}"),
-            })?;
+            store_err(fs::copy(&src_path, &dst_path), "failed to copy file")?;
 
             // Preserve permissions
             #[cfg(unix)]
             {
-                let metadata = fs::metadata(&src_path).map_err(|e| Error::StoreCorruption {
-                    message: format!("failed to read metadata: {e}"),
-                })?;
-                fs::set_permissions(&dst_path, metadata.permissions()).map_err(|e| {
-                    Error::StoreCorruption {
-                        message: format!("failed to set permissions: {e}"),
-                    }
-                })?;
+                let metadata = store_err(fs::metadata(&src_path), "failed to read metadata")?;
+                store_err(
+                    fs::set_permissions(&dst_path, metadata.permissions()),
+                    "failed to set permissions",
+                )?;
             }
         }
     }
@@ -1592,9 +1623,29 @@ mod tests {
         let cellar = Cellar::new(tmp.path()).unwrap();
         let result = cellar.materialize("broken-symlink", "1.0.0", &src);
 
-        // Should either succeed (copying broken symlink) or fail gracefully
-        // The important thing is no panic
-        let _ = result;
+        // Materialization should succeed
+        assert!(result.is_ok(), "Materialization should succeed with broken symlinks");
+        let keg = result.unwrap();
+
+        // The broken symlink should be preserved as a symlink (pointing to nonexistent target)
+        let broken_link = keg.join("broken-link");
+        assert!(
+            broken_link.symlink_metadata().unwrap().file_type().is_symlink(),
+            "Broken symlink should be preserved as a symlink"
+        );
+        assert_eq!(
+            fs::read_link(&broken_link).unwrap().to_string_lossy(),
+            "nonexistent-target",
+            "Broken symlink should preserve its target"
+        );
+
+        // The valid file should also be copied
+        assert!(keg.join("valid.txt").exists(), "Valid file should be copied");
+        assert_eq!(
+            fs::read_to_string(keg.join("valid.txt")).unwrap(),
+            "content",
+            "Valid file content should be preserved"
+        );
     }
 
     /// Test handling of circular symlinks
@@ -1613,11 +1664,42 @@ mod tests {
 
         let cellar = Cellar::new(tmp.path()).unwrap();
 
-        // Should not hang or panic
+        // Should not hang or panic - materialize should succeed
         let result = cellar.materialize("circular-symlinks", "1.0.0", &src);
 
-        // Result may be ok or err, but shouldn't hang/panic
-        let _ = result;
+        // Materialization should succeed
+        assert!(result.is_ok(), "Materialization should succeed with circular symlinks");
+        let keg = result.unwrap();
+
+        // Both circular symlinks should be preserved as symlinks
+        let link1 = keg.join("link1");
+        let link2 = keg.join("link2");
+        assert!(
+            link1.symlink_metadata().unwrap().file_type().is_symlink(),
+            "link1 should be preserved as a symlink"
+        );
+        assert!(
+            link2.symlink_metadata().unwrap().file_type().is_symlink(),
+            "link2 should be preserved as a symlink"
+        );
+        assert_eq!(
+            fs::read_link(&link1).unwrap().to_string_lossy(),
+            "link2",
+            "link1 should point to link2"
+        );
+        assert_eq!(
+            fs::read_link(&link2).unwrap().to_string_lossy(),
+            "link1",
+            "link2 should point to link1"
+        );
+
+        // The valid file should also be copied
+        assert!(keg.join("valid.txt").exists(), "Valid file should be copied");
+        assert_eq!(
+            fs::read_to_string(keg.join("valid.txt")).unwrap(),
+            "content",
+            "Valid file content should be preserved"
+        );
     }
 
     /// Test materialization when destination already exists
@@ -1785,19 +1867,14 @@ mod tests {
     // Patchelf single-invocation tests (prevent ELF corruption regression)
     // ========================================================================
 
-    /// Helper to create or find a suitable test binary for patchelf tests.
-    /// First tries to compile a minimal test binary (most reliable), then falls back
-    /// to linuxbrew binaries, then system binaries.
+    /// Try to compile a minimal test binary using available C compilers.
     #[cfg(target_os = "linux")]
-    fn create_or_find_patchable_binary(dir: &Path) -> Option<std::path::PathBuf> {
+    fn try_compile_test_binary(dir: &Path) -> Option<PathBuf> {
         use std::process::Command;
 
-        // First, try to compile a minimal test binary - this is the most reliable approach
-        // because we control the binary and know it will work with patchelf
         let source_path = dir.join("test_main.c");
         let binary_path = dir.join("test_binary");
 
-        // Minimal C program that links dynamically
         let source_code = r#"
 #include <stdio.h>
 int main() {
@@ -1806,66 +1883,85 @@ int main() {
 }
 "#;
 
-        if fs::write(&source_path, source_code).is_ok() {
-            // Try gcc first, then cc
-            for compiler in &["gcc", "cc", "clang"] {
-                let result = Command::new(compiler)
-                    .args([
-                        "-o",
-                        &binary_path.to_string_lossy(),
-                        &source_path.to_string_lossy(),
-                        "-pie",  // Position independent executable
-                    ])
-                    .output();
+        fs::write(&source_path, source_code).ok()?;
 
-                if let Ok(output) = result {
-                    if output.status.success() && binary_path.exists() {
-                        return Some(binary_path);
-                    }
-                }
-            }
+        ["gcc", "cc", "clang"].iter().find_map(|compiler| {
+            Command::new(compiler)
+                .args([
+                    "-o",
+                    &binary_path.to_string_lossy(),
+                    &source_path.to_string_lossy(),
+                    "-pie",
+                ])
+                .output()
+                .ok()
+                .filter(|o| o.status.success() && binary_path.exists())
+                .map(|_| binary_path.clone())
+        })
+    }
+
+    /// Try to copy an existing binary from a list of candidate paths.
+    #[cfg(target_os = "linux")]
+    fn try_copy_from_candidates(dir: &Path, candidates: &[&str]) -> Option<PathBuf> {
+        let dest = dir.join("test_binary_copy");
+        candidates
+            .iter()
+            .find_map(|&path| fs::copy(path, &dest).ok().map(|_| dest.clone()))
+    }
+
+    /// Try to copy the committed test fixture binary.
+    /// This is for CI environments without compilers installed.
+    #[cfg(target_os = "linux")]
+    fn try_copy_fixture_binary(dir: &Path) -> Option<PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join("test_elf_x86_64");
+
+        if !fixture_path.exists() {
+            return None;
         }
 
-        // Fallback: linuxbrew binaries (known to work with patchelf)
-        let linuxbrew_candidates = [
+        let dest = dir.join("test_binary_fixture");
+        fs::copy(&fixture_path, &dest).ok()?;
+
+        // Make writable
+        if let Ok(metadata) = fs::metadata(&dest) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&dest, perms);
+        }
+
+        Some(dest)
+    }
+
+    /// Helper to create or find a suitable test binary for patchelf tests.
+    /// First tries to compile a minimal test binary (most reliable), then falls back
+    /// to a committed fixture, linuxbrew binaries, then system binaries.
+    #[cfg(target_os = "linux")]
+    fn create_or_find_patchable_binary(dir: &Path) -> Option<PathBuf> {
+        const LINUXBREW_CANDIDATES: &[&str] = &[
             "/home/linuxbrew/.linuxbrew/bin/zstd",
             "/home/linuxbrew/.linuxbrew/bin/xz",
             "/home/linuxbrew/.linuxbrew/bin/gzip",
         ];
 
-        for candidate in linuxbrew_candidates {
-            let path = std::path::Path::new(candidate);
-            if path.exists() {
-                // Copy to our temp dir so we can modify it
-                let dest = dir.join("test_binary_copy");
-                if fs::copy(path, &dest).is_ok() {
-                    return Some(dest);
-                }
-            }
-        }
+        const SYSTEM_CANDIDATES: &[&str] =
+            &["/bin/true", "/usr/bin/true", "/bin/echo", "/usr/bin/echo"];
 
-        // Last resort: system binaries (may not work on all distros)
-        let system_candidates = ["/bin/true", "/usr/bin/true", "/bin/echo", "/usr/bin/echo"];
-
-        for candidate in system_candidates {
-            let path = std::path::Path::new(candidate);
-            if path.exists() {
-                let dest = dir.join("test_binary_copy");
-                if fs::copy(path, &dest).is_ok() {
-                    return Some(dest);
-                }
-            }
-        }
-
-        None
+        try_compile_test_binary(dir)
+            .or_else(|| try_copy_fixture_binary(dir))
+            .or_else(|| try_copy_from_candidates(dir, LINUXBREW_CANDIDATES))
+            .or_else(|| try_copy_from_candidates(dir, SYSTEM_CANDIDATES))
     }
 
     /// Check if test binary is from linuxbrew (for execution tests)
     #[cfg(target_os = "linux")]
     fn is_compiled_or_linuxbrew_binary(path: &Path) -> bool {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        // Our compiled binary or linuxbrew copy
-        name == "test_binary" || name == "test_binary_copy"
+        // Our compiled binary, fixture copy, or linuxbrew copy
+        name == "test_binary" || name == "test_binary_fixture" || name == "test_binary_copy"
     }
 
     /// Test that patched ELF binaries have valid structure (no sections outside segments).
@@ -2147,5 +2243,115 @@ int main() {
         // This test would download a real bottle and verify patching works correctly.
         // The actual verification is done by running `zb install` and checking binaries work.
         // See the manual testing with `node` which verifies this end-to-end.
+    }
+
+    /// Test the common case where RPATH has placeholders but interpreter is already valid.
+    /// Many binaries have @@HOMEBREW_CELLAR@@ in RPATH but use the standard system interpreter.
+    /// In this case, we should only patch RPATH and leave the interpreter unchanged.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn patches_rpath_without_changing_valid_interpreter() {
+        use std::process::Command;
+
+        // Skip if patchelf not available
+        if Command::new("patchelf")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+
+        // Create or find a test binary
+        let test_binary = match create_or_find_patchable_binary(tmp.path()) {
+            Some(p) => p,
+            None => return,
+        };
+
+        let mut perms = fs::metadata(&test_binary).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&test_binary, perms).unwrap();
+
+        // Get the original interpreter (should be a valid system path, not @@HOMEBREW@@)
+        let orig_interp_output = Command::new("patchelf")
+            .args(["--print-interpreter", &test_binary.to_string_lossy()])
+            .output();
+
+        let original_interp = orig_interp_output
+            .as_ref()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        // Skip if binary doesn't have an interpreter (e.g., shared library)
+        if original_interp.is_empty() {
+            return;
+        }
+
+        // Verify interpreter is already valid (no placeholders)
+        assert!(
+            !original_interp.contains("@@HOMEBREW"),
+            "Test setup error: interpreter should not contain placeholders"
+        );
+
+        // Set an RPATH with placeholder-like paths (simulating what our patch function would fix)
+        // We'll set it to a path that looks like it needs patching
+        let rpath_with_homebrew_paths =
+            "/opt/zerobrew/prefix/Cellar/openssl/3.0.0/lib:/opt/zerobrew/prefix/lib";
+
+        let set_result = Command::new("patchelf")
+            .args([
+                "--force-rpath",
+                "--set-rpath",
+                rpath_with_homebrew_paths,
+                &test_binary.to_string_lossy(),
+            ])
+            .output();
+
+        assert!(
+            set_result.map(|o| o.status.success()).unwrap_or(false),
+            "Should be able to set RPATH"
+        );
+
+        // Verify RPATH was set
+        let rpath_output = Command::new("patchelf")
+            .args(["--print-rpath", &test_binary.to_string_lossy()])
+            .output()
+            .expect("should read rpath");
+        let actual_rpath = String::from_utf8_lossy(&rpath_output.stdout)
+            .trim()
+            .to_string();
+        assert!(
+            actual_rpath.contains("/opt/zerobrew"),
+            "RPATH should be set: {}",
+            actual_rpath
+        );
+
+        // Verify interpreter is still the original (unchanged)
+        let final_interp_output = Command::new("patchelf")
+            .args(["--print-interpreter", &test_binary.to_string_lossy()])
+            .output()
+            .expect("should read interpreter");
+        let final_interp = String::from_utf8_lossy(&final_interp_output.stdout)
+            .trim()
+            .to_string();
+
+        assert_eq!(
+            final_interp, original_interp,
+            "Interpreter should remain unchanged when only patching RPATH"
+        );
+
+        // Verify binary still executes (for compiled or linuxbrew binaries)
+        if is_compiled_or_linuxbrew_binary(&test_binary) {
+            let exec_result = Command::new(&test_binary).output();
+            assert!(
+                exec_result.is_ok(),
+                "Binary should still execute after RPATH-only patching"
+            );
+        }
     }
 }

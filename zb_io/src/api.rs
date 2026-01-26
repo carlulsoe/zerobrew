@@ -109,7 +109,9 @@ impl ApiClient {
                     last_modified,
                     body: body.clone(),
                 };
-                let _ = cache.put(&url, &entry);
+                if let Err(e) = cache.put(&url, &entry) {
+                    eprintln!("    Warning: failed to cache response: {}", e);
+                }
             }
 
             let formula: Formula =
