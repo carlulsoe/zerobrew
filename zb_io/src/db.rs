@@ -368,6 +368,30 @@ impl Database {
 
         Ok(keys)
     }
+
+    /// Get all linked files for a package
+    pub fn get_linked_files(&self, name: &str) -> Result<Vec<(String, String)>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT linked_path, target_path FROM keg_files WHERE name = ?1 ORDER BY linked_path",
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to prepare statement: {e}"),
+            })?;
+
+        let files = stmt
+            .query_map(params![name], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to query linked files: {e}"),
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to collect results: {e}"),
+            })?;
+
+        Ok(files)
+    }
 }
 
 pub struct InstallTransaction<'a> {
@@ -744,5 +768,44 @@ mod tests {
         // Non-existent package
         let result = db.mark_explicit("nonexistent").unwrap();
         assert!(!result);
+    }
+
+    #[test]
+    fn get_linked_files_returns_linked_files_for_package() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("test-pkg", "1.0.0", "key1", true).unwrap();
+            tx.record_linked_file(
+                "test-pkg",
+                "1.0.0",
+                "/opt/zerobrew/prefix/bin/test",
+                "/opt/zerobrew/cellar/test-pkg/1.0.0/bin/test",
+            )
+            .unwrap();
+            tx.record_linked_file(
+                "test-pkg",
+                "1.0.0",
+                "/opt/zerobrew/prefix/lib/libtest.so",
+                "/opt/zerobrew/cellar/test-pkg/1.0.0/lib/libtest.so",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let files = db.get_linked_files("test-pkg").unwrap();
+        assert_eq!(files.len(), 2);
+
+        // Files should be sorted by link path
+        assert_eq!(files[0].0, "/opt/zerobrew/prefix/bin/test");
+        assert_eq!(files[1].0, "/opt/zerobrew/prefix/lib/libtest.so");
+    }
+
+    #[test]
+    fn get_linked_files_returns_empty_for_nonexistent_package() {
+        let db = Database::in_memory().unwrap();
+        let files = db.get_linked_files("nonexistent").unwrap();
+        assert!(files.is_empty());
     }
 }

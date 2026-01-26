@@ -3,17 +3,42 @@ use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::fmt;
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 pub struct Formula {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub versions: Versions,
+    #[serde(default)]
+    pub desc: Option<String>,
+    #[serde(default)]
+    pub homepage: Option<String>,
+    #[serde(default)]
+    pub license: Option<String>,
+    #[serde(default)]
     pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub build_dependencies: Vec<String>,
     /// Dependencies that macOS provides as system libraries.
     /// On Linux, these must be installed explicitly.
     /// Can be either strings or objects like {"pkg": "build"}.
     #[serde(default, deserialize_with = "deserialize_uses_from_macos")]
     pub uses_from_macos: Vec<String>,
+    #[serde(default)]
+    pub caveats: Option<String>,
+    #[serde(default)]
+    pub keg_only: bool,
+    #[serde(default)]
+    pub keg_only_reason: Option<KegOnlyReason>,
+    #[serde(default)]
     pub bottle: Bottle,
+}
+
+/// Reason why a formula is keg-only
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct KegOnlyReason {
+    pub reason: String,
+    pub explanation: String,
 }
 
 /// Deserialize uses_from_macos which can contain either strings or objects.
@@ -150,18 +175,21 @@ impl Formula {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 pub struct Versions {
+    #[serde(default)]
     pub stable: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 pub struct Bottle {
+    #[serde(default)]
     pub stable: BottleStable,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 pub struct BottleStable {
+    #[serde(default)]
     pub files: BTreeMap<String, BottleFile>,
     /// Rebuild number for the bottle. When > 0, the bottle's internal paths
     /// use `{version}_{rebuild}` instead of just `{version}`.

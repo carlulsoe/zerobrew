@@ -512,6 +512,40 @@ impl Installer {
         &self.api_client
     }
 
+    /// Get linked files for a package
+    pub fn get_linked_files(&self, name: &str) -> Result<Vec<(String, String)>, Error> {
+        self.db.get_linked_files(name)
+    }
+
+    /// Get formula info from API
+    pub async fn get_formula(&self, name: &str) -> Result<Formula, Error> {
+        self.api_client.get_formula(name).await
+    }
+
+    /// Get installed packages that depend on a given package (reverse dependencies)
+    pub async fn get_dependents(&self, name: &str) -> Result<Vec<String>, Error> {
+        let installed = self.db.list_installed()?;
+
+        let mut dependents = Vec::new();
+
+        // For each installed package, check if it depends on the target
+        for keg in &installed {
+            if keg.name == name {
+                continue;
+            }
+
+            // Fetch the formula to get its dependencies
+            if let Ok(formula) = self.api_client.get_formula(&keg.name).await {
+                let deps = formula.effective_dependencies();
+                if deps.iter().any(|d| d == name) {
+                    dependents.push(keg.name.clone());
+                }
+            }
+        }
+
+        Ok(dependents)
+    }
+
     /// Check for outdated packages by comparing installed versions against API.
     /// By default, excludes pinned packages.
     pub async fn get_outdated(&self) -> Result<Vec<OutdatedPackage>, Error> {

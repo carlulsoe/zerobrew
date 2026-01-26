@@ -61,6 +61,10 @@ enum Commands {
     Info {
         /// Formula name
         formula: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Search for formulas
@@ -117,6 +121,13 @@ enum Commands {
 
     /// Initialize zerobrew directories with correct permissions
     Init,
+
+    /// Print shell environment setup commands
+    Shellenv {
+        /// Shell type (bash, zsh, fish, csh). Auto-detected if not specified.
+        #[arg(long, short)]
+        shell: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -354,6 +365,12 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             .map_err(|e| zb_core::Error::StoreCorruption { message: e });
     }
 
+    // Handle shellenv separately - it only outputs environment setup
+    if let Commands::Shellenv { ref shell } = cli.command {
+        print_shellenv(&cli.prefix, shell.as_deref());
+        return Ok(());
+    }
+
     // For reset, handle specially since directories may not be writable
     if matches!(cli.command, Commands::Reset { .. }) {
         // Skip init check for reset
@@ -366,6 +383,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
 
     match cli.command {
         Commands::Init => unreachable!(), // Handled above
+        Commands::Shellenv { .. } => unreachable!(), // Handled above
         Commands::Install { formula, no_link } => {
             let start = Instant::now();
             println!(
@@ -589,27 +607,217 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
         }
 
-        Commands::Info { formula } => {
-            if let Some(keg) = installer.get_installed(&formula) {
-                println!("{}       {}", style("Name:").dim(), style(&keg.name).bold());
-                println!("{}    {}", style("Version:").dim(), keg.version);
-                println!("{}  {}", style("Store key:").dim(), &keg.store_key[..12]);
-                println!(
-                    "{}  {}",
-                    style("Installed:").dim(),
-                    chrono_lite_format(keg.installed_at)
-                );
-                println!(
-                    "{}     {}",
-                    style("Pinned:").dim(),
-                    if keg.pinned {
-                        style("Yes").yellow().to_string()
-                    } else {
-                        "No".to_string()
+        Commands::Info { formula, json } => {
+            // First check if installed
+            let keg = installer.get_installed(&formula);
+
+            // Try to get formula info from API for additional details
+            let api_formula = installer.get_formula(&formula).await.ok();
+
+            if json {
+                // JSON output
+                let mut info = serde_json::Map::new();
+
+                info.insert("name".to_string(), serde_json::json!(formula));
+
+                if let Some(ref keg) = keg {
+                    info.insert("installed".to_string(), serde_json::json!(true));
+                    info.insert("installed_version".to_string(), serde_json::json!(keg.version));
+                    info.insert("store_key".to_string(), serde_json::json!(keg.store_key));
+                    info.insert("installed_at".to_string(), serde_json::json!(keg.installed_at));
+                    info.insert("pinned".to_string(), serde_json::json!(keg.pinned));
+                    info.insert("explicit".to_string(), serde_json::json!(keg.explicit));
+
+                    // Get linked files
+                    if let Ok(linked_files) = installer.get_linked_files(&formula) {
+                        let files: Vec<_> = linked_files
+                            .iter()
+                            .map(|(link, target)| serde_json::json!({"link": link, "target": target}))
+                            .collect();
+                        info.insert("linked_files".to_string(), serde_json::json!(files));
                     }
-                );
+
+                    // Get dependents
+                    if let Ok(dependents) = installer.get_dependents(&formula).await {
+                        info.insert("dependents".to_string(), serde_json::json!(dependents));
+                    }
+                } else {
+                    info.insert("installed".to_string(), serde_json::json!(false));
+                }
+
+                if let Some(ref f) = api_formula {
+                    info.insert("available_version".to_string(), serde_json::json!(f.effective_version()));
+                    if let Some(ref desc) = f.desc {
+                        info.insert("description".to_string(), serde_json::json!(desc));
+                    }
+                    if let Some(ref homepage) = f.homepage {
+                        info.insert("homepage".to_string(), serde_json::json!(homepage));
+                    }
+                    if let Some(ref license) = f.license {
+                        info.insert("license".to_string(), serde_json::json!(license));
+                    }
+                    info.insert("dependencies".to_string(), serde_json::json!(f.effective_dependencies()));
+                    info.insert("build_dependencies".to_string(), serde_json::json!(f.build_dependencies));
+                    if let Some(ref caveats) = f.caveats {
+                        info.insert("caveats".to_string(), serde_json::json!(caveats));
+                    }
+                    info.insert("keg_only".to_string(), serde_json::json!(f.keg_only));
+                }
+
+                println!("{}", serde_json::to_string_pretty(&info).unwrap());
             } else {
-                println!("Formula '{}' is not installed.", formula);
+                // Human-readable output
+                if keg.is_none() && api_formula.is_none() {
+                    println!("Formula '{}' not found.", formula);
+                    std::process::exit(1);
+                }
+
+                // Header
+                println!(
+                    "{} {}",
+                    style("==>").cyan().bold(),
+                    style(&formula).bold()
+                );
+
+                // Description from API
+                if let Some(ref f) = api_formula {
+                    if let Some(ref desc) = f.desc {
+                        println!("{}", style(desc).dim());
+                    }
+                    if let Some(ref homepage) = f.homepage {
+                        println!("{}", style(homepage).cyan().underlined());
+                    }
+                }
+
+                println!();
+
+                // Version info
+                if let Some(ref keg) = keg {
+                    print!("{} {}", style("Installed:").dim(), style(&keg.version).green());
+                    if keg.pinned {
+                        print!(" {}", style("(pinned)").yellow());
+                    }
+                    if !keg.explicit {
+                        print!(" {}", style("(installed as dependency)").dim());
+                    }
+                    println!();
+                } else {
+                    println!("{} Not installed", style("Installed:").dim());
+                }
+
+                if let Some(ref f) = api_formula {
+                    let available_version = f.effective_version();
+                    if let Some(ref keg) = keg {
+                        if keg.version != available_version {
+                            println!(
+                                "{} {} {}",
+                                style("Available:").dim(),
+                                style(&available_version).yellow(),
+                                style("(update available)").yellow()
+                            );
+                        }
+                    } else {
+                        println!("{} {}", style("Available:").dim(), available_version);
+                    }
+                }
+
+                // License
+                if let Some(ref f) = api_formula {
+                    if let Some(ref license) = f.license {
+                        println!("{} {}", style("License:").dim(), license);
+                    }
+                }
+
+                // Keg-only status
+                if let Some(ref f) = api_formula {
+                    if f.keg_only {
+                        print!("{} Yes", style("Keg-only:").dim());
+                        if let Some(ref reason) = f.keg_only_reason {
+                            if !reason.explanation.is_empty() {
+                                print!(" ({})", reason.explanation);
+                            }
+                        }
+                        println!();
+                    }
+                }
+
+                // Dependencies
+                if let Some(ref f) = api_formula {
+                    let deps = f.effective_dependencies();
+                    if !deps.is_empty() {
+                        println!();
+                        println!("{}", style("Dependencies:").dim());
+                        for dep in &deps {
+                            let installed = installer.is_installed(dep);
+                            let marker = if installed {
+                                style("✓").green()
+                            } else {
+                                style("✗").red()
+                            };
+                            println!("  {} {}", marker, dep);
+                        }
+                    }
+
+                    if !f.build_dependencies.is_empty() {
+                        println!();
+                        println!("{}", style("Build dependencies:").dim());
+                        for dep in &f.build_dependencies {
+                            println!("  {}", dep);
+                        }
+                    }
+                }
+
+                // Dependents (what depends on this package)
+                if keg.is_some() {
+                    if let Ok(dependents) = installer.get_dependents(&formula).await {
+                        if !dependents.is_empty() {
+                            println!();
+                            println!("{}", style("Required by:").dim());
+                            for dep in &dependents {
+                                println!("  {}", dep);
+                            }
+                        }
+                    }
+                }
+
+                // Linked files
+                if let Some(ref keg) = keg {
+                    if let Ok(linked_files) = installer.get_linked_files(&formula) {
+                        if !linked_files.is_empty() {
+                            println!();
+                            println!("{} ({} files)", style("Linked files:").dim(), linked_files.len());
+                            // Show first few linked files
+                            for (link, _target) in linked_files.iter().take(5) {
+                                println!("  {}", link);
+                            }
+                            if linked_files.len() > 5 {
+                                println!(
+                                    "  {} and {} more...",
+                                    style("...").dim(),
+                                    linked_files.len() - 5
+                                );
+                            }
+                        }
+                    }
+
+                    // Store info
+                    println!();
+                    println!("{} {}", style("Store key:").dim(), &keg.store_key[..12]);
+                    println!("{} {}", style("Installed:").dim(), chrono_lite_format(keg.installed_at));
+                }
+
+                // Caveats
+                if let Some(ref f) = api_formula {
+                    if let Some(ref caveats) = f.caveats {
+                        println!();
+                        println!("{}", style("==> Caveats").yellow().bold());
+                        // Replace $HOMEBREW_PREFIX with actual prefix
+                        let caveats = caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
+                        for line in caveats.lines() {
+                            println!("{}", line);
+                        }
+                    }
+                }
             }
         }
 
@@ -1144,10 +1352,177 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
     Ok(())
 }
 
+/// Detect the current shell from environment
+fn detect_shell() -> &'static str {
+    // Check SHELL environment variable
+    if let Ok(shell) = std::env::var("SHELL") {
+        if shell.contains("fish") {
+            return "fish";
+        } else if shell.contains("csh") || shell.contains("tcsh") {
+            return "csh";
+        } else if shell.contains("zsh") {
+            return "zsh";
+        }
+    }
+    // Default to bash-compatible (works for bash, zsh, sh, etc.)
+    "bash"
+}
+
+/// Generate shell environment setup commands
+fn generate_shellenv(prefix: &Path, shell: &str) -> String {
+    let bin_path = prefix.join("bin");
+    let sbin_path = prefix.join("sbin");
+    let man_path = prefix.join("share").join("man");
+    let info_path = prefix.join("share").join("info");
+    let cellar_path = prefix.join("Cellar");
+
+    match shell {
+        "fish" => {
+            // Fish shell syntax
+            format!(
+                r#"set -gx HOMEBREW_PREFIX "{}";
+set -gx HOMEBREW_CELLAR "{}";
+set -gx PATH "{}" "{}" $PATH;
+set -q MANPATH; or set MANPATH ''; set -gx MANPATH "{}" $MANPATH;
+set -q INFOPATH; or set INFOPATH ''; set -gx INFOPATH "{}" $INFOPATH;"#,
+                prefix.display(),
+                cellar_path.display(),
+                bin_path.display(),
+                sbin_path.display(),
+                man_path.display(),
+                info_path.display()
+            )
+        }
+        "csh" | "tcsh" => {
+            // C shell syntax
+            format!(
+                r#"setenv HOMEBREW_PREFIX "{}";
+setenv HOMEBREW_CELLAR "{}";
+setenv PATH "{}:{}:${{PATH}}";
+setenv MANPATH "{}:${{MANPATH}}";
+setenv INFOPATH "{}:${{INFOPATH}}";"#,
+                prefix.display(),
+                cellar_path.display(),
+                bin_path.display(),
+                sbin_path.display(),
+                man_path.display(),
+                info_path.display()
+            )
+        }
+        _ => {
+            // POSIX-compatible shells (bash, zsh, sh, ksh, etc.)
+            format!(
+                r#"export HOMEBREW_PREFIX="{}";
+export HOMEBREW_CELLAR="{}";
+export PATH="{}:{}:$PATH";
+export MANPATH="{}:${{MANPATH:-}}";
+export INFOPATH="{}:${{INFOPATH:-}}";"#,
+                prefix.display(),
+                cellar_path.display(),
+                bin_path.display(),
+                sbin_path.display(),
+                man_path.display(),
+                info_path.display()
+            )
+        }
+    }
+}
+
+/// Print shell environment setup commands
+fn print_shellenv(prefix: &Path, shell: Option<&str>) {
+    let shell = shell.unwrap_or_else(|| detect_shell());
+    println!("{}", generate_shellenv(prefix, shell));
+}
+
 fn chrono_lite_format(timestamp: i64) -> String {
     // Simple timestamp formatting without pulling in chrono
     use std::time::{Duration, UNIX_EPOCH};
 
     let dt = UNIX_EPOCH + Duration::from_secs(timestamp as u64);
     format!("{:?}", dt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_generate_shellenv_bash() {
+        let prefix = PathBuf::from("/opt/zerobrew/prefix");
+        let output = generate_shellenv(&prefix, "bash");
+
+        assert!(output.contains("export HOMEBREW_PREFIX=\"/opt/zerobrew/prefix\""));
+        assert!(output.contains("export HOMEBREW_CELLAR=\"/opt/zerobrew/prefix/Cellar\""));
+        assert!(output.contains("export PATH=\"/opt/zerobrew/prefix/bin:/opt/zerobrew/prefix/sbin:$PATH\""));
+        assert!(output.contains("export MANPATH=\"/opt/zerobrew/prefix/share/man:${MANPATH:-}\""));
+        assert!(output.contains("export INFOPATH=\"/opt/zerobrew/prefix/share/info:${INFOPATH:-}\""));
+    }
+
+    #[test]
+    fn test_generate_shellenv_zsh() {
+        // zsh uses the same syntax as bash
+        let prefix = PathBuf::from("/opt/zerobrew/prefix");
+        let output = generate_shellenv(&prefix, "zsh");
+
+        assert!(output.contains("export HOMEBREW_PREFIX="));
+        assert!(output.contains("export PATH="));
+    }
+
+    #[test]
+    fn test_generate_shellenv_fish() {
+        let prefix = PathBuf::from("/opt/zerobrew/prefix");
+        let output = generate_shellenv(&prefix, "fish");
+
+        assert!(output.contains("set -gx HOMEBREW_PREFIX \"/opt/zerobrew/prefix\""));
+        assert!(output.contains("set -gx HOMEBREW_CELLAR \"/opt/zerobrew/prefix/Cellar\""));
+        assert!(output.contains("set -gx PATH \"/opt/zerobrew/prefix/bin\" \"/opt/zerobrew/prefix/sbin\" $PATH"));
+        assert!(output.contains("set -q MANPATH; or set MANPATH ''"));
+        assert!(output.contains("set -q INFOPATH; or set INFOPATH ''"));
+    }
+
+    #[test]
+    fn test_generate_shellenv_csh() {
+        let prefix = PathBuf::from("/opt/zerobrew/prefix");
+        let output = generate_shellenv(&prefix, "csh");
+
+        assert!(output.contains("setenv HOMEBREW_PREFIX \"/opt/zerobrew/prefix\""));
+        assert!(output.contains("setenv HOMEBREW_CELLAR \"/opt/zerobrew/prefix/Cellar\""));
+        assert!(output.contains("setenv PATH \"/opt/zerobrew/prefix/bin:/opt/zerobrew/prefix/sbin:${PATH}\""));
+        assert!(output.contains("setenv MANPATH \"/opt/zerobrew/prefix/share/man:${MANPATH}\""));
+        assert!(output.contains("setenv INFOPATH \"/opt/zerobrew/prefix/share/info:${INFOPATH}\""));
+    }
+
+    #[test]
+    fn test_generate_shellenv_tcsh() {
+        // tcsh uses the same syntax as csh
+        let prefix = PathBuf::from("/opt/zerobrew/prefix");
+        let output = generate_shellenv(&prefix, "tcsh");
+
+        assert!(output.contains("setenv HOMEBREW_PREFIX"));
+        assert!(output.contains("setenv PATH"));
+    }
+
+    #[test]
+    fn test_generate_shellenv_custom_prefix() {
+        let prefix = PathBuf::from("/usr/local/homebrew");
+        let output = generate_shellenv(&prefix, "bash");
+
+        assert!(output.contains("/usr/local/homebrew"));
+        assert!(output.contains("/usr/local/homebrew/bin"));
+        assert!(output.contains("/usr/local/homebrew/sbin"));
+        assert!(output.contains("/usr/local/homebrew/Cellar"));
+        assert!(output.contains("/usr/local/homebrew/share/man"));
+        assert!(output.contains("/usr/local/homebrew/share/info"));
+    }
+
+    #[test]
+    fn test_generate_shellenv_unknown_shell_defaults_to_posix() {
+        // Unknown shells should use POSIX-compatible syntax
+        let prefix = PathBuf::from("/opt/zerobrew/prefix");
+        let output = generate_shellenv(&prefix, "unknown");
+
+        assert!(output.contains("export HOMEBREW_PREFIX="));
+        assert!(output.contains("export PATH="));
+    }
 }
