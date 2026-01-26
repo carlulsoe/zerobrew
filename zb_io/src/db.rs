@@ -15,6 +15,8 @@ pub struct InstalledKeg {
     pub store_key: String,
     pub installed_at: i64,
     pub pinned: bool,
+    /// Whether this package was explicitly installed by the user (true) or as a dependency (false)
+    pub explicit: bool,
 }
 
 impl Database {
@@ -46,7 +48,8 @@ impl Database {
                 version TEXT NOT NULL,
                 store_key TEXT NOT NULL,
                 installed_at INTEGER NOT NULL,
-                pinned INTEGER NOT NULL DEFAULT 0
+                pinned INTEGER NOT NULL DEFAULT 0,
+                explicit INTEGER NOT NULL DEFAULT 1
             );
 
             CREATE TABLE IF NOT EXISTS store_refs (
@@ -69,6 +72,9 @@ impl Database {
 
         // Migration: add pinned column if it doesn't exist (for existing databases)
         Self::migrate_add_pinned_column(conn)?;
+
+        // Migration: add explicit column if it doesn't exist (for existing databases)
+        Self::migrate_add_explicit_column(conn)?;
 
         Ok(())
     }
@@ -96,6 +102,30 @@ impl Database {
         Ok(())
     }
 
+    fn migrate_add_explicit_column(conn: &Connection) -> Result<(), Error> {
+        // Check if explicit column exists
+        let has_explicit: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('installed_kegs') WHERE name = 'explicit'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !has_explicit {
+            // Default to 1 (explicit) for existing packages - safe assumption
+            conn.execute(
+                "ALTER TABLE installed_kegs ADD COLUMN explicit INTEGER NOT NULL DEFAULT 1",
+                [],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to add explicit column: {e}"),
+            })?;
+        }
+
+        Ok(())
+    }
+
     pub fn transaction(&mut self) -> Result<InstallTransaction<'_>, Error> {
         let tx = self
             .conn
@@ -110,7 +140,7 @@ impl Database {
     pub fn get_installed(&self, name: &str) -> Option<InstalledKeg> {
         self.conn
             .query_row(
-                "SELECT name, version, store_key, installed_at, pinned FROM installed_kegs WHERE name = ?1",
+                "SELECT name, version, store_key, installed_at, pinned, explicit FROM installed_kegs WHERE name = ?1",
                 params![name],
                 |row| {
                     Ok(InstalledKeg {
@@ -119,6 +149,7 @@ impl Database {
                         store_key: row.get(2)?,
                         installed_at: row.get(3)?,
                         pinned: row.get::<_, i64>(4)? != 0,
+                        explicit: row.get::<_, i64>(5)? != 0,
                     })
                 },
             )
@@ -129,7 +160,7 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT name, version, store_key, installed_at, pinned FROM installed_kegs ORDER BY name",
+                "SELECT name, version, store_key, installed_at, pinned, explicit FROM installed_kegs ORDER BY name",
             )
             .map_err(|e| Error::StoreCorruption {
                 message: format!("failed to prepare statement: {e}"),
@@ -143,6 +174,7 @@ impl Database {
                     store_key: row.get(2)?,
                     installed_at: row.get(3)?,
                     pinned: row.get::<_, i64>(4)? != 0,
+                    explicit: row.get::<_, i64>(5)? != 0,
                 })
             })
             .map_err(|e| Error::StoreCorruption {
@@ -161,7 +193,7 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT name, version, store_key, installed_at, pinned FROM installed_kegs WHERE pinned = 1 ORDER BY name",
+                "SELECT name, version, store_key, installed_at, pinned, explicit FROM installed_kegs WHERE pinned = 1 ORDER BY name",
             )
             .map_err(|e| Error::StoreCorruption {
                 message: format!("failed to prepare statement: {e}"),
@@ -175,6 +207,7 @@ impl Database {
                     store_key: row.get(2)?,
                     installed_at: row.get(3)?,
                     pinned: row.get::<_, i64>(4)? != 0,
+                    explicit: row.get::<_, i64>(5)? != 0,
                 })
             })
             .map_err(|e| Error::StoreCorruption {
@@ -186,6 +219,81 @@ impl Database {
             })?;
 
         Ok(kegs)
+    }
+
+    /// List only packages installed as dependencies (not explicitly)
+    pub fn list_dependencies(&self) -> Result<Vec<InstalledKeg>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT name, version, store_key, installed_at, pinned, explicit FROM installed_kegs WHERE explicit = 0 ORDER BY name",
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to prepare statement: {e}"),
+            })?;
+
+        let kegs = stmt
+            .query_map([], |row| {
+                Ok(InstalledKeg {
+                    name: row.get(0)?,
+                    version: row.get(1)?,
+                    store_key: row.get(2)?,
+                    installed_at: row.get(3)?,
+                    pinned: row.get::<_, i64>(4)? != 0,
+                    explicit: row.get::<_, i64>(5)? != 0,
+                })
+            })
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to query dependency kegs: {e}"),
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to collect results: {e}"),
+            })?;
+
+        Ok(kegs)
+    }
+
+    /// Mark a package as explicitly installed (not as a dependency)
+    pub fn mark_explicit(&self, name: &str) -> Result<bool, Error> {
+        let rows_affected = self
+            .conn
+            .execute(
+                "UPDATE installed_kegs SET explicit = 1 WHERE name = ?1",
+                params![name],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to mark package as explicit: {e}"),
+            })?;
+
+        Ok(rows_affected > 0)
+    }
+
+    /// Mark a package as a dependency (not explicitly installed)
+    pub fn mark_dependency(&self, name: &str) -> Result<bool, Error> {
+        let rows_affected = self
+            .conn
+            .execute(
+                "UPDATE installed_kegs SET explicit = 0 WHERE name = ?1",
+                params![name],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to mark package as dependency: {e}"),
+            })?;
+
+        Ok(rows_affected > 0)
+    }
+
+    /// Check if a package was explicitly installed
+    pub fn is_explicit(&self, name: &str) -> bool {
+        self.conn
+            .query_row(
+                "SELECT explicit FROM installed_kegs WHERE name = ?1",
+                params![name],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|v| v != 0)
+            .unwrap_or(false)
     }
 
     /// Pin a package to prevent upgrades
@@ -267,17 +375,32 @@ pub struct InstallTransaction<'a> {
 }
 
 impl<'a> InstallTransaction<'a> {
-    pub fn record_install(&self, name: &str, version: &str, store_key: &str) -> Result<(), Error> {
+    /// Record a package installation.
+    ///
+    /// # Arguments
+    /// * `name` - Package name
+    /// * `version` - Package version
+    /// * `store_key` - Content-addressable store key
+    /// * `explicit` - Whether this was explicitly installed by user (true) or as a dependency (false)
+    pub fn record_install(
+        &self,
+        name: &str,
+        version: &str,
+        store_key: &str,
+        explicit: bool,
+    ) -> Result<(), Error> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
 
+        let explicit_int: i64 = if explicit { 1 } else { 0 };
+
         self.tx
             .execute(
-                "INSERT OR REPLACE INTO installed_kegs (name, version, store_key, installed_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![name, version, store_key, now],
+                "INSERT OR REPLACE INTO installed_kegs (name, version, store_key, installed_at, explicit)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![name, version, store_key, now, explicit_int],
             )
             .map_err(|e| Error::StoreCorruption {
                 message: format!("failed to record install: {e}"),
@@ -376,7 +499,7 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "abc123").unwrap();
+            tx.record_install("foo", "1.0.0", "abc123", true).unwrap();
             tx.commit().unwrap();
         }
 
@@ -386,6 +509,7 @@ mod tests {
         assert_eq!(installed[0].version, "1.0.0");
         assert_eq!(installed[0].store_key, "abc123");
         assert!(!installed[0].pinned);
+        assert!(installed[0].explicit);
     }
 
     #[test]
@@ -394,7 +518,7 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("pinnable", "1.0.0", "abc123").unwrap();
+            tx.record_install("pinnable", "1.0.0", "abc123", true).unwrap();
             tx.commit().unwrap();
         }
 
@@ -440,9 +564,9 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("pinned1", "1.0.0", "abc123").unwrap();
-            tx.record_install("unpinned", "1.0.0", "def456").unwrap();
-            tx.record_install("pinned2", "2.0.0", "ghi789").unwrap();
+            tx.record_install("pinned1", "1.0.0", "abc123", true).unwrap();
+            tx.record_install("unpinned", "1.0.0", "def456", true).unwrap();
+            tx.record_install("pinned2", "2.0.0", "ghi789", true).unwrap();
             tx.commit().unwrap();
         }
 
@@ -469,7 +593,7 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "abc123").unwrap();
+            tx.record_install("foo", "1.0.0", "abc123", true).unwrap();
             // Don't commit - transaction will be rolled back when dropped
         }
 
@@ -486,8 +610,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "shared123").unwrap();
-            tx.record_install("bar", "2.0.0", "shared123").unwrap();
+            tx.record_install("foo", "1.0.0", "shared123", true).unwrap();
+            tx.record_install("bar", "2.0.0", "shared123", true).unwrap();
             tx.commit().unwrap();
         }
 
@@ -510,8 +634,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "key1").unwrap();
-            tx.record_install("bar", "2.0.0", "key2").unwrap();
+            tx.record_install("foo", "1.0.0", "key1", true).unwrap();
+            tx.record_install("bar", "2.0.0", "key2", true).unwrap();
             tx.commit().unwrap();
         }
 
@@ -535,7 +659,7 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "abc123").unwrap();
+            tx.record_install("foo", "1.0.0", "abc123", true).unwrap();
             tx.record_linked_file(
                 "foo",
                 "1.0.0",
@@ -554,5 +678,71 @@ mod tests {
         }
 
         assert!(db.get_installed("foo").is_none());
+    }
+
+    #[test]
+    fn explicit_vs_dependency_tracking() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            // Explicit install
+            tx.record_install("user-requested", "1.0.0", "key1", true).unwrap();
+            // Dependency installs
+            tx.record_install("dep1", "1.0.0", "key2", false).unwrap();
+            tx.record_install("dep2", "2.0.0", "key3", false).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Verify explicit flag
+        let user_pkg = db.get_installed("user-requested").unwrap();
+        assert!(user_pkg.explicit);
+
+        let dep1 = db.get_installed("dep1").unwrap();
+        assert!(!dep1.explicit);
+
+        let dep2 = db.get_installed("dep2").unwrap();
+        assert!(!dep2.explicit);
+
+        // is_explicit method
+        assert!(db.is_explicit("user-requested"));
+        assert!(!db.is_explicit("dep1"));
+        assert!(!db.is_explicit("dep2"));
+        assert!(!db.is_explicit("nonexistent")); // Not installed
+
+        // list_dependencies should only return deps
+        let deps = db.list_dependencies().unwrap();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.iter().all(|k| !k.explicit));
+        assert!(deps.iter().any(|k| k.name == "dep1"));
+        assert!(deps.iter().any(|k| k.name == "dep2"));
+    }
+
+    #[test]
+    fn mark_explicit_and_dependency() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("pkg", "1.0.0", "key1", false).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Initially a dependency
+        assert!(!db.is_explicit("pkg"));
+
+        // Mark as explicit (user explicitly installs a previously auto-installed dep)
+        let result = db.mark_explicit("pkg").unwrap();
+        assert!(result);
+        assert!(db.is_explicit("pkg"));
+
+        // Mark back as dependency
+        let result = db.mark_dependency("pkg").unwrap();
+        assert!(result);
+        assert!(!db.is_explicit("pkg"));
+
+        // Non-existent package
+        let result = db.mark_explicit("nonexistent").unwrap();
+        assert!(!result);
     }
 }

@@ -30,6 +30,8 @@ pub struct Installer {
 pub struct InstallPlan {
     pub formulas: Vec<Formula>,
     pub bottles: Vec<SelectedBottle>,
+    /// The name of the root package (the one explicitly requested by the user)
+    pub root_name: String,
 }
 
 pub struct ExecuteResult {
@@ -50,6 +52,8 @@ struct ProcessedPackage {
     version: String,
     store_key: String,
     linked_files: Vec<LinkedFile>,
+    /// Whether this package was explicitly requested (true) or a dependency (false)
+    explicit: bool,
 }
 
 impl Installer {
@@ -105,6 +109,7 @@ impl Installer {
         Ok(InstallPlan {
             formulas: result_formulas,
             bottles,
+            root_name: name.to_string(),
         })
     }
 
@@ -263,6 +268,9 @@ impl Installer {
             }
         };
 
+        // Track which package was explicitly requested
+        let root_name = plan.root_name.clone();
+
         // Pair formulas with bottles
         let to_install: Vec<(Formula, SelectedBottle)> = plan
             .formulas
@@ -368,6 +376,7 @@ impl Installer {
                         version: formula.effective_version(),
                         store_key: bottle.sha256.clone(),
                         linked_files,
+                        explicit: formula.name == root_name,
                     });
                 }
                 Err(e) => {
@@ -384,7 +393,12 @@ impl Installer {
         // Record all successful installs in database (in order)
         for processed in completed.into_iter().flatten() {
             let tx = self.db.transaction()?;
-            tx.record_install(&processed.name, &processed.version, &processed.store_key)?;
+            tx.record_install(
+                &processed.name,
+                &processed.version,
+                &processed.store_key,
+                processed.explicit,
+            )?;
 
             for linked in &processed.linked_files {
                 tx.record_linked_file(
@@ -642,6 +656,135 @@ impl Installer {
             upgraded: packages.len(),
             packages,
         })
+    }
+
+    /// Find orphaned packages - dependencies that are no longer needed by any explicit package.
+    ///
+    /// A package is considered an orphan if:
+    /// 1. It was installed as a dependency (explicit = false)
+    /// 2. No explicitly installed package depends on it (directly or transitively)
+    pub async fn find_orphans(&self) -> Result<Vec<String>, Error> {
+        use std::collections::HashSet;
+
+        let installed = self.db.list_installed()?;
+
+        if installed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Get packages that were installed as dependencies
+        let dependency_pkgs: Vec<_> = installed.iter().filter(|k| !k.explicit).collect();
+
+        if dependency_pkgs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Get all explicit packages
+        let explicit_pkgs: Vec<_> = installed.iter().filter(|k| k.explicit).collect();
+
+        if explicit_pkgs.is_empty() {
+            // If no explicit packages, all dependencies are orphans
+            return Ok(dependency_pkgs.iter().map(|k| k.name.clone()).collect());
+        }
+
+        // Find all packages that are required by explicit packages
+        let mut required: HashSet<String> = HashSet::new();
+
+        for keg in &explicit_pkgs {
+            // The explicit package itself is required
+            required.insert(keg.name.clone());
+
+            // Fetch its formula to get dependencies
+            match self.api_client.get_formula(&keg.name).await {
+                Ok(formula) => {
+                    // Get all transitive dependencies
+                    match self.fetch_all_formulas(&keg.name).await {
+                        Ok(formulas) => {
+                            if let Ok(deps) = resolve_closure(&keg.name, &formulas) {
+                                required.extend(deps);
+                            }
+                        }
+                        Err(_) => {
+                            // If we can't fetch formulas, just use direct dependencies
+                            required.extend(formula.effective_dependencies());
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Formula no longer in API - can't determine deps, keep it safe
+                    continue;
+                }
+            }
+        }
+
+        // Find orphans: packages that are dependencies but not required
+        let orphans: Vec<String> = dependency_pkgs
+            .iter()
+            .filter(|k| !required.contains(&k.name))
+            .map(|k| k.name.clone())
+            .collect();
+
+        Ok(orphans)
+    }
+
+    /// Remove orphaned packages (dependencies no longer needed by any explicit package).
+    ///
+    /// Returns the list of packages that were removed.
+    pub async fn autoremove(&mut self) -> Result<Vec<String>, Error> {
+        let orphans = self.find_orphans().await?;
+
+        if orphans.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut removed = Vec::new();
+
+        for name in orphans {
+            match self.uninstall(&name) {
+                Ok(()) => {
+                    removed.push(name);
+                }
+                Err(e) => {
+                    // Log warning but continue with other packages
+                    eprintln!("    Warning: failed to remove {}: {}", name, e);
+                }
+            }
+        }
+
+        Ok(removed)
+    }
+
+    /// Mark a package as explicitly installed.
+    ///
+    /// Use this when a user explicitly installs a package that was previously
+    /// installed as a dependency.
+    pub fn mark_explicit(&self, name: &str) -> Result<bool, Error> {
+        if self.db.get_installed(name).is_none() {
+            return Err(Error::NotInstalled {
+                name: name.to_string(),
+            });
+        }
+        self.db.mark_explicit(name)
+    }
+
+    /// Mark a package as a dependency (not explicitly installed).
+    pub fn mark_dependency(&self, name: &str) -> Result<bool, Error> {
+        if self.db.get_installed(name).is_none() {
+            return Err(Error::NotInstalled {
+                name: name.to_string(),
+            });
+        }
+        self.db.mark_dependency(name)
+    }
+
+    /// Check if a package was explicitly installed.
+    pub fn is_explicit(&self, name: &str) -> bool {
+        self.db.is_explicit(name)
+    }
+
+    /// List packages installed as dependencies (not explicitly).
+    pub fn list_dependencies(&self) -> Result<Vec<crate::db::InstalledKeg>, Error> {
+        self.db.list_dependencies()
     }
 }
 
@@ -2289,5 +2432,337 @@ mod tests {
         assert_eq!(outdated_with_pinned.len(), 2);
         assert!(outdated_with_pinned.iter().any(|p| p.name == "pkg1"));
         assert!(outdated_with_pinned.iter().any(|p| p.name == "pkg2"));
+    }
+
+    #[tokio::test]
+    async fn install_marks_root_as_explicit_and_deps_as_dependency() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottles
+        let root_bottle = create_bottle_tarball("rootpkg");
+        let root_sha = sha256_hex(&root_bottle);
+        let dep_bottle = create_bottle_tarball("deppkg");
+        let dep_sha = sha256_hex(&dep_bottle);
+
+        // Root package depends on deppkg
+        let root_json = format!(
+            r#"{{"name":"rootpkg","versions":{{"stable":"1.0.0"}},"dependencies":["deppkg"],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/rootpkg.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = root_sha
+        );
+        let dep_json = format!(
+            r#"{{"name":"deppkg","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/deppkg.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = dep_sha
+        );
+
+        // Mount mocks
+        Mock::given(method("GET"))
+            .and(path("/rootpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&root_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/deppkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&dep_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/rootpkg.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(root_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/deppkg.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(dep_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install root package (should also install deppkg as dependency)
+        installer.install("rootpkg", true).await.unwrap();
+
+        // Verify rootpkg is marked as explicit
+        assert!(installer.is_explicit("rootpkg"));
+        let rootpkg = installer.get_installed("rootpkg").unwrap();
+        assert!(rootpkg.explicit);
+
+        // Verify deppkg is marked as dependency (not explicit)
+        assert!(!installer.is_explicit("deppkg"));
+        let deppkg = installer.get_installed("deppkg").unwrap();
+        assert!(!deppkg.explicit);
+
+        // list_dependencies should only return deppkg
+        let deps = installer.list_dependencies().unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "deppkg");
+    }
+
+    #[tokio::test]
+    async fn find_orphans_returns_unused_dependencies() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottles
+        let root_bottle = create_bottle_tarball("mypkg");
+        let root_sha = sha256_hex(&root_bottle);
+        let dep_bottle = create_bottle_tarball("mydep");
+        let dep_sha = sha256_hex(&dep_bottle);
+
+        // root depends on dep
+        let root_json = format!(
+            r#"{{"name":"mypkg","versions":{{"stable":"1.0.0"}},"dependencies":["mydep"],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/mypkg.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = root_sha
+        );
+        let dep_json = format!(
+            r#"{{"name":"mydep","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/mydep.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = dep_sha
+        );
+
+        // Mount mocks
+        Mock::given(method("GET"))
+            .and(path("/mypkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&root_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mydep.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&dep_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/mypkg.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(root_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/mydep.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(dep_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install mypkg (which installs mydep as dependency)
+        installer.install("mypkg", true).await.unwrap();
+
+        // Initially, mydep is needed by mypkg, so no orphans
+        let orphans = installer.find_orphans().await.unwrap();
+        assert!(orphans.is_empty());
+
+        // Uninstall mypkg
+        installer.uninstall("mypkg").unwrap();
+
+        // Now mydep is orphaned (no explicit package depends on it)
+        let orphans = installer.find_orphans().await.unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0], "mydep");
+    }
+
+    #[tokio::test]
+    async fn autoremove_removes_orphaned_dependencies() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottles
+        let root_bottle = create_bottle_tarball("parent");
+        let root_sha = sha256_hex(&root_bottle);
+        let dep_bottle = create_bottle_tarball("child");
+        let dep_sha = sha256_hex(&dep_bottle);
+
+        // parent depends on child
+        let root_json = format!(
+            r#"{{"name":"parent","versions":{{"stable":"1.0.0"}},"dependencies":["child"],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/parent.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = root_sha
+        );
+        let dep_json = format!(
+            r#"{{"name":"child","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/child.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = dep_sha
+        );
+
+        // Mount mocks
+        Mock::given(method("GET"))
+            .and(path("/parent.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&root_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/child.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&dep_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/parent.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(root_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/child.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(dep_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install parent (which installs child as dependency)
+        installer.install("parent", true).await.unwrap();
+        assert!(installer.is_installed("parent"));
+        assert!(installer.is_installed("child"));
+
+        // Uninstall parent
+        installer.uninstall("parent").unwrap();
+
+        // child is now orphaned
+        assert!(installer.is_installed("child"));
+
+        // Autoremove should remove child
+        let removed = installer.autoremove().await.unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], "child");
+
+        // child should no longer be installed
+        assert!(!installer.is_installed("child"));
+    }
+
+    #[tokio::test]
+    async fn mark_explicit_prevents_autoremove() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottles
+        let root_bottle = create_bottle_tarball("app");
+        let root_sha = sha256_hex(&root_bottle);
+        let dep_bottle = create_bottle_tarball("lib");
+        let dep_sha = sha256_hex(&dep_bottle);
+
+        // app depends on lib
+        let root_json = format!(
+            r#"{{"name":"app","versions":{{"stable":"1.0.0"}},"dependencies":["lib"],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/app.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = root_sha
+        );
+        let dep_json = format!(
+            r#"{{"name":"lib","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/lib.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = dep_sha
+        );
+
+        // Mount mocks
+        Mock::given(method("GET"))
+            .and(path("/app.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&root_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/lib.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&dep_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/app.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(root_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/lib.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(dep_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install app (which installs lib as dependency)
+        installer.install("app", true).await.unwrap();
+
+        // lib was installed as a dependency
+        assert!(!installer.is_explicit("lib"));
+
+        // User explicitly wants to keep lib even if app is uninstalled
+        installer.mark_explicit("lib").unwrap();
+        assert!(installer.is_explicit("lib"));
+
+        // Uninstall app
+        installer.uninstall("app").unwrap();
+
+        // lib is not an orphan because it's now marked as explicit
+        let orphans = installer.find_orphans().await.unwrap();
+        assert!(orphans.is_empty());
+
+        // lib is still installed
+        assert!(installer.is_installed("lib"));
+    }
+
+    #[tokio::test]
+    async fn mark_explicit_not_installed_returns_error() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Marking a non-installed package as explicit should fail
+        let result = installer.mark_explicit("nonexistent");
+        assert!(matches!(result, Err(Error::NotInstalled { .. })));
     }
 }

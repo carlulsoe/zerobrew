@@ -101,6 +101,13 @@ enum Commands {
     /// Garbage collect unreferenced store entries
     Gc,
 
+    /// Remove orphaned dependencies (packages no longer needed by any explicit install)
+    Autoremove {
+        /// Show what would be removed without doing it
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Reset zerobrew (delete all data for cold install testing)
     Reset {
         /// Skip confirmation prompt
@@ -1015,6 +1022,57 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     style("==>").cyan().bold(),
                     style(removed.len()).green().bold()
                 );
+            }
+        }
+
+        Commands::Autoremove { dry_run } => {
+            println!(
+                "{} Finding orphaned dependencies...",
+                style("==>").cyan().bold()
+            );
+
+            let orphans = installer.find_orphans().await?;
+
+            if orphans.is_empty() {
+                println!("No orphaned dependencies to remove.");
+                return Ok(());
+            }
+
+            if dry_run {
+                println!(
+                    "{} Would remove {} orphaned packages:\n",
+                    style("==>").cyan().bold(),
+                    style(orphans.len()).yellow().bold()
+                );
+                for name in &orphans {
+                    println!("  {}", name);
+                }
+                println!(
+                    "\n    {} Run {} to remove",
+                    style("→").dim(),
+                    style("zb autoremove").cyan()
+                );
+            } else {
+                println!(
+                    "{} Removing {} orphaned packages...\n",
+                    style("==>").cyan().bold(),
+                    style(orphans.len()).yellow().bold()
+                );
+
+                let removed = installer.autoremove().await?;
+
+                if removed.is_empty() {
+                    println!("No packages were removed.");
+                } else {
+                    for name in &removed {
+                        println!("    {} Removed {}", style("✓").green(), name);
+                    }
+                    println!(
+                        "\n{} Removed {} orphaned packages",
+                        style("==>").cyan().bold(),
+                        style(removed.len()).green().bold()
+                    );
+                }
             }
         }
 

@@ -252,6 +252,67 @@ $ zb unpin git
 - `install::pin_not_installed_returns_error` - Tests NotInstalled error
 - `install::pinned_packages_excluded_from_get_outdated` - Tests filtering in get_outdated()
 
+### 8. Implemented Autoremove Command (Phase 1.5) ✅
+
+**Files modified:**
+- `zb_io/src/db.rs` - Added `explicit` column, migration, and explicit tracking methods
+- `zb_io/src/install.rs` - Added `find_orphans()`, `autoremove()`, and explicit marking methods
+- `zb_cli/src/main.rs` - Added `zb autoremove` command
+
+**Database changes:**
+- Added `explicit INTEGER NOT NULL DEFAULT 1` column to `installed_kegs` table
+- Migration automatically adds column to existing databases
+- Existing packages default to explicit=1 (backward compatible)
+
+**Features:**
+- Track explicit vs dependency installs: root package marked explicit, dependencies marked as dependencies
+- Find orphaned packages: `find_orphans()` identifies dependencies no longer needed
+- Remove orphans: `zb autoremove` removes orphaned dependencies
+- Dry-run mode: `zb autoremove --dry-run` shows what would be removed
+- Mark explicit: `mark_explicit()` allows marking a dependency as explicitly wanted
+- Prevents auto-removal of packages user explicitly wants to keep
+
+**Implementation details:**
+- `InstallPlan` now tracks `root_name` to identify the explicitly requested package
+- `record_install()` takes `explicit` parameter to track install type
+- `find_orphans()` computes required packages from all explicit installs
+- Uses API to resolve transitive dependencies for each explicit package
+- Orphans = dependencies that no explicit package requires
+
+**Example usage:**
+```
+$ zb install foo    # foo's deps installed as dependencies
+
+$ zb uninstall foo  # Remove foo but deps remain
+
+$ zb autoremove --dry-run
+==> Would remove 3 orphaned packages:
+
+  libdep1
+  libdep2
+  libdep3
+
+    → Run zb autoremove to remove
+
+$ zb autoremove
+==> Removing 3 orphaned packages...
+
+    ✓ Removed libdep1
+    ✓ Removed libdep2
+    ✓ Removed libdep3
+
+==> Removed 3 orphaned packages
+```
+
+**New tests (7 total):**
+- `db::explicit_vs_dependency_tracking` - Tests database-level explicit tracking
+- `db::mark_explicit_and_dependency` - Tests marking/unmarking packages
+- `install::install_marks_root_as_explicit_and_deps_as_dependency` - Tests install tracking
+- `install::find_orphans_returns_unused_dependencies` - Tests orphan detection
+- `install::autoremove_removes_orphaned_dependencies` - Tests full autoremove flow
+- `install::mark_explicit_prevents_autoremove` - Tests explicit marking prevents removal
+- `install::mark_explicit_not_installed_returns_error` - Tests error handling
+
 ---
 
 ## Remaining Phase 1 Tasks
@@ -262,7 +323,7 @@ $ zb unpin git
 | 1.2 Outdated command | ✅ Complete |
 | 1.3 Upgrade command | ✅ Complete |
 | 1.4 Pin/unpin commands | ✅ Complete |
-| 1.5 Autoremove command | ⏳ Not started |
+| 1.5 Autoremove command | ✅ Complete |
 | 1.6 Shellenv command | ⏳ Not started |
 | 1.7 Improved info command | ⏳ Not started |
 
@@ -271,7 +332,7 @@ $ zb unpin git
 ## Test Results
 
 All tests passing:
-- 148 unit tests passed (37 zb_core + 111 zb_io)
+- 155 unit tests passed (37 zb_core + 118 zb_io)
 - 27 integration tests passed
 - 4 tests ignored (require specific environment)
 
@@ -279,9 +340,8 @@ All tests passing:
 
 ## Next Steps
 
-1. Implement `zb autoremove` - remove orphaned dependencies
-2. Implement `zb shellenv` - output shell environment setup
-3. Improve `zb info` - show dependencies, caveats, etc.
+1. Implement `zb shellenv` - output shell environment setup
+2. Improve `zb info` - show dependencies, caveats, etc.
 
 ---
 
@@ -293,3 +353,4 @@ All tests passing:
 - May want to add search filters (e.g., `--installed-only`)
 - Upgrade command reuses install progress display for consistency
 - Pin/unpin integrates with outdated/upgrade commands automatically
+- Autoremove fetches formulas for all explicit packages to compute transitive deps
