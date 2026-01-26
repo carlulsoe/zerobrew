@@ -543,7 +543,7 @@ $ zb untap homebrew/services
 ## Test Results
 
 All tests passing:
-- 158 unit tests passed (51 zb_core + 150 zb_io + 7 zb_cli, overlapping)
+- 175 unit tests passed (51 zb_core + 164 zb_io + 11 zb_cli)
 - 27 integration tests passed
 - 4 tests ignored (require specific environment)
 
@@ -685,13 +685,38 @@ $ zb cleanup
 ==> Freed 2.1 MB
 ```
 
-**New tests (8 total):**
+**New tests (23 total):**
+
+*HTTP Cache tests (from earlier):*
 - `count_returns_number_of_entries` - Tests counting cache entries
 - `clear_removes_all_entries` - Tests clearing all entries
 - `total_body_size_returns_sum_of_body_lengths` - Tests size calculation
 - `cleanup_older_than_removes_old_entries` - Tests age-based cleanup
 - `count_older_than_returns_count_of_old_entries` - Tests counting old entries
 - `body_size_older_than_returns_size_of_old_entries` - Tests size of old entries
+
+*BlobCache cleanup tests:*
+- `list_blobs_returns_all_blobs` - Tests listing all cached blobs
+- `total_size_returns_correct_size` - Tests blob cache size calculation
+- `remove_blobs_except_keeps_specified` - Tests keeping only specified blobs
+- `cleanup_temp_files_removes_part_files` - Tests temp file cleanup
+
+*Store cleanup tests:*
+- `list_entries_returns_all_store_entries` - Tests listing store entries
+- `cleanup_stale_locks_removes_orphaned_locks` - Tests stale lock cleanup
+- `cleanup_temp_dirs_removes_stale_temp_directories` - Tests temp dir cleanup
+- `total_size_returns_correct_value` - Tests store size calculation
+
+*Installer cleanup integration tests:*
+- `cleanup_removes_unused_blobs_and_store_entries` - Full cleanup flow
+- `cleanup_dry_run_does_not_remove_files` - Dry run doesn't modify
+- `cleanup_keeps_installed_package_blobs` - Keeps blobs for installed packages
+
+*CLI tests:*
+- `test_format_bytes_bytes` - Tests byte formatting < 1KB
+- `test_format_bytes_kilobytes` - Tests KB formatting
+- `test_format_bytes_megabytes` - Tests MB formatting
+- `test_format_bytes_gigabytes` - Tests GB formatting
 
 ---
 
