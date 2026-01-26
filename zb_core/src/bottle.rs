@@ -270,4 +270,245 @@ mod tests {
             Error::UnsupportedBottle { name } if name == "incompatible"
         ));
     }
+
+    // ========================================================================
+    // Linux-specific bottle selection tests
+    // ========================================================================
+
+    /// Test that Linux bottles are preferred over macOS bottles on Linux
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_prefers_linux_bottles_over_macos() {
+        let mut files = BTreeMap::new();
+        // Add both macOS and Linux bottles
+        files.insert(
+            "arm64_sonoma".to_string(),
+            BottleFile {
+                url: "https://example.com/macos.tar.gz".to_string(),
+                sha256: "macos".to_string(),
+            },
+        );
+        files.insert(
+            "arm64_linux".to_string(),
+            BottleFile {
+                url: "https://example.com/linux-arm64.tar.gz".to_string(),
+                sha256: "linux-arm64".to_string(),
+            },
+        );
+        files.insert(
+            "x86_64_linux".to_string(),
+            BottleFile {
+                url: "https://example.com/linux-x86.tar.gz".to_string(),
+                sha256: "linux-x86".to_string(),
+            },
+        );
+
+        let formula = Formula {
+            name: "test-pkg".to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        let selected = select_bottle(&formula).unwrap();
+        // Should select Linux bottle, not macOS
+        assert!(
+            selected.tag.contains("linux"),
+            "Expected Linux bottle, got: {}",
+            selected.tag
+        );
+    }
+
+    /// Test fallback to 'all' bottle when no Linux-specific bottle exists
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_falls_back_to_all_bottle() {
+        let mut files = BTreeMap::new();
+        // Only macOS and 'all' bottles available
+        files.insert(
+            "arm64_sonoma".to_string(),
+            BottleFile {
+                url: "https://example.com/macos.tar.gz".to_string(),
+                sha256: "macos".to_string(),
+            },
+        );
+        files.insert(
+            "all".to_string(),
+            BottleFile {
+                url: "https://example.com/all.tar.gz".to_string(),
+                sha256: "all".to_string(),
+            },
+        );
+
+        let formula = Formula {
+            name: "ca-certs".to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        let selected = select_bottle(&formula).unwrap();
+        assert_eq!(selected.tag, "all");
+    }
+
+    /// Test that Linux x86_64 doesn't accidentally select arm64_linux
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn x86_64_linux_does_not_select_arm64_linux() {
+        let mut files = BTreeMap::new();
+        // Only arm64_linux available (wrong arch)
+        files.insert(
+            "arm64_linux".to_string(),
+            BottleFile {
+                url: "https://example.com/arm64-linux.tar.gz".to_string(),
+                sha256: "arm64".to_string(),
+            },
+        );
+
+        let formula = Formula {
+            name: "wrong-arch".to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        // Should fail - no compatible bottle
+        let err = select_bottle(&formula).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedBottle { .. }));
+    }
+
+    /// Test that arm64 Linux doesn't accidentally select x86_64_linux
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    fn arm64_linux_does_not_select_x86_64_linux() {
+        let mut files = BTreeMap::new();
+        // Only x86_64_linux available (wrong arch)
+        files.insert(
+            "x86_64_linux".to_string(),
+            BottleFile {
+                url: "https://example.com/x86-linux.tar.gz".to_string(),
+                sha256: "x86".to_string(),
+            },
+        );
+
+        let formula = Formula {
+            name: "wrong-arch".to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        // Should fail - no compatible bottle
+        let err = select_bottle(&formula).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedBottle { .. }));
+    }
+
+    // ========================================================================
+    // Cross-platform tests (run on both Linux and macOS)
+    // ========================================================================
+
+    /// Test that empty bottle list returns error
+    #[test]
+    fn empty_bottles_returns_error() {
+        let files = BTreeMap::new();
+
+        let formula = Formula {
+            name: "empty".to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        let err = select_bottle(&formula).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::UnsupportedBottle { name } if name == "empty"
+        ));
+    }
+
+    /// Test that platform tags function returns non-empty on supported platforms
+    #[test]
+    fn platform_tags_non_empty_on_supported_platforms() {
+        let tags = get_platform_tags();
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+        ))]
+        assert!(!tags.is_empty(), "Expected non-empty platform tags");
+    }
+
+    /// Test Linux bottle selection using fixture
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn selects_linux_bottle_from_fixture() {
+        let fixture = include_str!("../fixtures/formula_linux.json");
+        let formula: Formula = serde_json::from_str(fixture).unwrap();
+
+        let selected = select_bottle(&formula).unwrap();
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert_eq!(selected.tag, "arm64_linux");
+            assert!(selected.url.contains("linux-arm"));
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(selected.tag, "x86_64_linux");
+            assert!(selected.url.contains("linux-x86"));
+        }
+    }
+
+    /// Test compatible fallback tag logic
+    #[test]
+    fn is_compatible_fallback_tag_logic() {
+        #[cfg(target_os = "linux")]
+        {
+            // Linux should not consider macOS tags compatible
+            assert!(!is_compatible_fallback_tag("arm64_sonoma"));
+            assert!(!is_compatible_fallback_tag("arm64_ventura"));
+            assert!(!is_compatible_fallback_tag("sonoma"));
+
+            // Linux tags based on architecture
+            #[cfg(target_arch = "aarch64")]
+            {
+                assert!(is_compatible_fallback_tag("arm64_linux"));
+                assert!(!is_compatible_fallback_tag("x86_64_linux"));
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                assert!(is_compatible_fallback_tag("x86_64_linux"));
+                assert!(!is_compatible_fallback_tag("arm64_linux"));
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            // macOS should not consider Linux tags compatible
+            assert!(!is_compatible_fallback_tag("arm64_linux"));
+            assert!(!is_compatible_fallback_tag("x86_64_linux"));
+        }
+    }
 }

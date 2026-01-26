@@ -1,0 +1,25 @@
+{
+  "name": "linux-test",
+  "versions": {
+    "stable": "1.0.0"
+  },
+  "dependencies": [],
+  "bottle": {
+    "stable": {
+      "files": {
+        "arm64_sonoma": {
+          "url": "https://ghcr.io/v2/homebrew/core/linux-test/blobs/sha256:macos-arm",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "arm64_linux": {
+          "url": "https://ghcr.io/v2/homebrew/core/linux-test/blobs/sha256:linux-arm",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "x86_64_linux": {
+          "url": "https://ghcr.io/v2/homebrew/core/linux-test/blobs/sha256:linux-x86",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      }
+    }
+  }
+}

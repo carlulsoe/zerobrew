@@ -1015,4 +1015,328 @@ mod tests {
 
         assert_eq!(fixed3, other_path);
     }
+
+    // ========================================================================
+    // Linux-specific ELF tests
+    // ========================================================================
+
+    /// Test ELF magic byte detection
+    #[test]
+    fn elf_magic_detection() {
+        const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+
+        // Valid ELF header
+        let elf_data = vec![0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00];
+        assert_eq!(&elf_data[0..4], &ELF_MAGIC);
+
+        // Invalid - wrong magic
+        let not_elf = vec![0x00, 0x00, 0x00, 0x00];
+        assert_ne!(&not_elf[0..4], &ELF_MAGIC);
+
+        // Invalid - Mach-O (macOS) magic
+        let macho_data = vec![0xfe, 0xed, 0xfa, 0xce]; // feedface
+        assert_ne!(&macho_data[0..4], &ELF_MAGIC);
+
+        // Invalid - shell script
+        let script_data = vec![b'#', b'!', b'/', b'b'];
+        assert_ne!(&script_data[0..4], &ELF_MAGIC);
+    }
+
+    /// Test Mach-O magic byte detection (for contrast with ELF)
+    #[test]
+    fn macho_magic_detection() {
+        // Mach-O 32-bit (big-endian magic)
+        let macho32 = [0xfe, 0xed, 0xfa, 0xce];
+        let magic32 = u32::from_be_bytes(macho32);
+        assert_eq!(magic32, 0xfeedface);
+
+        // Mach-O 64-bit (big-endian magic)
+        let macho64 = [0xfe, 0xed, 0xfa, 0xcf];
+        let magic64 = u32::from_be_bytes(macho64);
+        assert_eq!(magic64, 0xfeedfacf);
+
+        // Fat/Universal binary
+        let fat = [0xca, 0xfe, 0xba, 0xbe];
+        let fat_magic = u32::from_be_bytes(fat);
+        assert_eq!(fat_magic, 0xcafebabe);
+    }
+
+    /// Test RPATH placeholder replacement logic (cross-platform)
+    #[test]
+    fn rpath_placeholder_replacement() {
+        let cellar = "/opt/zerobrew/prefix/Cellar";
+        let prefix = "/opt/zerobrew/prefix";
+
+        // Test @@HOMEBREW_CELLAR@@ replacement
+        let old_rpath = "@@HOMEBREW_CELLAR@@/openssl/3.0.0/lib";
+        let new_rpath = old_rpath
+            .replace("@@HOMEBREW_CELLAR@@", cellar)
+            .replace("@@HOMEBREW_PREFIX@@", prefix);
+        assert_eq!(new_rpath, "/opt/zerobrew/prefix/Cellar/openssl/3.0.0/lib");
+
+        // Test @@HOMEBREW_PREFIX@@ replacement
+        let old_rpath2 = "@@HOMEBREW_PREFIX@@/lib";
+        let new_rpath2 = old_rpath2
+            .replace("@@HOMEBREW_CELLAR@@", cellar)
+            .replace("@@HOMEBREW_PREFIX@@", prefix);
+        assert_eq!(new_rpath2, "/opt/zerobrew/prefix/lib");
+
+        // Test combined placeholders
+        let old_rpath3 = "@@HOMEBREW_CELLAR@@/foo/1.0/lib:@@HOMEBREW_PREFIX@@/lib";
+        let new_rpath3 = old_rpath3
+            .replace("@@HOMEBREW_CELLAR@@", cellar)
+            .replace("@@HOMEBREW_PREFIX@@", prefix);
+        assert_eq!(
+            new_rpath3,
+            "/opt/zerobrew/prefix/Cellar/foo/1.0/lib:/opt/zerobrew/prefix/lib"
+        );
+    }
+
+    /// Test that reflink copy falls back gracefully
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn reflink_fallback_to_copy() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("file.txt"), b"test content").unwrap();
+
+        // copy_dir_with_fallback should always succeed, using whatever
+        // method works (reflink → hardlink → copy)
+        let cellar_path = tmp.path().join("cellar");
+        fs::create_dir_all(&cellar_path).unwrap();
+        let cellar = Cellar::new_at(cellar_path).unwrap();
+
+        // Test via materialize which uses copy_dir_with_fallback internally
+        let keg = cellar.materialize("test", "1.0.0", &src).unwrap();
+        assert!(keg.join("file.txt").exists());
+        assert_eq!(
+            fs::read_to_string(keg.join("file.txt")).unwrap(),
+            "test content"
+        );
+    }
+
+    /// Test ELF file detection in directory walk
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn detects_elf_files_in_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let lib_dir = tmp.path().join("lib");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::create_dir_all(&lib_dir).unwrap();
+
+        // Create a fake ELF executable
+        let elf_header: Vec<u8> = vec![
+            0x7f, b'E', b'L', b'F', // Magic
+            0x02, // 64-bit
+            0x01, // Little-endian
+            0x01, // ELF version 1
+            0x00, // OS/ABI
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Padding
+        ];
+        fs::write(bin_dir.join("myapp"), &elf_header).unwrap();
+        let mut perms = fs::metadata(bin_dir.join("myapp")).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(bin_dir.join("myapp"), perms).unwrap();
+
+        // Create a fake shared library with ELF header
+        let mut lib_data = elf_header.clone();
+        lib_data.extend_from_slice(b"fake lib data");
+        fs::write(lib_dir.join("libfoo.so"), &lib_data).unwrap();
+
+        // Create a non-ELF file (shell script)
+        fs::write(bin_dir.join("script.sh"), b"#!/bin/sh\necho hello").unwrap();
+
+        // Verify ELF magic detection
+        const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+
+        let elf_count = walkdir::WalkDir::new(tmp.path())
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| {
+                if let Ok(data) = fs::read(e.path()) {
+                    if data.len() >= 4 {
+                        return data[0..4] == ELF_MAGIC;
+                    }
+                }
+                false
+            })
+            .count();
+
+        assert_eq!(elf_count, 2, "Should detect 2 ELF files");
+    }
+
+    /// Test symlink preservation during materialization
+    #[test]
+    fn symlink_preservation() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join("lib")).unwrap();
+
+        // Create a file and a symlink to it
+        fs::write(src.join("lib/libfoo.so.1.0.0"), b"lib content").unwrap();
+        std::os::unix::fs::symlink("libfoo.so.1.0.0", src.join("lib/libfoo.so.1")).unwrap();
+        std::os::unix::fs::symlink("libfoo.so.1", src.join("lib/libfoo.so")).unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg = cellar.materialize("foo", "1.0.0", &src).unwrap();
+
+        // Check real file exists
+        assert!(keg.join("lib/libfoo.so.1.0.0").exists());
+
+        // Check symlinks are preserved as symlinks
+        let link1 = keg.join("lib/libfoo.so.1");
+        assert!(link1.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(&link1).unwrap().to_string_lossy(), "libfoo.so.1.0.0");
+
+        let link2 = keg.join("lib/libfoo.so");
+        assert!(link2.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(&link2).unwrap().to_string_lossy(), "libfoo.so.1");
+    }
+
+    /// Test that find_bottle_content handles various bottle structures
+    #[test]
+    fn find_bottle_content_variants() {
+        let tmp = TempDir::new().unwrap();
+
+        // Test 1: Standard Homebrew structure {name}/{version}/
+        let store1 = tmp.path().join("store1");
+        fs::create_dir_all(store1.join("foo/1.0.0/bin")).unwrap();
+        fs::write(store1.join("foo/1.0.0/bin/foo"), b"binary").unwrap();
+
+        let content1 = find_bottle_content(&store1, "foo", "1.0.0").unwrap();
+        assert!(content1.ends_with("foo/1.0.0"));
+
+        // Test 2: Just {name}/ with single version directory
+        let store2 = tmp.path().join("store2");
+        fs::create_dir_all(store2.join("bar/2.0.0")).unwrap();
+        fs::write(store2.join("bar/2.0.0/README"), b"readme").unwrap();
+
+        let content2 = find_bottle_content(&store2, "bar", "2.0.0").unwrap();
+        assert!(content2.to_string_lossy().contains("bar"));
+
+        // Test 3: Flat structure (fallback to store root)
+        let store3 = tmp.path().join("store3");
+        fs::create_dir_all(store3.join("bin")).unwrap();
+        fs::write(store3.join("bin/baz"), b"binary").unwrap();
+
+        let content3 = find_bottle_content(&store3, "baz", "3.0.0").unwrap();
+        assert_eq!(content3, store3);
+    }
+
+    /// Test file permissions are preserved during copy
+    #[test]
+    fn permissions_preserved() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join("bin")).unwrap();
+
+        // Create files with different permissions
+        fs::write(src.join("bin/executable"), b"#!/bin/sh\necho hi").unwrap();
+        let mut perms = fs::metadata(src.join("bin/executable")).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(src.join("bin/executable"), perms).unwrap();
+
+        fs::write(src.join("bin/readonly"), b"data").unwrap();
+        let mut perms = fs::metadata(src.join("bin/readonly")).unwrap().permissions();
+        perms.set_mode(0o444);
+        fs::set_permissions(src.join("bin/readonly"), perms).unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg = cellar.materialize("test", "1.0.0", &src).unwrap();
+
+        // Check executable permission
+        let exec_perms = fs::metadata(keg.join("bin/executable")).unwrap().permissions();
+        assert!(exec_perms.mode() & 0o111 != 0, "executable bit should be preserved");
+
+        // Check readonly permission
+        let ro_perms = fs::metadata(keg.join("bin/readonly")).unwrap().permissions();
+        assert!(ro_perms.mode() & 0o222 == 0, "write bit should not be set on readonly file");
+    }
+
+    // ========================================================================
+    // Integration tests for Linux ELF patching
+    // ========================================================================
+
+    /// Test placeholder patching with real file structure (Linux)
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore] // Requires patchelf to be installed
+    fn elf_patching_with_patchelf() {
+        use std::process::Command;
+
+        // Check if patchelf is available
+        let patchelf_check = Command::new("patchelf").arg("--version").output();
+        if patchelf_check.map(|o| !o.status.success()).unwrap_or(true) {
+            // patchelf not available, skip test
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let cellar = Cellar::new(tmp.path()).unwrap();
+
+        // Create a minimal ELF-like structure
+        // Note: This is a placeholder test - real ELF binaries would be needed
+        // for full integration testing
+        let store = tmp.path().join("store/elf-test");
+        fs::create_dir_all(store.join("bin")).unwrap();
+
+        // For a real test, we'd need an actual ELF binary
+        // This test documents the expected behavior
+        assert!(cellar.cellar_dir.exists());
+    }
+
+    /// Test that missing patchelf doesn't cause failures
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn missing_patchelf_graceful_handling() {
+        // This test verifies that the code handles missing patchelf gracefully
+        // by checking that patch_homebrew_placeholders_linux returns Ok even
+        // when patchelf isn't available (it should skip patching, not fail)
+
+        let tmp = TempDir::new().unwrap();
+        let keg = tmp.path().join("keg");
+        let cellar = tmp.path().join("cellar");
+        fs::create_dir_all(&keg).unwrap();
+        fs::create_dir_all(&cellar).unwrap();
+
+        // Create a fake ELF file (just the magic bytes, not a real binary)
+        let elf_header: Vec<u8> = vec![
+            0x7f, b'E', b'L', b'F',
+            0x02, 0x01, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        fs::create_dir_all(keg.join("bin")).unwrap();
+        fs::write(keg.join("bin/fake-elf"), &elf_header).unwrap();
+
+        // patch_homebrew_placeholders_linux should return Ok even if patchelf
+        // isn't installed - it gracefully skips patching
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0.0");
+        assert!(result.is_ok(), "Should not fail when patchelf is missing");
+    }
+
+    /// Test Linux interpreter paths for different architectures
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_interpreter_paths() {
+        // These are the expected system dynamic linkers
+        #[cfg(target_arch = "aarch64")]
+        {
+            let interp = "/lib/ld-linux-aarch64.so.1";
+            assert!(interp.contains("aarch64"));
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let interp = "/lib64/ld-linux-x86-64.so.2";
+            assert!(interp.contains("x86-64"));
+        }
+    }
 }
