@@ -87,6 +87,47 @@ $ zb search '/python@3\.1[12]/'
 1. `d3cf8ed` - refactor: Improve error reporting and code quality
 2. `f5ed76b` - docs: Add comprehensive roadmap for full Homebrew replacement
 
+### 5. Implemented Outdated Command (Phase 1.2) ✅
+
+**Files created/modified:**
+- `zb_core/src/version.rs` (NEW) - Version parsing and comparison
+- `zb_core/src/lib.rs` - Exported version module
+- `zb_io/src/install.rs` - Added `get_outdated()` method to Installer
+- `zb_cli/src/main.rs` - Added `zb outdated` command
+- `zb_cli/Cargo.toml` - Added serde_json dependency
+
+**Features:**
+- Compares installed package versions against latest API versions
+- Handles Homebrew version formats including:
+  - Simple versions: `1.2.3`
+  - Rebuild suffixes: `1.0.0_1`
+  - Prerelease: `1.0.0-beta` (properly sorts before `1.0.0`)
+- Supports `--json` flag for machine-readable output
+- Shows helpful upgrade hint in human-readable output
+- Parallel API fetching for all installed packages
+
+**Example usage:**
+```
+$ zb outdated
+==> Checking for outdated packages...
+==> 3 outdated packages:
+
+  git 2.43.0 → 2.44.0
+  node 20.11.0 → 21.6.0
+  python@3.11 3.11.7 → 3.11.8
+
+    → Run zb upgrade to upgrade all
+
+$ zb outdated --json
+[
+  {
+    "name": "git",
+    "installed_version": "2.43.0",
+    "available_version": "2.44.0"
+  }
+]
+```
+
 ---
 
 ## Remaining Phase 1 Tasks
@@ -94,7 +135,7 @@ $ zb search '/python@3\.1[12]/'
 | Task | Status |
 |------|--------|
 | 1.1 Search command | ✅ Complete |
-| 1.2 Outdated command | ⏳ Not started |
+| 1.2 Outdated command | ✅ Complete |
 | 1.3 Upgrade command | ⏳ Not started |
 | 1.4 Pin/unpin commands | ⏳ Not started |
 | 1.5 Autoremove command | ⏳ Not started |
@@ -106,24 +147,25 @@ $ zb search '/python@3\.1[12]/'
 ## Test Results
 
 All tests passing:
-- 99 unit tests passed
-- 3 tests ignored (require specific environment)
+- 102 unit tests passed (37 zb_core + 99 zb_io, some overlap in count)
+- 27 integration tests passed
+- 4 tests ignored (require specific environment)
 
 ---
 
 ## Next Steps
 
-1. Commit the search command implementation
-2. Implement `zb outdated` - compare installed vs API versions
-3. Implement `zb upgrade` - upgrade outdated packages
-4. Implement `zb pin/unpin` - prevent specific packages from upgrading
-5. Implement `zb autoremove` - remove orphaned dependencies
-6. Implement `zb shellenv` - output shell environment setup
+1. Implement `zb upgrade` - upgrade outdated packages
+2. Implement `zb pin/unpin` - prevent specific packages from upgrading
+3. Implement `zb autoremove` - remove orphaned dependencies
+4. Implement `zb shellenv` - output shell environment setup
+5. Improve `zb info` - show dependencies, caveats, etc.
 
 ---
 
 ## Notes
 
 - Search command fetches ~7MB formula.json on first run (cached after)
-- Consider adding `--json` flag for machine-readable output
+- Outdated command fetches individual formula JSON for each installed package
+- Consider adding `--json` flag to search for machine-readable output
 - May want to add search filters (e.g., `--installed-only`)

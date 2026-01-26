@@ -13,7 +13,7 @@ use crate::materialize::Cellar;
 use crate::progress::{InstallProgress, ProgressCallback};
 use crate::store::Store;
 
-use zb_core::{Error, Formula, SelectedBottle, resolve_closure, select_bottle};
+use zb_core::{Error, Formula, OutdatedPackage, SelectedBottle, Version, resolve_closure, select_bottle};
 
 /// Maximum number of retries for corrupted downloads
 const MAX_CORRUPTION_RETRIES: usize = 3;
@@ -452,6 +452,60 @@ impl Installer {
     /// List all installed formulas
     pub fn list_installed(&self) -> Result<Vec<crate::db::InstalledKeg>, Error> {
         self.db.list_installed()
+    }
+
+    /// Get API client reference for external use (e.g., outdated checks)
+    pub fn api_client(&self) -> &ApiClient {
+        &self.api_client
+    }
+
+    /// Check for outdated packages by comparing installed versions against API
+    pub async fn get_outdated(&self) -> Result<Vec<OutdatedPackage>, Error> {
+        let installed = self.db.list_installed()?;
+
+        if installed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Fetch all formulas from API in parallel
+        let futures: Vec<_> = installed
+            .iter()
+            .map(|keg| self.api_client.get_formula(&keg.name))
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+
+        let mut outdated = Vec::new();
+
+        for (keg, result) in installed.iter().zip(results.into_iter()) {
+            match result {
+                Ok(formula) => {
+                    let installed_ver = Version::parse(&keg.version);
+                    let available_ver = Version::parse(&formula.effective_version());
+
+                    if installed_ver.is_older_than(&available_ver) {
+                        outdated.push(OutdatedPackage {
+                            name: keg.name.clone(),
+                            installed_version: keg.version.clone(),
+                            available_version: formula.effective_version(),
+                        });
+                    }
+                }
+                Err(Error::MissingFormula { .. }) => {
+                    // Formula no longer exists in API, skip it
+                    continue;
+                }
+                Err(e) => {
+                    // Log warning but continue checking other packages
+                    eprintln!("    Warning: failed to check {}: {}", keg.name, e);
+                }
+            }
+        }
+
+        // Sort by name for consistent output
+        outdated.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(outdated)
     }
 }
 

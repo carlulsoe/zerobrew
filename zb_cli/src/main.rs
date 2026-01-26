@@ -65,6 +65,13 @@ enum Commands {
         query: String,
     },
 
+    /// List outdated formulas
+    Outdated {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Garbage collect unreferenced store entries
     Gc,
 
@@ -610,6 +617,57 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         results.len() - 20
                     );
                 }
+            }
+        }
+
+        Commands::Outdated { json } => {
+            if !json {
+                println!(
+                    "{} Checking for outdated packages...",
+                    style("==>").cyan().bold()
+                );
+            }
+
+            let outdated = installer.get_outdated().await?;
+
+            if json {
+                // JSON output
+                let json_output: Vec<serde_json::Value> = outdated
+                    .iter()
+                    .map(|pkg| {
+                        serde_json::json!({
+                            "name": pkg.name,
+                            "installed_version": pkg.installed_version,
+                            "available_version": pkg.available_version
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
+            } else if outdated.is_empty() {
+                println!("All packages are up to date.");
+            } else {
+                println!(
+                    "{} {} outdated packages:",
+                    style("==>").cyan().bold(),
+                    style(outdated.len()).yellow().bold()
+                );
+                println!();
+
+                for pkg in &outdated {
+                    println!(
+                        "  {} {} → {}",
+                        style(&pkg.name).bold(),
+                        style(&pkg.installed_version).red(),
+                        style(&pkg.available_version).green()
+                    );
+                }
+
+                println!();
+                println!(
+                    "    {} Run {} to upgrade all",
+                    style("→").cyan(),
+                    style("zb upgrade").cyan()
+                );
             }
         }
 
