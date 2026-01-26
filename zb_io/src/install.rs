@@ -93,6 +93,7 @@ struct ProcessedPackage {
 }
 
 impl Installer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         api_client: ApiClient,
         blob_cache: BlobCache,
@@ -241,13 +242,12 @@ impl Installer {
                 let taps = self.db.list_taps().unwrap_or_default();
                 for tap in &taps {
                     let parts: Vec<&str> = tap.name.split('/').collect();
-                    if parts.len() == 2 {
-                        if let Ok(formula) = self.tap_manager
+                    if parts.len() == 2
+                        && let Ok(formula) = self.tap_manager
                             .get_formula(parts[0], parts[1], name)
                             .await
-                        {
-                            return Ok(formula);
-                        }
+                    {
+                        return Ok(formula);
                     }
                 }
                 // No tap had the formula, return the original error
@@ -568,14 +568,13 @@ impl Installer {
                 }
 
                 // Check age
-                if let Ok(age) = std::time::SystemTime::now().duration_since(mtime) {
-                    if age > max_age {
-                        if self.blob_cache.remove_blob(&sha256).unwrap_or(false) {
-                            result.blobs_removed += 1;
-                            // Get size from path before removal (already removed, so estimate)
-                            // Note: We can't get the size after removal, but this is fine for the result
-                        }
-                    }
+                if let Ok(age) = std::time::SystemTime::now().duration_since(mtime)
+                    && age > max_age
+                    && self.blob_cache.remove_blob(&sha256).unwrap_or(false)
+                {
+                    result.blobs_removed += 1;
+                    // Get size from path before removal (already removed, so estimate)
+                    // Note: We can't get the size after removal, but this is fine for the result
                 }
             }
         } else {
@@ -617,11 +616,9 @@ impl Installer {
                 result.http_cache_removed = removed;
                 result.bytes_freed += size;
             }
-        } else {
-            if let Some((removed, size)) = self.api_client.clear_cache() {
-                result.http_cache_removed = removed;
-                result.bytes_freed += size;
-            }
+        } else if let Some((removed, size)) = self.api_client.clear_cache() {
+            result.http_cache_removed = removed;
+            result.bytes_freed += size;
         }
 
         Ok(result)
@@ -658,11 +655,11 @@ impl Installer {
 
             if let Some(days) = prune_days {
                 let max_age = std::time::Duration::from_secs(days as u64 * 24 * 60 * 60);
-                if let Ok(age) = std::time::SystemTime::now().duration_since(mtime) {
-                    if age > max_age {
-                        result.blobs_removed += 1;
-                        result.bytes_freed += blob_size;
-                    }
+                if let Ok(age) = std::time::SystemTime::now().duration_since(mtime)
+                    && age > max_age
+                {
+                    result.blobs_removed += 1;
+                    result.bytes_freed += blob_size;
                 }
             } else {
                 result.blobs_removed += 1;
@@ -676,11 +673,9 @@ impl Installer {
                 result.http_cache_removed = count;
                 result.bytes_freed += size;
             }
-        } else {
-            if let Some((count, size)) = self.api_client.cache_stats() {
-                result.http_cache_removed = count;
-                result.bytes_freed += size;
-            }
+        } else if let Some((count, size)) = self.api_client.cache_stats() {
+            result.http_cache_removed = count;
+            result.bytes_freed += size;
         }
 
         Ok(result)
@@ -1426,7 +1421,7 @@ impl Installer {
 
         // Check if writable
         let test_file = prefix.join(".zb_doctor_test");
-        if let Err(_) = std::fs::write(&test_file, b"test") {
+        if std::fs::write(&test_file, b"test").is_err() {
             return DoctorCheck {
                 name: "prefix_writable".to_string(),
                 status: DoctorStatus::Error,
@@ -1527,16 +1522,16 @@ impl Installer {
         if let Ok(entries) = std::fs::read_dir(&bin_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_symlink() {
-                    if let Ok(target) = std::fs::read_link(&path) {
-                        let full_target = if target.is_relative() {
-                            path.parent().unwrap().join(&target)
-                        } else {
-                            target
-                        };
-                        if !full_target.exists() {
-                            broken.push(path);
-                        }
+                if path.is_symlink()
+                    && let Ok(target) = std::fs::read_link(&path)
+                {
+                    let full_target = if target.is_relative() {
+                        path.parent().unwrap().join(&target)
+                    } else {
+                        target
+                    };
+                    if !full_target.exists() {
+                        broken.push(path);
                     }
                 }
             }
@@ -1920,7 +1915,7 @@ impl Installer {
         for entry in &entries {
             if let BrewfileEntry::Tap { name } = entry {
                 let normalized = bundle::check_brewfile(
-                    &[entry.clone()],
+                    std::slice::from_ref(entry),
                     &HashSet::new(),
                     &installed_taps,
                 );
@@ -4843,7 +4838,7 @@ mod tests {
         let root = temp_dir.path().to_path_buf();
         let prefix = root.join("prefix");
         fs::create_dir_all(&prefix).unwrap();
-        fs::create_dir_all(&root.join("db")).unwrap();
+        fs::create_dir_all(root.join("db")).unwrap();
 
         let api_client = ApiClient::with_base_url(mock_server.uri());
         let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
@@ -4942,7 +4937,7 @@ mod tests {
         let root = temp_dir.path().to_path_buf();
         let prefix = root.join("prefix");
         fs::create_dir_all(&prefix).unwrap();
-        fs::create_dir_all(&root.join("db")).unwrap();
+        fs::create_dir_all(root.join("db")).unwrap();
 
         // Record some installed packages manually for testing BEFORE creating installer
         // (Avoid full install flow to keep test simpler)
@@ -4980,7 +4975,7 @@ mod tests {
         let root = temp_dir.path().to_path_buf();
         let prefix = root.join("prefix");
         fs::create_dir_all(&prefix).unwrap();
-        fs::create_dir_all(&root.join("db")).unwrap();
+        fs::create_dir_all(root.join("db")).unwrap();
 
         let api_client = ApiClient::new();
         let blob_cache = BlobCache::new(&root.join("cache")).unwrap();

@@ -215,12 +215,11 @@ impl TapManager {
 
         // Clean up empty parent directory if needed
         let user_dir = self.taps_dir.join(user);
-        if user_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&user_dir) {
-                if entries.count() == 0 {
-                    let _ = fs::remove_dir(&user_dir);
-                }
-            }
+        if user_dir.exists()
+            && let Ok(entries) = fs::read_dir(&user_dir)
+            && entries.count() == 0
+        {
+            let _ = fs::remove_dir(&user_dir);
         }
 
         Ok(())
@@ -269,10 +268,10 @@ impl TapManager {
 
                 // Read tap info
                 let info_path = self.tap_info_path(&user_name, &repo_name);
-                if let Ok(info_json) = fs::read_to_string(&info_path) {
-                    if let Ok(info) = serde_json::from_str::<TapInfo>(&info_json) {
-                        taps.push(info);
-                    }
+                if let Ok(info_json) = fs::read_to_string(&info_path)
+                    && let Ok(info) = serde_json::from_str::<TapInfo>(&info_json)
+                {
+                    taps.push(info);
                 }
             }
         }
@@ -308,12 +307,11 @@ impl TapManager {
 
         // Check cache first
         let cache_path = self.formula_path(user, repo, name);
-        if cache_path.exists() {
-            if let Ok(json) = fs::read_to_string(&cache_path) {
-                if let Ok(formula) = serde_json::from_str::<Formula>(&json) {
-                    return Ok(formula);
-                }
-            }
+        if cache_path.exists()
+            && let Ok(json) = fs::read_to_string(&cache_path)
+            && let Ok(formula) = serde_json::from_str::<Formula>(&json)
+        {
+            return Ok(formula);
         }
 
         // Fetch from GitHub - try the API first
@@ -378,14 +376,12 @@ impl TapManager {
 
             let response = self.client.get(&url).send().await;
 
-            if let Ok(resp) = response {
-                if resp.status().is_success() {
-                    if let Ok(body) = resp.text().await {
-                        if let Ok(formula) = serde_json::from_str::<Formula>(&body) {
-                            return Ok(formula);
-                        }
-                    }
-                }
+            if let Ok(resp) = response
+                && resp.status().is_success()
+                && let Ok(body) = resp.text().await
+                && let Ok(formula) = serde_json::from_str::<Formula>(&body)
+            {
+                return Ok(formula);
             }
         }
 
@@ -423,20 +419,19 @@ impl TapManager {
 
                 let response = self.client.get(&url).send().await;
 
-                if let Ok(resp) = response {
-                    if resp.status().is_success() {
-                        if let Ok(ruby_source) = resp.text().await {
-                            // Parse the Ruby formula
-                            match zb_core::parse_ruby_formula(&ruby_source, name) {
-                                Ok(formula) => return Ok(formula),
-                                Err(e) => {
-                                    // Log parse error but continue trying other paths
-                                    eprintln!(
-                                        "Warning: Failed to parse Ruby formula at {}: {}",
-                                        url, e
-                                    );
-                                }
-                            }
+                if let Ok(resp) = response
+                    && resp.status().is_success()
+                    && let Ok(ruby_source) = resp.text().await
+                {
+                    // Parse the Ruby formula
+                    match zb_core::parse_ruby_formula(&ruby_source, name) {
+                        Ok(formula) => return Ok(formula),
+                        Err(e) => {
+                            // Log parse error but continue trying other paths
+                            eprintln!(
+                                "Warning: Failed to parse Ruby formula at {}: {}",
+                                url, e
+                            );
                         }
                     }
                 }
@@ -494,10 +489,10 @@ impl TapManager {
             })?;
 
             let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                if let Some(stem) = path.file_stem() {
-                    formulas.push(stem.to_string_lossy().to_string());
-                }
+            if path.extension().map(|e| e == "json").unwrap_or(false)
+                && let Some(stem) = path.file_stem()
+            {
+                formulas.push(stem.to_string_lossy().to_string());
             }
         }
 
@@ -728,7 +723,7 @@ mod tests {
         };
 
         // Manually construct the URL for the mock
-        let github_url = format!("{}/repos/testuser/homebrew-testrepo", mock_server.uri());
+        let _github_url = format!("{}/repos/testuser/homebrew-testrepo", mock_server.uri());
 
         // We need to patch the add_tap to use our mock URL
         // For now, let's just test the directory creation part after a "successful" check

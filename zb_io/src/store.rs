@@ -136,13 +136,12 @@ impl Store {
             let entry = entry?;
             let path = entry.path();
 
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    // Skip temp directories (start with .)
-                    if !name.starts_with('.') {
-                        entries.push(name.to_string());
-                    }
-                }
+            if path.is_dir()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && !name.starts_with('.')
+            {
+                // Skip temp directories (start with .)
+                entries.push(name.to_string());
             }
         }
 
@@ -163,15 +162,13 @@ impl Store {
             let entry = entry?;
             let path = entry.path();
 
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".lock") {
-                    let store_key = name.trim_end_matches(".lock");
-                    // If there's no corresponding store entry, remove the lock
-                    if !self.has_entry(store_key) {
-                        if fs::remove_file(&path).is_ok() {
-                            count += 1;
-                        }
-                    }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.ends_with(".lock")
+            {
+                let store_key = name.trim_end_matches(".lock");
+                // If there's no corresponding store entry, remove the lock
+                if !self.has_entry(store_key) && fs::remove_file(&path).is_ok() {
+                    count += 1;
                 }
             }
         }
@@ -189,16 +186,16 @@ impl Store {
             let entry = entry?;
             let path = entry.path();
 
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    // Temp directories start with "." and contain ".tmp."
-                    if name.starts_with('.') && name.contains(".tmp.") {
-                        let size = dir_size(&path).unwrap_or(0);
-                        if fs::remove_dir_all(&path).is_ok() {
-                            count += 1;
-                            bytes_freed += size;
-                        }
-                    }
+            if path.is_dir()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.starts_with('.')
+                && name.contains(".tmp.")
+            {
+                // Temp directories start with "." and contain ".tmp."
+                let size = dir_size(&path).unwrap_or(0);
+                if fs::remove_dir_all(&path).is_ok() {
+                    count += 1;
+                    bytes_freed += size;
                 }
             }
         }

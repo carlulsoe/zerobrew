@@ -67,14 +67,14 @@ impl BlobCache {
             let entry = entry?;
             let path = entry.path();
 
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".tar.gz") {
-                    let sha256 = name.trim_end_matches(".tar.gz").to_string();
-                    if let Ok(metadata) = entry.metadata() {
-                        if let Ok(mtime) = metadata.modified() {
-                            blobs.push((sha256, mtime));
-                        }
-                    }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.ends_with(".tar.gz")
+            {
+                let sha256 = name.trim_end_matches(".tar.gz").to_string();
+                if let Ok(metadata) = entry.metadata()
+                    && let Ok(mtime) = metadata.modified()
+                {
+                    blobs.push((sha256, mtime));
                 }
             }
         }
@@ -88,10 +88,10 @@ impl BlobCache {
 
         for entry in fs::read_dir(&self.blobs_dir)? {
             let entry = entry?;
-            if let Ok(metadata) = entry.metadata() {
-                if metadata.is_file() {
-                    total += metadata.len();
-                }
+            if let Ok(metadata) = entry.metadata()
+                && metadata.is_file()
+            {
+                total += metadata.len();
             }
         }
 
@@ -112,22 +112,18 @@ impl BlobCache {
             let entry = entry?;
             let path = entry.path();
 
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".tar.gz") {
-                    if let Ok(metadata) = entry.metadata() {
-                        if let Ok(mtime) = metadata.modified() {
-                            if let Ok(age) = now.duration_since(mtime) {
-                                if age > max_age {
-                                    let size = metadata.len();
-                                    if fs::remove_file(&path).is_ok() {
-                                        let sha256 = name.trim_end_matches(".tar.gz").to_string();
-                                        removed.push(sha256);
-                                        bytes_freed += size;
-                                    }
-                                }
-                            }
-                        }
-                    }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.ends_with(".tar.gz")
+                && let Ok(metadata) = entry.metadata()
+                && let Ok(mtime) = metadata.modified()
+                && let Ok(age) = now.duration_since(mtime)
+                && age > max_age
+            {
+                let size = metadata.len();
+                if fs::remove_file(&path).is_ok() {
+                    let sha256 = name.trim_end_matches(".tar.gz").to_string();
+                    removed.push(sha256);
+                    bytes_freed += size;
                 }
             }
         }
@@ -145,17 +141,17 @@ impl BlobCache {
             let entry = entry?;
             let path = entry.path();
 
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".tar.gz") {
-                    let sha256 = name.trim_end_matches(".tar.gz").to_string();
-                    if !keep_set.contains(&sha256) {
-                        if let Ok(metadata) = entry.metadata() {
-                            let size = metadata.len();
-                            if fs::remove_file(&path).is_ok() {
-                                removed.push(sha256);
-                                bytes_freed += size;
-                            }
-                        }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.ends_with(".tar.gz")
+            {
+                let sha256 = name.trim_end_matches(".tar.gz").to_string();
+                if !keep_set.contains(&sha256)
+                    && let Ok(metadata) = entry.metadata()
+                {
+                    let size = metadata.len();
+                    if fs::remove_file(&path).is_ok() {
+                        removed.push(sha256);
+                        bytes_freed += size;
                     }
                 }
             }
@@ -175,15 +171,14 @@ impl BlobCache {
             let path = entry.path();
 
             // Only remove .part files (incomplete downloads)
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".part") {
-                    if let Ok(metadata) = entry.metadata() {
-                        let size = metadata.len();
-                        if fs::remove_file(&path).is_ok() {
-                            count += 1;
-                            bytes_freed += size;
-                        }
-                    }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.ends_with(".part")
+                && let Ok(metadata) = entry.metadata()
+            {
+                let size = metadata.len();
+                if fs::remove_file(&path).is_ok() {
+                    count += 1;
+                    bytes_freed += size;
                 }
             }
         }

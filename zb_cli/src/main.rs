@@ -231,6 +231,7 @@ enum Commands {
     },
 
     /// List all available commands (built-in and external)
+    #[allow(clippy::enum_variant_names)]
     ZbCommands,
 
     /// External subcommand - runs zb-<cmd> from PATH or ~/.zerobrew/cmd/
@@ -666,11 +667,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                             style(&formula).bold(),
                             cli.prefix.display()
                         );
-                        if let Some(ref reason) = formula_info.keg_only_reason {
-                            if !reason.explanation.is_empty() {
-                                println!();
-                                println!("{}", reason.explanation);
-                            }
+                        if let Some(ref reason) = formula_info.keg_only_reason
+                            && !reason.explanation.is_empty()
+                        {
+                            println!();
+                            println!("{}", reason.explanation);
                         }
                         println!();
                         println!("To use this formula, you can:");
@@ -867,11 +868,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         style(&formula).bold(),
                         cli.prefix.display()
                     );
-                    if let Some(ref reason) = root_keg_only_reason {
-                        if !reason.explanation.is_empty() {
-                            println!();
-                            println!("{}", reason.explanation);
-                        }
+                    if let Some(ref reason) = root_keg_only_reason
+                        && !reason.explanation.is_empty()
+                    {
+                        println!();
+                        println!("{}", reason.explanation);
                     }
                     println!();
                     println!("To use this formula, you can:");
@@ -1080,23 +1081,23 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 }
 
                 // License
-                if let Some(ref f) = api_formula {
-                    if let Some(ref license) = f.license {
-                        println!("{} {}", style("License:").dim(), license);
-                    }
+                if let Some(ref f) = api_formula
+                    && let Some(ref license) = f.license
+                {
+                    println!("{} {}", style("License:").dim(), license);
                 }
 
                 // Keg-only status
-                if let Some(ref f) = api_formula {
-                    if f.keg_only {
-                        print!("{} Yes", style("Keg-only:").dim());
-                        if let Some(ref reason) = f.keg_only_reason {
-                            if !reason.explanation.is_empty() {
-                                print!(" ({})", reason.explanation);
-                            }
-                        }
-                        println!();
+                if let Some(ref f) = api_formula
+                    && f.keg_only
+                {
+                    print!("{} Yes", style("Keg-only:").dim());
+                    if let Some(ref reason) = f.keg_only_reason
+                        && !reason.explanation.is_empty()
+                    {
+                        print!(" ({})", reason.explanation);
                     }
+                    println!();
                 }
 
                 // Dependencies
@@ -1126,36 +1127,34 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 }
 
                 // Dependents (what depends on this package)
-                if keg.is_some() {
-                    if let Ok(dependents) = installer.get_dependents(&formula).await {
-                        if !dependents.is_empty() {
-                            println!();
-                            println!("{}", style("Required by:").dim());
-                            for dep in &dependents {
-                                println!("  {}", dep);
-                            }
-                        }
+                if keg.is_some()
+                    && let Ok(dependents) = installer.get_dependents(&formula).await
+                    && !dependents.is_empty()
+                {
+                    println!();
+                    println!("{}", style("Required by:").dim());
+                    for dep in &dependents {
+                        println!("  {}", dep);
                     }
                 }
 
                 // Linked files
-                if let Some(ref keg) = keg {
-                    if let Ok(linked_files) = installer.get_linked_files(&formula) {
-                        if !linked_files.is_empty() {
-                            println!();
-                            println!("{} ({} files)", style("Linked files:").dim(), linked_files.len());
-                            // Show first few linked files
-                            for (link, _target) in linked_files.iter().take(5) {
-                                println!("  {}", link);
-                            }
-                            if linked_files.len() > 5 {
-                                println!(
-                                    "  {} and {} more...",
-                                    style("...").dim(),
-                                    linked_files.len() - 5
-                                );
-                            }
-                        }
+                if let Some(ref keg) = keg
+                    && let Ok(linked_files) = installer.get_linked_files(&formula)
+                    && !linked_files.is_empty()
+                {
+                    println!();
+                    println!("{} ({} files)", style("Linked files:").dim(), linked_files.len());
+                    // Show first few linked files
+                    for (link, _target) in linked_files.iter().take(5) {
+                        println!("  {}", link);
+                    }
+                    if linked_files.len() > 5 {
+                        println!(
+                            "  {} and {} more...",
+                            style("...").dim(),
+                            linked_files.len() - 5
+                        );
                     }
 
                     // Store info
@@ -1165,15 +1164,15 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 }
 
                 // Caveats
-                if let Some(ref f) = api_formula {
-                    if let Some(ref caveats) = f.caveats {
-                        println!();
-                        println!("{}", style("==> Caveats").yellow().bold());
-                        // Replace $HOMEBREW_PREFIX with actual prefix
-                        let caveats = caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
-                        for line in caveats.lines() {
-                            println!("{}", line);
-                        }
+                if let Some(ref f) = api_formula
+                    && let Some(ref caveats) = f.caveats
+                {
+                    println!();
+                    println!("{}", style("==> Caveats").yellow().bold());
+                    // Replace $HOMEBREW_PREFIX with actual prefix
+                    let caveats = caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
+                    for line in caveats.lines() {
+                        println!("{}", line);
                     }
                 }
             }
@@ -1923,34 +1922,33 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
 
             // Check if it's a keg-only formula (if not force)
-            if !force {
-                if let Ok(api_formula) = installer.get_formula(&formula).await {
-                    if api_formula.keg_only {
-                        eprintln!(
-                            "{} {} is keg-only, which means it was not symlinked into {}",
-                            style("Warning:").yellow().bold(),
-                            formula,
-                            cli.prefix.display()
-                        );
-                        if let Some(ref reason) = api_formula.keg_only_reason {
-                            if !reason.explanation.is_empty() {
-                                eprintln!();
-                                eprintln!("{}", reason.explanation);
-                            }
-                        }
-                        eprintln!();
-                        eprintln!(
-                            "If you need to have {} first in your PATH, run:",
-                            formula
-                        );
-                        eprintln!(
-                            "  {} link --force {}",
-                            style("zb").cyan(),
-                            formula
-                        );
-                        std::process::exit(1);
-                    }
+            if !force
+                && let Ok(api_formula) = installer.get_formula(&formula).await
+                && api_formula.keg_only
+            {
+                eprintln!(
+                    "{} {} is keg-only, which means it was not symlinked into {}",
+                    style("Warning:").yellow().bold(),
+                    formula,
+                    cli.prefix.display()
+                );
+                if let Some(ref reason) = api_formula.keg_only_reason
+                    && !reason.explanation.is_empty()
+                {
+                    eprintln!();
+                    eprintln!("{}", reason.explanation);
                 }
+                eprintln!();
+                eprintln!(
+                    "If you need to have {} first in your PATH, run:",
+                    formula
+                );
+                eprintln!(
+                    "  {} link --force {}",
+                    style("zb").cyan(),
+                    formula
+                );
+                std::process::exit(1);
             }
 
             println!(
@@ -2092,7 +2090,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
         }
 
-        Commands::Uses { formula, installed, recursive } => {
+        Commands::Uses { formula, installed: _, recursive } => {
             println!(
                 "{} Checking what uses {}...",
                 style("==>").cyan().bold(),
@@ -2108,8 +2106,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 std::process::exit(1);
             }
 
-            // uses command defaults to installed-only
-            let uses = installer.get_uses(&formula, installed || true, recursive).await?;
+            // uses command defaults to installed-only (installed flag is ignored, always true)
+            let uses = installer.get_uses(&formula, true, recursive).await?;
 
             if uses.is_empty() {
                 println!(
@@ -2565,21 +2563,19 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     println!();
                     println!("{} Log files:", style("==>").cyan().bold());
                     println!("Stdout:        {}", stdout_log.display());
-                    if stdout_log.exists() {
-                        let metadata = std::fs::metadata(&stdout_log);
-                        if let Ok(m) = metadata {
-                            println!("               ({} bytes)", m.len());
-                        }
+                    if stdout_log.exists()
+                        && let Ok(m) = std::fs::metadata(&stdout_log)
+                    {
+                        println!("               ({} bytes)", m.len());
                     } else {
                         println!("               (not yet created)");
                     }
 
                     println!("Stderr:        {}", stderr_log.display());
-                    if stderr_log.exists() {
-                        let metadata = std::fs::metadata(&stderr_log);
-                        if let Ok(m) = metadata {
-                            println!("               ({} bytes)", m.len());
-                        }
+                    if stderr_log.exists()
+                        && let Ok(m) = std::fs::metadata(&stderr_log)
+                    {
+                        println!("               ({} bytes)", m.len());
                     } else {
                         println!("               (not yet created)");
                     }
@@ -3125,17 +3121,17 @@ fn find_external_commands(root: &Path) -> Vec<(String, PathBuf)> {
 
     // Look in ~/.zerobrew/cmd/
     let cmd_dir = root.join("cmd");
-    if cmd_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&cmd_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() && is_executable(&path) {
-                    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                        if let Some(cmd_name) = name.strip_prefix("zb-") {
-                            commands.push((cmd_name.to_string(), path));
-                        }
-                    }
-                }
+    if cmd_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&cmd_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && is_executable(&path)
+                && let Some(name) = path.file_name().and_then(|s| s.to_str())
+                && let Some(cmd_name) = name.strip_prefix("zb-")
+            {
+                commands.push((cmd_name.to_string(), path));
             }
         }
     }
@@ -3144,20 +3140,19 @@ fn find_external_commands(root: &Path) -> Vec<(String, PathBuf)> {
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in path_var.split(':') {
             let dir_path = Path::new(dir);
-            if dir_path.exists() {
-                if let Ok(entries) = std::fs::read_dir(dir_path) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_file() && is_executable(&path) {
-                            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                                if let Some(cmd_name) = name.strip_prefix("zb-") {
-                                    // Don't add duplicates
-                                    if !commands.iter().any(|(n, _)| n == cmd_name) {
-                                        commands.push((cmd_name.to_string(), path));
-                                    }
-                                }
-                            }
-                        }
+            if dir_path.exists()
+                && let Ok(entries) = std::fs::read_dir(dir_path)
+            {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file()
+                        && is_executable(&path)
+                        && let Some(name) = path.file_name().and_then(|s| s.to_str())
+                        && let Some(cmd_name) = name.strip_prefix("zb-")
+                        // Don't add duplicates
+                        && !commands.iter().any(|(n, _)| n == cmd_name)
+                    {
+                        commands.push((cmd_name.to_string(), path));
                     }
                 }
             }

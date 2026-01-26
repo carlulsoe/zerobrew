@@ -360,12 +360,11 @@ impl ServiceManager {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 // Output is like: MainPID=12345
                 for line in stdout.lines() {
-                    if let Some(pid_str) = line.strip_prefix("MainPID=") {
-                        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                            if pid > 0 {
-                                return Ok(Some(pid));
-                            }
-                        }
+                    if let Some(pid_str) = line.strip_prefix("MainPID=")
+                        && let Ok(pid) = pid_str.trim().parse::<u32>()
+                        && pid > 0
+                    {
+                        return Ok(Some(pid));
                     }
                 }
                 Ok(None)
@@ -881,7 +880,7 @@ ExecStart={program}"#,
         let possible_binaries = vec![
             bin_path.join(formula),
             bin_path.join(format!("{}d", formula)),  // daemon suffix
-            bin_path.join(&format!("{}-server", formula)),
+            bin_path.join(format!("{}-server", formula)),
         ];
 
         for binary in possible_binaries {

@@ -208,12 +208,11 @@ fn parse_method_call(
         }
         "url" => {
             // Extract version from URL if not explicitly set
-            if formula.versions.stable.is_empty() {
-                if let Some(url) = extract_string_arg(node, source) {
-                    if let Some(v) = extract_version_from_url(&url) {
-                        formula.versions.stable = v;
-                    }
-                }
+            if formula.versions.stable.is_empty()
+                && let Some(url) = extract_string_arg(node, source)
+                && let Some(v) = extract_version_from_url(&url)
+            {
+                formula.versions.stable = v;
             }
         }
         "revision" => {
@@ -316,11 +315,11 @@ fn parse_depends_on(node: &Node, source: &str, formula: &mut Formula) {
                     if let Some(s) = extract_string_value(&inner_child, source) {
                         dep_name = Some(s);
                     }
-                    if inner_child.kind() == "pair" {
-                        if let Some((name, dep_type)) = parse_dependency_pair(&inner_child, source) {
-                            dep_name = Some(name);
-                            is_build_only = matches!(dep_type.as_str(), "build" | "test");
-                        }
+                    if inner_child.kind() == "pair"
+                        && let Some((name, dep_type)) = parse_dependency_pair(&inner_child, source)
+                    {
+                        dep_name = Some(name);
+                        is_build_only = matches!(dep_type.as_str(), "build" | "test");
                     }
                 }
             }
@@ -329,11 +328,9 @@ fn parse_depends_on(node: &Node, source: &str, formula: &mut Formula) {
     }
 
     if let Some(name) = dep_name {
-        if is_build_only {
-            if !formula.build_dependencies.contains(&name) {
-                formula.build_dependencies.push(name);
-            }
-        } else if !formula.dependencies.contains(&name) {
+        if is_build_only && !formula.build_dependencies.contains(&name) {
+            formula.build_dependencies.push(name);
+        } else if !is_build_only && !formula.dependencies.contains(&name) {
             formula.dependencies.push(name);
         }
     }
@@ -379,11 +376,11 @@ fn parse_uses_from_macos(node: &Node, source: &str, formula: &mut Formula) {
                     if let Some(s) = extract_string_value(&inner_child, source) {
                         dep_name = Some(s);
                     }
-                    if inner_child.kind() == "pair" {
-                        if let Some((name, dep_type)) = parse_dependency_pair(&inner_child, source) {
-                            dep_name = Some(name);
-                            is_runtime = !matches!(dep_type.as_str(), "build" | "test");
-                        }
+                    if inner_child.kind() == "pair"
+                        && let Some((name, dep_type)) = parse_dependency_pair(&inner_child, source)
+                    {
+                        dep_name = Some(name);
+                        is_runtime = !matches!(dep_type.as_str(), "build" | "test");
                     }
                 }
             }
@@ -391,10 +388,11 @@ fn parse_uses_from_macos(node: &Node, source: &str, formula: &mut Formula) {
         }
     }
 
-    if let Some(name) = dep_name {
-        if is_runtime && !formula.uses_from_macos.contains(&name) {
-            formula.uses_from_macos.push(name);
-        }
+    if let Some(name) = dep_name
+        && is_runtime
+        && !formula.uses_from_macos.contains(&name)
+    {
+        formula.uses_from_macos.push(name);
     }
 }
 
@@ -564,12 +562,7 @@ fn get_node_text(node: &Node, source: &str) -> String {
 /// Finds a child node by kind.
 fn find_child_by_kind<'a>(node: &'a Node, kind: &str) -> Option<Node<'a>> {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == kind {
-            return Some(child);
-        }
-    }
-    None
+    node.children(&mut cursor).find(|child| child.kind() == kind)
 }
 
 #[cfg(test)]

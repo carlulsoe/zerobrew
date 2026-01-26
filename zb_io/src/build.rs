@@ -462,10 +462,8 @@ fn collect_installed_files(staging_dir: &Path) -> Result<Vec<PathBuf>, Error> {
             let path = entry.path();
             if path.is_dir() {
                 walk_dir(&path, base, files)?;
-            } else {
-                if let Ok(rel_path) = path.strip_prefix(base) {
-                    files.push(rel_path.to_path_buf());
-                }
+            } else if let Ok(rel_path) = path.strip_prefix(base) {
+                files.push(rel_path.to_path_buf());
             }
         }
 

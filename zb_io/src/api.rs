@@ -91,12 +91,12 @@ impl ApiClient {
 
             if response.status() == reqwest::StatusCode::NOT_FOUND {
                 // Only try alias resolution once
-                if !alias_resolved {
-                    if let Some(target) = self.resolve_alias(&current_name).await {
-                        current_name = target;
-                        alias_resolved = true;
-                        continue;
-                    }
+                if !alias_resolved
+                    && let Some(target) = self.resolve_alias(&current_name).await
+                {
+                    current_name = target;
+                    alias_resolved = true;
+                    continue;
                 }
                 return Err(Error::MissingFormula {
                     name: name.to_string(),
@@ -168,14 +168,14 @@ impl ApiClient {
             message: e.to_string(),
         })?;
 
-        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
-            if let Some(entry) = cached_entry {
-                let formulas: Vec<FormulaInfo> =
-                    serde_json::from_str(&entry.body).map_err(|e| Error::NetworkFailure {
-                        message: format!("failed to parse cached formula list: {e}"),
-                    })?;
-                return Ok(formulas);
-            }
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED
+            && let Some(entry) = cached_entry
+        {
+            let formulas: Vec<FormulaInfo> =
+                serde_json::from_str(&entry.body).map_err(|e| Error::NetworkFailure {
+                    message: format!("failed to parse cached formula list: {e}"),
+                })?;
+            return Ok(formulas);
         }
 
         if !response.status().is_success() {
