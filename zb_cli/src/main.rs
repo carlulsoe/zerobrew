@@ -241,10 +241,11 @@ enum Commands {
     },
 
     /// List all available commands (built-in and external)
+    #[command(alias = "zb-commands")]
     #[allow(clippy::enum_variant_names)]
-    ZbCommands,
+    Commands,
 
-    /// External subcommand - runs zb-<cmd> from PATH or ~/.zerobrew/cmd/
+    /// External subcommand - runs `zb-<cmd>` from PATH or `~/.zerobrew/cmd/`
     #[command(external_subcommand)]
     External(Vec<String>),
 }
@@ -3160,7 +3161,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
         }
 
-        Commands::ZbCommands => {
+        Commands::Commands => {
             // List all available commands (built-in and external)
             let builtin_commands = [
                 ("autoremove", "Remove orphaned dependencies"),
@@ -3194,7 +3195,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 ("untap", "Remove a tap repository"),
                 ("upgrade", "Upgrade outdated formulas"),
                 ("uses", "Show which formulas use a given formula"),
-                ("zb-commands", "List all available commands"),
+                ("commands", "List all available commands"),
             ];
 
             println!("{} Built-in commands:", style("==>").cyan().bold());
@@ -3251,7 +3252,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 }
             } else {
                 eprintln!(
-                    "{} Unknown command '{}'\n\nRun 'zb zb-commands' to see available commands.",
+                    "{} Unknown command '{}'\n\nRun 'zb commands' to see available commands.",
                     style("error:").red().bold(),
                     cmd_name
                 );
