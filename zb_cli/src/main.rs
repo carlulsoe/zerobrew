@@ -51,7 +51,11 @@ enum Commands {
     },
 
     /// List installed formulas
-    List,
+    List {
+        /// Show only pinned formulas
+        #[arg(long)]
+        pinned: bool,
+    },
 
     /// Show info about an installed formula
     Info {
@@ -80,6 +84,18 @@ enum Commands {
         /// Show what would be upgraded without doing it
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Pin a formula to prevent automatic upgrades
+    Pin {
+        /// Formula name to pin
+        formula: String,
+    },
+
+    /// Unpin a formula to allow upgrades
+    Unpin {
+        /// Formula name to unpin
+        formula: String,
     },
 
     /// Garbage collect unreferenced store entries
@@ -536,14 +552,32 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
         },
 
-        Commands::List => {
-            let installed = installer.list_installed()?;
+        Commands::List { pinned } => {
+            let installed = if pinned {
+                installer.list_pinned()?
+            } else {
+                installer.list_installed()?
+            };
 
             if installed.is_empty() {
-                println!("No formulas installed.");
+                if pinned {
+                    println!("No pinned formulas.");
+                } else {
+                    println!("No formulas installed.");
+                }
             } else {
                 for keg in installed {
-                    println!("{} {}", style(&keg.name).bold(), style(&keg.version).dim());
+                    let pin_marker = if keg.pinned {
+                        format!(" {}", style("(pinned)").yellow())
+                    } else {
+                        String::new()
+                    };
+                    println!(
+                        "{} {}{}",
+                        style(&keg.name).bold(),
+                        style(&keg.version).dim(),
+                        pin_marker
+                    );
                 }
             }
         }
@@ -557,6 +591,15 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     "{}  {}",
                     style("Installed:").dim(),
                     chrono_lite_format(keg.installed_at)
+                );
+                println!(
+                    "{}     {}",
+                    style("Pinned:").dim(),
+                    if keg.pinned {
+                        style("Yes").yellow().to_string()
+                    } else {
+                        "No".to_string()
+                    }
                 );
             } else {
                 println!("Formula '{}' is not installed.", formula);
@@ -639,6 +682,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
 
             let outdated = installer.get_outdated().await?;
+            let pinned = installer.list_pinned()?;
+            let pinned_count = pinned.len();
 
             if json {
                 // JSON output
@@ -655,6 +700,13 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
             } else if outdated.is_empty() {
                 println!("All packages are up to date.");
+                if pinned_count > 0 {
+                    println!(
+                        "    {} {} pinned packages not checked",
+                        style("→").dim(),
+                        pinned_count
+                    );
+                }
             } else {
                 println!(
                     "{} {} outdated packages:",
@@ -678,6 +730,14 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     style("→").cyan(),
                     style("zb upgrade").cyan()
                 );
+                if pinned_count > 0 {
+                    println!(
+                        "    {} {} pinned packages not shown (use {} to see them)",
+                        style("→").dim(),
+                        pinned_count,
+                        style("zb list --pinned").dim()
+                    );
+                }
             }
         }
 
@@ -892,6 +952,48 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         style(new_ver).green()
                     );
                 }
+            }
+        }
+
+        Commands::Pin { formula } => {
+            match installer.pin(&formula) {
+                Ok(true) => {
+                    println!(
+                        "{} Pinned {} - it will not be upgraded",
+                        style("==>").cyan().bold(),
+                        style(&formula).green().bold()
+                    );
+                }
+                Ok(false) => {
+                    // This shouldn't happen since we check if installed first
+                    println!("Formula '{}' is not installed.", formula);
+                }
+                Err(zb_core::Error::NotInstalled { .. }) => {
+                    println!("Formula '{}' is not installed.", formula);
+                    std::process::exit(1);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Commands::Unpin { formula } => {
+            match installer.unpin(&formula) {
+                Ok(true) => {
+                    println!(
+                        "{} Unpinned {} - it will be upgraded when outdated",
+                        style("==>").cyan().bold(),
+                        style(&formula).green().bold()
+                    );
+                }
+                Ok(false) => {
+                    // This shouldn't happen since we check if installed first
+                    println!("Formula '{}' is not installed.", formula);
+                }
+                Err(zb_core::Error::NotInstalled { .. }) => {
+                    println!("Formula '{}' is not installed.", formula);
+                    std::process::exit(1);
+                }
+                Err(e) => return Err(e),
             }
         }
 

@@ -461,21 +461,74 @@ impl Installer {
         self.db.list_installed()
     }
 
+    /// List only pinned formulas
+    pub fn list_pinned(&self) -> Result<Vec<crate::db::InstalledKeg>, Error> {
+        self.db.list_pinned()
+    }
+
+    /// Pin a formula to prevent upgrades
+    pub fn pin(&self, name: &str) -> Result<bool, Error> {
+        // Check if installed first
+        if self.db.get_installed(name).is_none() {
+            return Err(Error::NotInstalled {
+                name: name.to_string(),
+            });
+        }
+        self.db.pin(name)
+    }
+
+    /// Unpin a formula to allow upgrades
+    pub fn unpin(&self, name: &str) -> Result<bool, Error> {
+        // Check if installed first
+        if self.db.get_installed(name).is_none() {
+            return Err(Error::NotInstalled {
+                name: name.to_string(),
+            });
+        }
+        self.db.unpin(name)
+    }
+
+    /// Check if a formula is pinned
+    pub fn is_pinned(&self, name: &str) -> bool {
+        self.db.is_pinned(name)
+    }
+
     /// Get API client reference for external use (e.g., outdated checks)
     pub fn api_client(&self) -> &ApiClient {
         &self.api_client
     }
 
-    /// Check for outdated packages by comparing installed versions against API
+    /// Check for outdated packages by comparing installed versions against API.
+    /// By default, excludes pinned packages.
     pub async fn get_outdated(&self) -> Result<Vec<OutdatedPackage>, Error> {
+        self.get_outdated_impl(false).await
+    }
+
+    /// Check for outdated packages, optionally including pinned packages
+    pub async fn get_outdated_with_pinned(&self, include_pinned: bool) -> Result<Vec<OutdatedPackage>, Error> {
+        self.get_outdated_impl(include_pinned).await
+    }
+
+    async fn get_outdated_impl(&self, include_pinned: bool) -> Result<Vec<OutdatedPackage>, Error> {
         let installed = self.db.list_installed()?;
 
         if installed.is_empty() {
             return Ok(Vec::new());
         }
 
+        // Filter out pinned packages unless explicitly requested
+        let to_check: Vec<_> = if include_pinned {
+            installed
+        } else {
+            installed.into_iter().filter(|keg| !keg.pinned).collect()
+        };
+
+        if to_check.is_empty() {
+            return Ok(Vec::new());
+        }
+
         // Fetch all formulas from API in parallel
-        let futures: Vec<_> = installed
+        let futures: Vec<_> = to_check
             .iter()
             .map(|keg| self.api_client.get_formula(&keg.name))
             .collect();
@@ -484,7 +537,7 @@ impl Installer {
 
         let mut outdated = Vec::new();
 
-        for (keg, result) in installed.iter().zip(results.into_iter()) {
+        for (keg, result) in to_check.iter().zip(results.into_iter()) {
             match result {
                 Ok(formula) => {
                     let installed_ver = Version::parse(&keg.version);
@@ -2028,5 +2081,213 @@ mod tests {
         assert!(link_path.exists());
         let target = fs::read_link(&link_path).unwrap();
         assert!(target.to_string_lossy().contains("2.0.0"));
+    }
+
+    #[tokio::test]
+    async fn pin_and_unpin_package() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("pinnable");
+        let bottle_sha = sha256_hex(&bottle);
+
+        let formula_json = format!(
+            r#"{{"name":"pinnable","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/pinnable.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = bottle_sha
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/pinnable.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/pinnable.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install
+        installer.install("pinnable", true).await.unwrap();
+
+        // Initially not pinned
+        assert!(!installer.is_pinned("pinnable"));
+        let keg = installer.get_installed("pinnable").unwrap();
+        assert!(!keg.pinned);
+
+        // Pin the package
+        let result = installer.pin("pinnable").unwrap();
+        assert!(result);
+        assert!(installer.is_pinned("pinnable"));
+
+        // Verify via get_installed
+        let keg = installer.get_installed("pinnable").unwrap();
+        assert!(keg.pinned);
+
+        // Verify via list_pinned
+        let pinned = installer.list_pinned().unwrap();
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].name, "pinnable");
+
+        // Unpin the package
+        let result = installer.unpin("pinnable").unwrap();
+        assert!(result);
+        assert!(!installer.is_pinned("pinnable"));
+
+        // Verify via list_pinned
+        let pinned = installer.list_pinned().unwrap();
+        assert!(pinned.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pin_not_installed_returns_error() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Try to pin a package that's not installed
+        let result = installer.pin("notinstalled");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::NotInstalled { .. }));
+    }
+
+    #[tokio::test]
+    async fn pinned_packages_excluded_from_get_outdated() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottles for two packages
+        let pkg1_v1_bottle = create_bottle_tarball("pkg1");
+        let pkg1_v1_sha = sha256_hex(&pkg1_v1_bottle);
+
+        let pkg2_v1_bottle = create_bottle_tarball("pkg2");
+        let pkg2_v1_sha = sha256_hex(&pkg2_v1_bottle);
+
+        // Track which versions to serve (start at v1, then switch to v2)
+        let serve_new = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Create formula JSONs
+        let pkg1_v1_json = format!(
+            r#"{{"name":"pkg1","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/pkg1.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = pkg1_v1_sha
+        );
+        let pkg1_v2_json = format!(
+            r#"{{"name":"pkg1","versions":{{"stable":"2.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/pkg1.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = pkg1_v1_sha
+        );
+        let pkg2_v1_json = format!(
+            r#"{{"name":"pkg2","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/pkg2.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = pkg2_v1_sha
+        );
+        let pkg2_v2_json = format!(
+            r#"{{"name":"pkg2","versions":{{"stable":"2.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/pkg2.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = pkg2_v1_sha
+        );
+
+        // Mount formula mocks that switch between versions
+        let serve_new_clone = serve_new.clone();
+        let pkg1_v1 = pkg1_v1_json.clone();
+        let pkg1_v2 = pkg1_v2_json.clone();
+        Mock::given(method("GET"))
+            .and(path("/pkg1.json"))
+            .respond_with(move |_: &wiremock::Request| {
+                if serve_new_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                    ResponseTemplate::new(200).set_body_string(pkg1_v2.clone())
+                } else {
+                    ResponseTemplate::new(200).set_body_string(pkg1_v1.clone())
+                }
+            })
+            .mount(&mock_server)
+            .await;
+
+        let serve_new_clone = serve_new.clone();
+        let pkg2_v1 = pkg2_v1_json.clone();
+        let pkg2_v2 = pkg2_v2_json.clone();
+        Mock::given(method("GET"))
+            .and(path("/pkg2.json"))
+            .respond_with(move |_: &wiremock::Request| {
+                if serve_new_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                    ResponseTemplate::new(200).set_body_string(pkg2_v2.clone())
+                } else {
+                    ResponseTemplate::new(200).set_body_string(pkg2_v1.clone())
+                }
+            })
+            .mount(&mock_server)
+            .await;
+
+        // Mount bottle downloads
+        Mock::given(method("GET"))
+            .and(path("/bottles/pkg1.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(pkg1_v1_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/pkg2.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(pkg2_v1_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install both packages at v1
+        installer.install("pkg1", true).await.unwrap();
+        installer.install("pkg2", true).await.unwrap();
+
+        // Pin pkg1
+        installer.pin("pkg1").unwrap();
+
+        // Switch to serving new versions
+        serve_new.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // get_outdated() should only show pkg2 (pkg1 is pinned)
+        let outdated = installer.get_outdated().await.unwrap();
+        assert_eq!(outdated.len(), 1);
+        assert_eq!(outdated[0].name, "pkg2");
+
+        // get_outdated_with_pinned(true) should show both packages
+        let outdated_with_pinned = installer.get_outdated_with_pinned(true).await.unwrap();
+        assert_eq!(outdated_with_pinned.len(), 2);
+        assert!(outdated_with_pinned.iter().any(|p| p.name == "pkg1"));
+        assert!(outdated_with_pinned.iter().any(|p| p.name == "pkg2"));
     }
 }

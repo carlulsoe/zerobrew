@@ -14,6 +14,7 @@ pub struct InstalledKeg {
     pub version: String,
     pub store_key: String,
     pub installed_at: i64,
+    pub pinned: bool,
 }
 
 impl Database {
@@ -44,7 +45,8 @@ impl Database {
                 name TEXT PRIMARY KEY,
                 version TEXT NOT NULL,
                 store_key TEXT NOT NULL,
-                installed_at INTEGER NOT NULL
+                installed_at INTEGER NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS store_refs (
@@ -65,6 +67,32 @@ impl Database {
             message: format!("failed to initialize schema: {e}"),
         })?;
 
+        // Migration: add pinned column if it doesn't exist (for existing databases)
+        Self::migrate_add_pinned_column(conn)?;
+
+        Ok(())
+    }
+
+    fn migrate_add_pinned_column(conn: &Connection) -> Result<(), Error> {
+        // Check if pinned column exists
+        let has_pinned: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('installed_kegs') WHERE name = 'pinned'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !has_pinned {
+            conn.execute(
+                "ALTER TABLE installed_kegs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to add pinned column: {e}"),
+            })?;
+        }
+
         Ok(())
     }
 
@@ -82,7 +110,7 @@ impl Database {
     pub fn get_installed(&self, name: &str) -> Option<InstalledKeg> {
         self.conn
             .query_row(
-                "SELECT name, version, store_key, installed_at FROM installed_kegs WHERE name = ?1",
+                "SELECT name, version, store_key, installed_at, pinned FROM installed_kegs WHERE name = ?1",
                 params![name],
                 |row| {
                     Ok(InstalledKeg {
@@ -90,6 +118,7 @@ impl Database {
                         version: row.get(1)?,
                         store_key: row.get(2)?,
                         installed_at: row.get(3)?,
+                        pinned: row.get::<_, i64>(4)? != 0,
                     })
                 },
             )
@@ -100,7 +129,7 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT name, version, store_key, installed_at FROM installed_kegs ORDER BY name",
+                "SELECT name, version, store_key, installed_at, pinned FROM installed_kegs ORDER BY name",
             )
             .map_err(|e| Error::StoreCorruption {
                 message: format!("failed to prepare statement: {e}"),
@@ -113,6 +142,7 @@ impl Database {
                     version: row.get(1)?,
                     store_key: row.get(2)?,
                     installed_at: row.get(3)?,
+                    pinned: row.get::<_, i64>(4)? != 0,
                 })
             })
             .map_err(|e| Error::StoreCorruption {
@@ -124,6 +154,80 @@ impl Database {
             })?;
 
         Ok(kegs)
+    }
+
+    /// List only pinned packages
+    pub fn list_pinned(&self) -> Result<Vec<InstalledKeg>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT name, version, store_key, installed_at, pinned FROM installed_kegs WHERE pinned = 1 ORDER BY name",
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to prepare statement: {e}"),
+            })?;
+
+        let kegs = stmt
+            .query_map([], |row| {
+                Ok(InstalledKeg {
+                    name: row.get(0)?,
+                    version: row.get(1)?,
+                    store_key: row.get(2)?,
+                    installed_at: row.get(3)?,
+                    pinned: row.get::<_, i64>(4)? != 0,
+                })
+            })
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to query pinned kegs: {e}"),
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to collect results: {e}"),
+            })?;
+
+        Ok(kegs)
+    }
+
+    /// Pin a package to prevent upgrades
+    pub fn pin(&self, name: &str) -> Result<bool, Error> {
+        let rows_affected = self
+            .conn
+            .execute(
+                "UPDATE installed_kegs SET pinned = 1 WHERE name = ?1",
+                params![name],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to pin package: {e}"),
+            })?;
+
+        Ok(rows_affected > 0)
+    }
+
+    /// Unpin a package to allow upgrades
+    pub fn unpin(&self, name: &str) -> Result<bool, Error> {
+        let rows_affected = self
+            .conn
+            .execute(
+                "UPDATE installed_kegs SET pinned = 0 WHERE name = ?1",
+                params![name],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to unpin package: {e}"),
+            })?;
+
+        Ok(rows_affected > 0)
+    }
+
+    /// Check if a package is pinned
+    pub fn is_pinned(&self, name: &str) -> bool {
+        self.conn
+            .query_row(
+                "SELECT pinned FROM installed_kegs WHERE name = ?1",
+                params![name],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|v| v != 0)
+            .unwrap_or(false)
     }
 
     pub fn get_store_refcount(&self, store_key: &str) -> i64 {
@@ -281,6 +385,82 @@ mod tests {
         assert_eq!(installed[0].name, "foo");
         assert_eq!(installed[0].version, "1.0.0");
         assert_eq!(installed[0].store_key, "abc123");
+        assert!(!installed[0].pinned);
+    }
+
+    #[test]
+    fn pin_and_unpin_package() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("pinnable", "1.0.0", "abc123").unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Initially not pinned
+        assert!(!db.is_pinned("pinnable"));
+        let keg = db.get_installed("pinnable").unwrap();
+        assert!(!keg.pinned);
+
+        // Pin the package
+        let result = db.pin("pinnable").unwrap();
+        assert!(result); // Should return true (rows affected)
+        assert!(db.is_pinned("pinnable"));
+
+        // Verify via get_installed
+        let keg = db.get_installed("pinnable").unwrap();
+        assert!(keg.pinned);
+
+        // Unpin the package
+        let result = db.unpin("pinnable").unwrap();
+        assert!(result);
+        assert!(!db.is_pinned("pinnable"));
+
+        // Verify via get_installed
+        let keg = db.get_installed("pinnable").unwrap();
+        assert!(!keg.pinned);
+    }
+
+    #[test]
+    fn pin_nonexistent_package_returns_false() {
+        let db = Database::in_memory().unwrap();
+
+        // Pinning a non-existent package should return false (no rows affected)
+        let result = db.pin("doesnotexist").unwrap();
+        assert!(!result);
+
+        // is_pinned should return false for non-existent packages
+        assert!(!db.is_pinned("doesnotexist"));
+    }
+
+    #[test]
+    fn list_pinned_only_returns_pinned_packages() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("pinned1", "1.0.0", "abc123").unwrap();
+            tx.record_install("unpinned", "1.0.0", "def456").unwrap();
+            tx.record_install("pinned2", "2.0.0", "ghi789").unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Pin two packages
+        db.pin("pinned1").unwrap();
+        db.pin("pinned2").unwrap();
+
+        // list_installed should return all 3
+        let all = db.list_installed().unwrap();
+        assert_eq!(all.len(), 3);
+
+        // list_pinned should return only 2
+        let pinned = db.list_pinned().unwrap();
+        assert_eq!(pinned.len(), 2);
+        assert!(pinned.iter().all(|k| k.pinned));
+        assert!(pinned.iter().any(|k| k.name == "pinned1"));
+        assert!(pinned.iter().any(|k| k.name == "pinned2"));
+        assert!(!pinned.iter().any(|k| k.name == "unpinned"));
     }
 
     #[test]

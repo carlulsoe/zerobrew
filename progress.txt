@@ -185,6 +185,73 @@ $ zb upgrade git
 - `upgrade_all_empty_when_all_current` - Tests empty result when all up-to-date
 - `upgrade_preserves_links` - Tests symlinks point to new version after upgrade
 
+### 7. Implemented Pin/Unpin Commands (Phase 1.4) ✅
+
+**Files modified:**
+- `zb_io/src/db.rs` - Added `pinned` column, migration, and pin/unpin/is_pinned/list_pinned methods
+- `zb_io/src/install.rs` - Added `pin()`, `unpin()`, `is_pinned()`, `list_pinned()` methods; updated `get_outdated()` to filter pinned packages
+- `zb_cli/src/main.rs` - Added `zb pin`, `zb unpin` commands and `zb list --pinned` flag
+
+**Features:**
+- Pin packages to prevent automatic upgrades: `zb pin <formula>`
+- Unpin packages to allow upgrades: `zb unpin <formula>`
+- List only pinned packages: `zb list --pinned`
+- Pinned packages are excluded from `zb outdated` output
+- Pinned packages are excluded from `zb upgrade` (automatic upgrade)
+- Info command shows pinned status
+- List command shows "(pinned)" marker for pinned packages
+- Outdated command shows count of pinned packages not checked
+
+**Database changes:**
+- Added `pinned INTEGER NOT NULL DEFAULT 0` column to `installed_kegs` table
+- Added migration to add column to existing databases
+
+**Implementation details:**
+- `get_outdated()` now filters out pinned packages by default
+- `get_outdated_with_pinned(true)` can be used to include pinned packages
+- Pin/unpin return NotInstalled error if package isn't installed
+- Database migration runs automatically on schema init
+
+**Example usage:**
+```
+$ zb pin git
+==> Pinned git - it will not be upgraded
+
+$ zb list
+git 2.43.0 (pinned)
+ripgrep 14.0.0
+
+$ zb list --pinned
+git 2.43.0 (pinned)
+
+$ zb outdated
+==> Checking for outdated packages...
+==> 1 outdated package:
+
+  ripgrep 14.0.0 → 14.1.0
+
+    → Run zb upgrade to upgrade all
+    → 1 pinned packages not shown (use zb list --pinned to see them)
+
+$ zb info git
+Name:       git
+Version:    2.43.0
+Store key:  abc123def456
+Installed:  ...
+Pinned:     Yes
+
+$ zb unpin git
+==> Unpinned git - it will be upgraded when outdated
+```
+
+**New tests (7 total):**
+- `db::pin_and_unpin_package` - Tests database-level pin/unpin
+- `db::pin_nonexistent_package_returns_false` - Tests error handling
+- `db::list_pinned_only_returns_pinned_packages` - Tests pinned filtering
+- `install::pin_and_unpin_package` - Tests Installer-level pin/unpin
+- `install::pin_not_installed_returns_error` - Tests NotInstalled error
+- `install::pinned_packages_excluded_from_get_outdated` - Tests filtering in get_outdated()
+
 ---
 
 ## Remaining Phase 1 Tasks
@@ -194,7 +261,7 @@ $ zb upgrade git
 | 1.1 Search command | ✅ Complete |
 | 1.2 Outdated command | ✅ Complete |
 | 1.3 Upgrade command | ✅ Complete |
-| 1.4 Pin/unpin commands | ⏳ Not started |
+| 1.4 Pin/unpin commands | ✅ Complete |
 | 1.5 Autoremove command | ⏳ Not started |
 | 1.6 Shellenv command | ⏳ Not started |
 | 1.7 Improved info command | ⏳ Not started |
@@ -204,7 +271,7 @@ $ zb upgrade git
 ## Test Results
 
 All tests passing:
-- 142 unit tests passed (37 zb_core + 105 zb_io)
+- 148 unit tests passed (37 zb_core + 111 zb_io)
 - 27 integration tests passed
 - 4 tests ignored (require specific environment)
 
@@ -212,10 +279,9 @@ All tests passing:
 
 ## Next Steps
 
-1. Implement `zb pin/unpin` - prevent specific packages from upgrading
-2. Implement `zb autoremove` - remove orphaned dependencies
-3. Implement `zb shellenv` - output shell environment setup
-4. Improve `zb info` - show dependencies, caveats, etc.
+1. Implement `zb autoremove` - remove orphaned dependencies
+2. Implement `zb shellenv` - output shell environment setup
+3. Improve `zb info` - show dependencies, caveats, etc.
 
 ---
 
@@ -226,3 +292,4 @@ All tests passing:
 - Consider adding `--json` flag to search for machine-readable output
 - May want to add search filters (e.g., `--installed-only`)
 - Upgrade command reuses install progress display for consistency
+- Pin/unpin integrates with outdated/upgrade commands automatically
