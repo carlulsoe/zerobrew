@@ -79,6 +79,14 @@ enum Commands {
     Search {
         /// Search query (use /regex/ for regex search)
         query: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Only show installed packages
+        #[arg(long)]
+        installed: bool,
     },
 
     /// List outdated formulas
@@ -1178,12 +1186,18 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
         }
 
-        Commands::Search { query } => {
-            println!(
-                "{} Searching for '{}'...",
-                style("==>").cyan().bold(),
-                style(&query).bold()
-            );
+        Commands::Search {
+            query,
+            json,
+            installed,
+        } => {
+            if !json {
+                println!(
+                    "{} Searching for '{}'...",
+                    style("==>").cyan().bold(),
+                    style(&query).bold()
+                );
+            }
 
             // Create API client with cache
             let cache_dir = cli.root.join("cache");
@@ -1195,22 +1209,49 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             };
 
             let formulas = api_client.get_all_formulas().await?;
-            let results = search_formulas(&formulas, &query);
+            let mut results = search_formulas(&formulas, &query);
 
-            if results.is_empty() {
-                println!("No formulas found matching '{}'.", query);
+            // Filter to installed-only if requested
+            if installed {
+                results.retain(|r| installer.is_installed(&r.name));
+            }
+
+            if json {
+                // JSON output
+                let json_results: Vec<serde_json::Value> = results
+                    .iter()
+                    .map(|r| {
+                        let is_installed = installer.is_installed(&r.name);
+                        serde_json::json!({
+                            "name": r.name,
+                            "full_name": r.full_name,
+                            "version": r.version,
+                            "description": r.description,
+                            "installed": is_installed
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+            } else if results.is_empty() {
+                if installed {
+                    println!("No installed formulas found matching '{}'.", query);
+                } else {
+                    println!("No formulas found matching '{}'.", query);
+                }
             } else {
+                let label = if installed { "installed formulas" } else { "formulas" };
                 println!(
-                    "{} Found {} formulas:",
+                    "{} Found {} {}:",
                     style("==>").cyan().bold(),
-                    style(results.len()).green().bold()
+                    style(results.len()).green().bold(),
+                    label
                 );
                 println!();
 
                 // Limit to top 20 results
                 for result in results.iter().take(20) {
-                    let installed = installer.is_installed(&result.name);
-                    let marker = if installed {
+                    let is_installed = installer.is_installed(&result.name);
+                    let marker = if is_installed {
                         style("✓").green().to_string()
                     } else {
                         " ".to_string()
