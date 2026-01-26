@@ -36,6 +36,13 @@ pub struct ExecuteResult {
     pub installed: usize,
 }
 
+pub struct UpgradeResult {
+    /// Number of packages upgraded
+    pub upgraded: usize,
+    /// Packages that were upgraded (name, old_version, new_version)
+    pub packages: Vec<(String, String, String)>,
+}
+
 /// Internal struct for tracking processed packages during streaming install
 #[derive(Clone)]
 struct ProcessedPackage {
@@ -506,6 +513,82 @@ impl Installer {
         outdated.sort_by(|a, b| a.name.cmp(&b.name));
 
         Ok(outdated)
+    }
+
+    /// Upgrade a single package to its latest version
+    /// Returns the old and new version if upgraded, None if already up to date
+    pub async fn upgrade_one(
+        &mut self,
+        name: &str,
+        link: bool,
+        progress: Option<Arc<ProgressCallback>>,
+    ) -> Result<Option<(String, String)>, Error> {
+        // Check if installed
+        let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
+            name: name.to_string(),
+        })?;
+
+        // Fetch new formula to check version
+        let new_formula = self.api_client.get_formula(name).await?;
+        let new_version = new_formula.effective_version();
+
+        // Check if already up to date using version comparison
+        let installed_ver = Version::parse(&installed.version);
+        let available_ver = Version::parse(&new_version);
+
+        if !installed_ver.is_older_than(&available_ver) {
+            return Ok(None); // Already up to date
+        }
+
+        let old_version = installed.version.clone();
+
+        // Plan the new installation (handles dependencies)
+        let plan = self.plan(name).await?;
+
+        // Unlink the old version
+        let old_keg_path = self.cellar.keg_path(name, &old_version);
+        self.linker.unlink_keg(&old_keg_path)?;
+
+        // Install new version
+        // Note: execute_with_progress uses INSERT OR REPLACE for database,
+        // so it will automatically update the record for this package
+        self.execute_with_progress(plan, link, progress).await?;
+
+        // Remove old keg (only for the upgraded package, not dependencies)
+        self.cellar.remove_keg(name, &old_version)?;
+
+        Ok(Some((old_version, new_version)))
+    }
+
+    /// Upgrade all outdated packages
+    pub async fn upgrade_all(
+        &mut self,
+        link: bool,
+        progress: Option<Arc<ProgressCallback>>,
+    ) -> Result<UpgradeResult, Error> {
+        let outdated = self.get_outdated().await?;
+
+        if outdated.is_empty() {
+            return Ok(UpgradeResult {
+                upgraded: 0,
+                packages: Vec::new(),
+            });
+        }
+
+        let mut packages = Vec::new();
+
+        for pkg in outdated {
+            if let Some((old_ver, new_ver)) =
+                self.upgrade_one(&pkg.name, link, progress.clone()).await?
+            {
+                packages.push((pkg.name, old_ver, new_ver));
+            }
+        }
+
+        Ok(UpgradeResult {
+            upgraded: packages.len(),
+            packages,
+        })
     }
 }
 
@@ -1443,5 +1526,507 @@ mod tests {
         // macos-only-dep should NOT be installed (skipped due to no Linux bottle)
         assert!(!installer.is_installed("macos-only-dep"));
         assert!(!root.join("cellar/macos-only-dep").exists());
+    }
+
+    #[tokio::test]
+    async fn upgrade_installs_new_version_and_removes_old() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create old version bottle
+        let old_bottle = create_bottle_tarball("upgrademe");
+        let old_sha = sha256_hex(&old_bottle);
+
+        // Create new version bottle (different content to get different sha)
+        let mut new_bottle = create_bottle_tarball("upgrademe");
+        // Modify the bottle content slightly to get a different hash
+        new_bottle.push(0x00);
+        let new_sha = sha256_hex(&new_bottle);
+
+        // Old version formula JSON
+        let old_formula_json = format!(
+            r#"{{
+                "name": "upgrademe",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/upgrademe-1.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "{sha}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri(),
+            sha = old_sha
+        );
+
+        // New version formula JSON
+        let new_formula_json = format!(
+            r#"{{
+                "name": "upgrademe",
+                "versions": {{ "stable": "2.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/upgrademe-2.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "{sha}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri(),
+            sha = new_sha
+        );
+
+        // Track which version to serve
+        let serve_new = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let serve_new_clone = serve_new.clone();
+        let old_json = old_formula_json.clone();
+        let new_json = new_formula_json.clone();
+
+        // Mount formula API mock that can serve either version
+        Mock::given(method("GET"))
+            .and(path("/upgrademe.json"))
+            .respond_with(move |_: &wiremock::Request| {
+                if serve_new_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                    ResponseTemplate::new(200).set_body_string(new_json.clone())
+                } else {
+                    ResponseTemplate::new(200).set_body_string(old_json.clone())
+                }
+            })
+            .mount(&mock_server)
+            .await;
+
+        // Mount old bottle download
+        let old_bottle_path = format!("/bottles/upgrademe-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(old_bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(old_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Mount new bottle download
+        let new_bottle_path = format!("/bottles/upgrademe-2.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(new_bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(new_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install old version
+        installer.install("upgrademe", true).await.unwrap();
+
+        // Verify old version installed
+        assert!(installer.is_installed("upgrademe"));
+        let installed = installer.get_installed("upgrademe").unwrap();
+        assert_eq!(installed.version, "1.0.0");
+        assert!(root.join("cellar/upgrademe/1.0.0").exists());
+        assert!(prefix.join("bin/upgrademe").exists());
+
+        // Switch to serving new version
+        serve_new.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Upgrade
+        let result = installer.upgrade_one("upgrademe", true, None).await.unwrap();
+        assert!(result.is_some());
+        let (old_ver, new_ver) = result.unwrap();
+        assert_eq!(old_ver, "1.0.0");
+        assert_eq!(new_ver, "2.0.0");
+
+        // Verify new version installed
+        let installed = installer.get_installed("upgrademe").unwrap();
+        assert_eq!(installed.version, "2.0.0");
+        assert!(root.join("cellar/upgrademe/2.0.0").exists());
+        assert!(prefix.join("bin/upgrademe").exists());
+
+        // Verify old version removed
+        assert!(!root.join("cellar/upgrademe/1.0.0").exists());
+    }
+
+    #[tokio::test]
+    async fn upgrade_returns_none_when_up_to_date() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("current");
+        let bottle_sha = sha256_hex(&bottle);
+
+        // Formula JSON
+        let formula_json = format!(
+            r#"{{
+                "name": "current",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/current-1.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "{sha}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri(),
+            sha = bottle_sha
+        );
+
+        // Mount formula API mock
+        Mock::given(method("GET"))
+            .and(path("/current.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        // Mount bottle download
+        let bottle_path = format!("/bottles/current-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install
+        installer.install("current", true).await.unwrap();
+        assert!(installer.is_installed("current"));
+
+        // Try to upgrade - should return None since already up to date
+        let result = installer.upgrade_one("current", true, None).await.unwrap();
+        assert!(result.is_none());
+
+        // Version should still be 1.0.0
+        let installed = installer.get_installed("current").unwrap();
+        assert_eq!(installed.version, "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn upgrade_not_installed_returns_error() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        // Create installer without installing anything
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Try to upgrade a package that's not installed
+        let result = installer.upgrade_one("notinstalled", true, None).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::NotInstalled { .. }));
+    }
+
+    #[tokio::test]
+    async fn upgrade_all_upgrades_multiple_packages() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottles for two packages
+        let pkg1_v1_bottle = create_bottle_tarball("pkg1");
+        let pkg1_v1_sha = sha256_hex(&pkg1_v1_bottle);
+        let mut pkg1_v2_bottle = create_bottle_tarball("pkg1");
+        pkg1_v2_bottle.push(0x01);
+        let pkg1_v2_sha = sha256_hex(&pkg1_v2_bottle);
+
+        let pkg2_v1_bottle = create_bottle_tarball("pkg2");
+        let pkg2_v1_sha = sha256_hex(&pkg2_v1_bottle);
+        let mut pkg2_v2_bottle = create_bottle_tarball("pkg2");
+        pkg2_v2_bottle.push(0x02);
+        let pkg2_v2_sha = sha256_hex(&pkg2_v2_bottle);
+
+        // Track which versions to serve
+        let serve_new = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Create formula JSONs
+        let pkg1_v1_json = format!(
+            r#"{{"name":"pkg1","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/pkg1-1.0.0.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = pkg1_v1_sha
+        );
+        let pkg1_v2_json = format!(
+            r#"{{"name":"pkg1","versions":{{"stable":"2.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/pkg1-2.0.0.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = pkg1_v2_sha
+        );
+        let pkg2_v1_json = format!(
+            r#"{{"name":"pkg2","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/pkg2-1.0.0.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = pkg2_v1_sha
+        );
+        let pkg2_v2_json = format!(
+            r#"{{"name":"pkg2","versions":{{"stable":"2.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/pkg2-2.0.0.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = pkg2_v2_sha
+        );
+
+        // Mount formula mocks that switch between versions
+        let serve_new_clone = serve_new.clone();
+        let pkg1_v1 = pkg1_v1_json.clone();
+        let pkg1_v2 = pkg1_v2_json.clone();
+        Mock::given(method("GET"))
+            .and(path("/pkg1.json"))
+            .respond_with(move |_: &wiremock::Request| {
+                if serve_new_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                    ResponseTemplate::new(200).set_body_string(pkg1_v2.clone())
+                } else {
+                    ResponseTemplate::new(200).set_body_string(pkg1_v1.clone())
+                }
+            })
+            .mount(&mock_server)
+            .await;
+
+        let serve_new_clone = serve_new.clone();
+        let pkg2_v1 = pkg2_v1_json.clone();
+        let pkg2_v2 = pkg2_v2_json.clone();
+        Mock::given(method("GET"))
+            .and(path("/pkg2.json"))
+            .respond_with(move |_: &wiremock::Request| {
+                if serve_new_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                    ResponseTemplate::new(200).set_body_string(pkg2_v2.clone())
+                } else {
+                    ResponseTemplate::new(200).set_body_string(pkg2_v1.clone())
+                }
+            })
+            .mount(&mock_server)
+            .await;
+
+        // Mount bottle downloads
+        Mock::given(method("GET"))
+            .and(path("/bottles/pkg1-1.0.0.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(pkg1_v1_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/pkg1-2.0.0.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(pkg1_v2_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/pkg2-1.0.0.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(pkg2_v1_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/pkg2-2.0.0.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(pkg2_v2_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install both packages at v1
+        installer.install("pkg1", true).await.unwrap();
+        installer.install("pkg2", true).await.unwrap();
+
+        assert_eq!(installer.get_installed("pkg1").unwrap().version, "1.0.0");
+        assert_eq!(installer.get_installed("pkg2").unwrap().version, "1.0.0");
+
+        // Switch to serving new versions
+        serve_new.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Upgrade all
+        let result = installer.upgrade_all(true, None).await.unwrap();
+        assert_eq!(result.upgraded, 2);
+        assert_eq!(result.packages.len(), 2);
+
+        // Verify both upgraded
+        assert_eq!(installer.get_installed("pkg1").unwrap().version, "2.0.0");
+        assert_eq!(installer.get_installed("pkg2").unwrap().version, "2.0.0");
+
+        // Verify old kegs removed
+        assert!(!root.join("cellar/pkg1/1.0.0").exists());
+        assert!(!root.join("cellar/pkg2/1.0.0").exists());
+    }
+
+    #[tokio::test]
+    async fn upgrade_all_empty_when_all_current() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("uptodate");
+        let bottle_sha = sha256_hex(&bottle);
+
+        let formula_json = format!(
+            r#"{{"name":"uptodate","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/uptodate.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = bottle_sha
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/uptodate.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/uptodate.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install
+        installer.install("uptodate", true).await.unwrap();
+
+        // upgrade_all should return empty result
+        let result = installer.upgrade_all(true, None).await.unwrap();
+        assert_eq!(result.upgraded, 0);
+        assert!(result.packages.is_empty());
+
+        // Version unchanged
+        assert_eq!(installer.get_installed("uptodate").unwrap().version, "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn upgrade_preserves_links() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottles with different versions
+        let v1_bottle = create_bottle_tarball("linkedpkg");
+        let v1_sha = sha256_hex(&v1_bottle);
+        let mut v2_bottle = create_bottle_tarball("linkedpkg");
+        v2_bottle.push(0x00);
+        let v2_sha = sha256_hex(&v2_bottle);
+
+        let serve_new = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let v1_json = format!(
+            r#"{{"name":"linkedpkg","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/linkedpkg-1.0.0.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = v1_sha
+        );
+        let v2_json = format!(
+            r#"{{"name":"linkedpkg","versions":{{"stable":"2.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{base}/bottles/linkedpkg-2.0.0.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            tag = tag, base = mock_server.uri(), sha = v2_sha
+        );
+
+        let serve_new_clone = serve_new.clone();
+        let v1 = v1_json.clone();
+        let v2 = v2_json.clone();
+        Mock::given(method("GET"))
+            .and(path("/linkedpkg.json"))
+            .respond_with(move |_: &wiremock::Request| {
+                if serve_new_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                    ResponseTemplate::new(200).set_body_string(v2.clone())
+                } else {
+                    ResponseTemplate::new(200).set_body_string(v1.clone())
+                }
+            })
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/bottles/linkedpkg-1.0.0.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(v1_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/linkedpkg-2.0.0.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(v2_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+
+        // Install with linking
+        installer.install("linkedpkg", true).await.unwrap();
+
+        // Verify link exists and points to v1
+        let link_path = prefix.join("bin/linkedpkg");
+        assert!(link_path.exists());
+        let target = fs::read_link(&link_path).unwrap();
+        assert!(target.to_string_lossy().contains("1.0.0"));
+
+        // Switch to new version and upgrade
+        serve_new.store(true, std::sync::atomic::Ordering::SeqCst);
+        installer.upgrade_one("linkedpkg", true, None).await.unwrap();
+
+        // Verify link still exists and now points to v2
+        assert!(link_path.exists());
+        let target = fs::read_link(&link_path).unwrap();
+        assert!(target.to_string_lossy().contains("2.0.0"));
     }
 }

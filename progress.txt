@@ -128,6 +128,63 @@ $ zb outdated --json
 ]
 ```
 
+### 6. Implemented Upgrade Command (Phase 1.3) ✅
+
+**Files modified:**
+- `zb_io/src/install.rs` - Added `upgrade_one()`, `upgrade_all()` methods and `UpgradeResult` type
+- `zb_io/src/lib.rs` - Exported `UpgradeResult`
+- `zb_cli/src/main.rs` - Added `zb upgrade` command
+
+**Features:**
+- Upgrade all outdated packages: `zb upgrade`
+- Upgrade specific package: `zb upgrade <formula>`
+- Dry-run mode: `zb upgrade --dry-run`
+- Progress display with download/unpack/link status
+- Automatic removal of old version after successful upgrade
+- Continues with other packages if one fails
+- Displays summary of upgraded packages with old/new versions
+
+**Implementation details:**
+- Uses existing `get_outdated()` to find packages needing upgrade
+- For each package: unlinks old version, installs new version, removes old keg
+- Database automatically updated via INSERT OR REPLACE
+- Reuses existing install flow with progress callbacks
+- Version comparison using `Version::is_older_than()`
+
+**Example usage:**
+```
+$ zb upgrade --dry-run
+==> Would upgrade 2 packages:
+
+  git 2.43.0 → 2.44.0
+  ripgrep 14.0.0 → 14.1.0
+
+$ zb upgrade
+==> Upgrading 2 packages...
+
+==> Upgrading git 2.43.0 → 2.44.0...
+    git              ━━━━━━━━━━━━━━━ 10.5MB/10.5MB  0s
+    git              ✓ upgraded
+
+==> Upgrading ripgrep 14.0.0 → 14.1.0...
+    ripgrep          ✓ upgraded
+
+==> Upgraded 2 packages in 3.45s:
+    ✓ git 2.43.0 → 2.44.0
+    ✓ ripgrep 14.0.0 → 14.1.0
+
+$ zb upgrade git
+==> git is already up to date.
+```
+
+**New tests (6 total):**
+- `upgrade_installs_new_version_and_removes_old` - Tests full upgrade flow
+- `upgrade_returns_none_when_up_to_date` - Tests no-op when current
+- `upgrade_not_installed_returns_error` - Tests error on uninstalled package
+- `upgrade_all_upgrades_multiple_packages` - Tests upgrading multiple packages at once
+- `upgrade_all_empty_when_all_current` - Tests empty result when all up-to-date
+- `upgrade_preserves_links` - Tests symlinks point to new version after upgrade
+
 ---
 
 ## Remaining Phase 1 Tasks
@@ -136,7 +193,7 @@ $ zb outdated --json
 |------|--------|
 | 1.1 Search command | ✅ Complete |
 | 1.2 Outdated command | ✅ Complete |
-| 1.3 Upgrade command | ⏳ Not started |
+| 1.3 Upgrade command | ✅ Complete |
 | 1.4 Pin/unpin commands | ⏳ Not started |
 | 1.5 Autoremove command | ⏳ Not started |
 | 1.6 Shellenv command | ⏳ Not started |
@@ -147,7 +204,7 @@ $ zb outdated --json
 ## Test Results
 
 All tests passing:
-- 102 unit tests passed (37 zb_core + 99 zb_io, some overlap in count)
+- 142 unit tests passed (37 zb_core + 105 zb_io)
 - 27 integration tests passed
 - 4 tests ignored (require specific environment)
 
@@ -155,11 +212,10 @@ All tests passing:
 
 ## Next Steps
 
-1. Implement `zb upgrade` - upgrade outdated packages
-2. Implement `zb pin/unpin` - prevent specific packages from upgrading
-3. Implement `zb autoremove` - remove orphaned dependencies
-4. Implement `zb shellenv` - output shell environment setup
-5. Improve `zb info` - show dependencies, caveats, etc.
+1. Implement `zb pin/unpin` - prevent specific packages from upgrading
+2. Implement `zb autoremove` - remove orphaned dependencies
+3. Implement `zb shellenv` - output shell environment setup
+4. Improve `zb info` - show dependencies, caveats, etc.
 
 ---
 
@@ -169,3 +225,4 @@ All tests passing:
 - Outdated command fetches individual formula JSON for each installed package
 - Consider adding `--json` flag to search for machine-readable output
 - May want to add search filters (e.g., `--installed-only`)
+- Upgrade command reuses install progress display for consistency

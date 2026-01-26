@@ -72,6 +72,16 @@ enum Commands {
         json: bool,
     },
 
+    /// Upgrade outdated formulas
+    Upgrade {
+        /// Formula name to upgrade (omit to upgrade all)
+        formula: Option<String>,
+
+        /// Show what would be upgraded without doing it
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Garbage collect unreferenced store entries
     Gc,
 
@@ -668,6 +678,220 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     style("→").cyan(),
                     style("zb upgrade").cyan()
                 );
+            }
+        }
+
+        Commands::Upgrade { formula, dry_run } => {
+            let start = Instant::now();
+
+            // Get list of packages to upgrade
+            let to_upgrade = if let Some(ref name) = formula {
+                // Single package
+                let outdated = installer.get_outdated().await?;
+                outdated.into_iter().filter(|p| p.name == *name).collect::<Vec<_>>()
+            } else {
+                // All packages
+                installer.get_outdated().await?
+            };
+
+            if to_upgrade.is_empty() {
+                if let Some(ref name) = formula {
+                    // Check if the formula exists but is up to date
+                    if installer.is_installed(name) {
+                        println!("{} {} is already up to date.", style("==>").cyan().bold(), style(name).bold());
+                    } else {
+                        println!("{} {} is not installed.", style("==>").cyan().bold(), style(name).bold());
+                    }
+                } else {
+                    println!("{} All packages are up to date.", style("==>").cyan().bold());
+                }
+                return Ok(());
+            }
+
+            if dry_run {
+                println!(
+                    "{} Would upgrade {} packages:",
+                    style("==>").cyan().bold(),
+                    style(to_upgrade.len()).yellow().bold()
+                );
+                println!();
+                for pkg in &to_upgrade {
+                    println!(
+                        "  {} {} → {}",
+                        style(&pkg.name).bold(),
+                        style(&pkg.installed_version).red(),
+                        style(&pkg.available_version).green()
+                    );
+                }
+                return Ok(());
+            }
+
+            println!(
+                "{} Upgrading {} packages...",
+                style("==>").cyan().bold(),
+                style(to_upgrade.len()).yellow().bold()
+            );
+
+            // Set up progress display (same as install)
+            let multi = MultiProgress::new();
+            let bars: Arc<Mutex<HashMap<String, ProgressBar>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+
+            let download_style = ProgressStyle::default_bar()
+                .template(
+                    "    {prefix:<16} {bar:25.cyan/dim} {bytes:>10}/{total_bytes:<10} {eta:>6}",
+                )
+                .unwrap()
+                .progress_chars("━━╸");
+
+            let spinner_style = ProgressStyle::default_spinner()
+                .template("    {prefix:<16} {spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
+
+            let done_style = ProgressStyle::default_spinner()
+                .template("    {prefix:<16} {msg}")
+                .unwrap();
+
+            let bars_clone = bars.clone();
+            let multi_clone = multi.clone();
+            let download_style_clone = download_style.clone();
+            let spinner_style_clone = spinner_style.clone();
+            let done_style_clone = done_style.clone();
+
+            let progress_callback: Arc<ProgressCallback> = Arc::new(Box::new(move |event| {
+                let mut bars = bars_clone.lock().unwrap();
+                match event {
+                    InstallProgress::DownloadStarted { name, total_bytes } => {
+                        let pb = if let Some(total) = total_bytes {
+                            let pb = multi_clone.add(ProgressBar::new(total));
+                            pb.set_style(download_style_clone.clone());
+                            pb
+                        } else {
+                            let pb = multi_clone.add(ProgressBar::new_spinner());
+                            pb.set_style(spinner_style_clone.clone());
+                            pb.set_message("downloading...");
+                            pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                            pb
+                        };
+                        pb.set_prefix(name.clone());
+                        bars.insert(name, pb);
+                    }
+                    InstallProgress::DownloadProgress {
+                        name,
+                        downloaded,
+                        total_bytes,
+                    } => {
+                        if let Some(pb) = bars.get(&name)
+                            && total_bytes.is_some()
+                        {
+                            pb.set_position(downloaded);
+                        }
+                    }
+                    InstallProgress::DownloadCompleted { name, total_bytes } => {
+                        if let Some(pb) = bars.get(&name) {
+                            if total_bytes > 0 {
+                                pb.set_position(total_bytes);
+                            }
+                            pb.set_style(spinner_style_clone.clone());
+                            pb.set_message("unpacking...");
+                            pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                        }
+                    }
+                    InstallProgress::UnpackStarted { name } => {
+                        if let Some(pb) = bars.get(&name) {
+                            pb.set_message("unpacking...");
+                        }
+                    }
+                    InstallProgress::UnpackCompleted { name } => {
+                        if let Some(pb) = bars.get(&name) {
+                            pb.set_message("linking...");
+                        }
+                    }
+                    InstallProgress::LinkStarted { name } => {
+                        if let Some(pb) = bars.get(&name) {
+                            pb.set_message("linking...");
+                        }
+                    }
+                    InstallProgress::LinkCompleted { name } => {
+                        if let Some(pb) = bars.get(&name) {
+                            pb.set_style(done_style_clone.clone());
+                            pb.set_message(format!("{} upgraded", style("✓").green()));
+                            pb.finish();
+                        }
+                    }
+                }
+            }));
+
+            // Perform the upgrades
+            let mut upgraded_packages = Vec::new();
+            for pkg in &to_upgrade {
+                println!();
+                println!(
+                    "{} Upgrading {} {} → {}...",
+                    style("==>").cyan().bold(),
+                    style(&pkg.name).bold(),
+                    style(&pkg.installed_version).red(),
+                    style(&pkg.available_version).green()
+                );
+
+                match installer
+                    .upgrade_one(&pkg.name, true, Some(progress_callback.clone()))
+                    .await
+                {
+                    Ok(Some((old_ver, new_ver))) => {
+                        upgraded_packages.push((pkg.name.clone(), old_ver, new_ver));
+                    }
+                    Ok(None) => {
+                        // Already up to date (shouldn't happen but handle gracefully)
+                        println!(
+                            "    {} {} is already up to date",
+                            style("✓").green(),
+                            pkg.name
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "    {} Failed to upgrade {}: {}",
+                            style("✗").red(),
+                            pkg.name,
+                            e
+                        );
+                        // Continue with other packages
+                    }
+                }
+            }
+
+            // Finish any remaining bars
+            {
+                let bars = bars.lock().unwrap();
+                for (_, pb) in bars.iter() {
+                    if !pb.is_finished() {
+                        pb.finish();
+                    }
+                }
+            }
+
+            let elapsed = start.elapsed();
+            println!();
+            if upgraded_packages.is_empty() {
+                println!("{} No packages were upgraded.", style("==>").cyan().bold());
+            } else {
+                println!(
+                    "{} Upgraded {} packages in {:.2}s:",
+                    style("==>").cyan().bold(),
+                    style(upgraded_packages.len()).green().bold(),
+                    elapsed.as_secs_f64()
+                );
+                for (name, old_ver, new_ver) in &upgraded_packages {
+                    println!(
+                        "    {} {} {} → {}",
+                        style("✓").green(),
+                        style(name).bold(),
+                        style(old_ver).dim(),
+                        style(new_ver).green()
+                    );
+                }
             }
         }
 
