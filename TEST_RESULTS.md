@@ -16,11 +16,13 @@ Required dependency: `libssl-dev` (via apt)
 
 ## Package Installation Tests
 
+All packages tested work correctly with patchelf installed:
+
 ### jq (with dependency: oniguruma)
 - **Download:** ✅ SUCCESS
 - **Extraction:** ✅ SUCCESS  
 - **Dependency resolution:** ✅ SUCCESS (correctly pulled oniguruma)
-- **Binary execution:** ❌ FAILS (ELF patching needed)
+- **Binary execution:** ✅ SUCCESS
 
 ```
 $ sudo ./target/release/zb install jq
@@ -29,57 +31,92 @@ $ sudo ./target/release/zb install jq
     oniguruma 6.9.10
     jq 1.8.1
 ==> Downloading and installing...
-==> Installed 2 packages in 1.28s
+==> Installed 2 packages in 0.34s
+
+$ jq --version
+jq-1.8.1
+
+$ echo '{"test":123}' | jq '.test'
+123
 ```
 
 ### tree (no dependencies)
 - **Download:** ✅ SUCCESS
 - **Extraction:** ✅ SUCCESS
-- **Binary execution:** ❌ FAILS (ELF patching needed)
+- **Binary execution:** ✅ SUCCESS
+
+```
+$ tree --version
+tree v2.2.1 © 1996 - 2024 by Steve Baker, Thomas Moore, Francesc Rocher, Florian Sesser, Kyosuke Tokoro
+```
+
+### ripgrep (with dependency: pcre2)
+- **Download:** ✅ SUCCESS
+- **Binary execution:** ✅ SUCCESS
+
+```
+$ rg --version
+ripgrep 15.1.0
+```
+
+### fd (no dependencies)
+- **Download:** ✅ SUCCESS
+- **Binary execution:** ✅ SUCCESS
+
+```
+$ fd --version
+fd 10.3.0
+```
 
 ### Uninstall
-- **jq:** ✅ SUCCESS
-- **oniguruma:** ✅ SUCCESS
-- **tree:** ✅ SUCCESS
-
-## Root Cause of Execution Failures
-
-All Linuxbrew bottles contain placeholder paths that must be patched:
-
-```
-$ readelf -l /opt/zerobrew/prefix/Cellar/jq/1.8.1/bin/jq | grep interpreter
-[Requesting program interpreter: @@HOMEBREW_PREFIX@@/lib/ld.so]
-```
-
-The `@@HOMEBREW_PREFIX@@` placeholder needs to be replaced with the actual path (`/opt/zerobrew/prefix`) using `patchelf`.
-
-### Affected binary attributes:
-1. **Interpreter (PT_INTERP):** `@@HOMEBREW_PREFIX@@/lib/ld.so` → should be `/lib/ld-linux-aarch64.so.1`
-2. **RPATH:** Contains placeholder paths → should be updated to actual lib paths
+All packages uninstall correctly: ✅ SUCCESS
 
 ## What Works
 - ✅ Platform detection (arm64_linux bottles selected correctly)
 - ✅ Bottle downloads from Linuxbrew
-- ✅ Tarball extraction
+- ✅ Tarball extraction (xz, gzip, zstd)
 - ✅ Dependency resolution
 - ✅ Package installation to store
 - ✅ Symlink creation
 - ✅ Package uninstallation
 - ✅ Reflink copy with ext4 fallback
+- ✅ ELF binary patching (interpreter + RPATH)
 
-## What Needs Future Work
-- ❌ ELF binary patching via patchelf (required for all Linuxbrew bottles)
-- ❌ Automatic interpreter/rpath fixup post-install
+## Requirements
 
-## Recommendation
+- **patchelf** must be installed for binaries to work
+  - Download from: https://github.com/NixOS/patchelf/releases
+  - Without patchelf, packages install but binaries won't run
 
-The Linux bottle selection and reflink support work correctly. To make packages actually runnable, zerobrew needs to:
+## How ELF Patching Works
 
-1. Install/bundle `patchelf`
-2. After extracting bottles, run:
-   ```bash
-   patchelf --set-interpreter /lib/ld-linux-aarch64.so.1 <binary>
-   patchelf --set-rpath '$ORIGIN/../lib:/opt/zerobrew/prefix/lib' <binary>
-   ```
+Linuxbrew bottles contain placeholder paths that zerobrew patches at install time:
 
-This is a known limitation of Linuxbrew bottles and affects all tools that consume them without running Homebrew's relocation logic.
+**Before patching:**
+```
+[Requesting program interpreter: @@HOMEBREW_PREFIX@@/lib/ld.so]
+```
+
+**After patching:**
+```
+[Requesting program interpreter: /lib/ld-linux-aarch64.so.1]
+```
+
+The patching code:
+1. Detects ELF binaries by magic bytes
+2. Uses patchelf to read and modify RPATH entries
+3. Replaces `@@HOMEBREW_CELLAR@@` and `@@HOMEBREW_PREFIX@@` with actual paths
+4. Sets the interpreter to the system dynamic linker
+
+## Platform Support
+
+| Architecture | Interpreter |
+|-------------|-------------|
+| aarch64 | `/lib/ld-linux-aarch64.so.1` |
+| x86_64 | `/lib64/ld-linux-x86-64.so.2` |
+
+## Notes
+
+- First build requires `libssl-dev` for native TLS
+- Cached store entries from before patchelf was installed will need to be cleared (`rm -rf /opt/zerobrew/store/*`)
+- Some complex packages with many dynamic library dependencies may need additional RPATH fixes
