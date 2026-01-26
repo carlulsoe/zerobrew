@@ -7,17 +7,83 @@ pub struct SelectedBottle {
     pub sha256: String,
 }
 
-pub fn select_bottle(formula: &Formula) -> Result<SelectedBottle, Error> {
-    // Prefer macOS ARM bottles in order of preference (newest first)
-    let macos_tags = [
-        "arm64_tahoe",
-        "arm64_sequoia",
-        "arm64_sonoma",
-        "arm64_ventura",
-    ];
+/// Get the preferred bottle tags for the current platform
+fn get_platform_tags() -> &'static [&'static str] {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        &[
+            "arm64_tahoe",
+            "arm64_sequoia",
+            "arm64_sonoma",
+            "arm64_ventura",
+        ]
+    }
 
-    for preferred_tag in macos_tags {
-        if let Some(file) = formula.bottle.stable.files.get(preferred_tag) {
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        &["sonoma", "ventura", "monterey", "big_sur"]
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        &["arm64_linux"]
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        &["x86_64_linux"]
+    }
+
+    // Fallback for other platforms (won't match anything)
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+    )))]
+    {
+        &[]
+    }
+}
+
+/// Check if a tag is for the current platform family (for fallback selection)
+fn is_compatible_fallback_tag(tag: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // Any arm64 macOS bottle, but not linux
+        tag.starts_with("arm64_") && !tag.contains("linux")
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Any linux bottle matching our architecture
+        #[cfg(target_arch = "aarch64")]
+        {
+            tag == "arm64_linux"
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            tag == "x86_64_linux"
+        }
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+        {
+            false
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = tag;
+        false
+    }
+}
+
+pub fn select_bottle(formula: &Formula) -> Result<SelectedBottle, Error> {
+    let platform_tags = get_platform_tags();
+
+    // Try preferred tags for this platform (in order of preference)
+    for preferred_tag in platform_tags {
+        if let Some(file) = formula.bottle.stable.files.get(*preferred_tag) {
             return Ok(SelectedBottle {
                 tag: preferred_tag.to_string(),
                 url: file.url.clone(),
@@ -35,9 +101,9 @@ pub fn select_bottle(formula: &Formula) -> Result<SelectedBottle, Error> {
         });
     }
 
-    // Fallback: any arm64 macOS bottle (but not linux)
+    // Fallback: any compatible bottle for this platform
     for (tag, file) in &formula.bottle.stable.files {
-        if tag.starts_with("arm64_") && !tag.contains("linux") {
+        if is_compatible_fallback_tag(tag) {
             return Ok(SelectedBottle {
                 tag: tag.clone(),
                 url: file.url.clone(),

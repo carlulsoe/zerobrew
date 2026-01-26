@@ -405,10 +405,18 @@ fn codesign_and_strip_xattrs(keg_path: &Path) -> Result<(), Error> {
 }
 
 fn copy_dir_with_fallback(src: &Path, dst: &Path) -> Result<(), Error> {
-    // Try clonefile first (APFS), then hardlink, then copy
+    // Try clonefile first (APFS on macOS), then hardlink, then copy
     #[cfg(target_os = "macos")]
     {
         if try_clonefile_dir(src, dst).is_ok() {
+            return Ok(());
+        }
+    }
+
+    // On Linux, try reflink copy (btrfs/XFS) before falling back
+    #[cfg(target_os = "linux")]
+    {
+        if try_reflink_copy_dir(src, dst).is_ok() {
             return Ok(());
         }
     }
@@ -439,6 +447,75 @@ fn try_clonefile_dir(src: &Path, dst: &Path) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+/// Try to copy a directory using reflinks (copy-on-write) on Linux.
+/// Works on btrfs and XFS filesystems. Falls back gracefully on others.
+#[cfg(target_os = "linux")]
+fn try_reflink_copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    // FICLONE ioctl number for Linux
+    const FICLONE: libc::c_ulong = 0x40049409;
+
+    fn try_reflink_file(src_file: &fs::File, dst_file: &fs::File) -> io::Result<()> {
+        let result = unsafe { libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    fn copy_dir_reflink(src: &Path, dst: &Path) -> io::Result<()> {
+        fs::create_dir_all(dst)?;
+
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            let file_type = entry.file_type()?;
+
+            if file_type.is_dir() {
+                copy_dir_reflink(&src_path, &dst_path)?;
+            } else if file_type.is_symlink() {
+                let target = fs::read_link(&src_path)?;
+                std::os::unix::fs::symlink(&target, &dst_path)?;
+            } else {
+                // Try reflink for regular files
+                let src_file = fs::File::open(&src_path)?;
+                let dst_file = fs::File::create(&dst_path)?;
+
+                if try_reflink_file(&src_file, &dst_file).is_err() {
+                    // Reflink failed - filesystem doesn't support it
+                    // Clean up and return error to trigger fallback
+                    drop(dst_file);
+                    let _ = fs::remove_file(&dst_path);
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "reflink not supported",
+                    ));
+                }
+
+                // Preserve permissions
+                let metadata = src_file.metadata()?;
+                fs::set_permissions(&dst_path, metadata.permissions())?;
+            }
+        }
+
+        Ok(())
+    }
+
+    // Try to copy the entire directory with reflinks
+    // If any file fails, we need to clean up and fall back
+    match copy_dir_reflink(src, dst) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Clean up partial copy
+            let _ = fs::remove_dir_all(dst);
+            Err(e)
+        }
     }
 }
 
