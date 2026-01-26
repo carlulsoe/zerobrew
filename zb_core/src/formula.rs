@@ -1,9 +1,9 @@
 use serde::de::{self, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Formula {
     #[serde(default)]
     pub name: String,
@@ -35,7 +35,7 @@ pub struct Formula {
 }
 
 /// Reason why a formula is keg-only
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KegOnlyReason {
     pub reason: String,
     pub explanation: String,
@@ -175,19 +175,19 @@ impl Formula {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Versions {
     #[serde(default)]
     pub stable: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Bottle {
     #[serde(default)]
     pub stable: BottleStable,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct BottleStable {
     #[serde(default)]
     pub files: BTreeMap<String, BottleFile>,
@@ -197,7 +197,7 @@ pub struct BottleStable {
     pub rebuild: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BottleFile {
     pub url: String,
     pub sha256: String,

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::api::ApiClient;
 use crate::blob::BlobCache;
-use crate::db::Database;
+use crate::db::{Database, InstalledTap};
 use crate::download::{
     DownloadProgressCallback, DownloadRequest, DownloadResult, ParallelDownloader,
 };
@@ -12,6 +12,7 @@ use crate::link::{LinkedFile, Linker};
 use crate::materialize::Cellar;
 use crate::progress::{InstallProgress, ProgressCallback};
 use crate::store::Store;
+use crate::tap::{TapFormula, TapManager};
 
 use zb_core::{Error, Formula, OutdatedPackage, SelectedBottle, Version, resolve_closure, select_bottle};
 
@@ -25,6 +26,8 @@ pub struct Installer {
     cellar: Cellar,
     linker: Linker,
     db: Database,
+    tap_manager: TapManager,
+    taps_dir: PathBuf,
 }
 
 pub struct InstallPlan {
@@ -64,6 +67,8 @@ impl Installer {
         cellar: Cellar,
         linker: Linker,
         db: Database,
+        tap_manager: TapManager,
+        taps_dir: PathBuf,
         download_concurrency: usize,
     ) -> Self {
         Self {
@@ -73,6 +78,8 @@ impl Installer {
             cellar,
             linker,
             db,
+            tap_manager,
+            taps_dir,
         }
     }
 
@@ -181,6 +188,41 @@ impl Installer {
         }))
     }
 
+    /// Fetch a single formula, checking taps if it's a tap reference
+    async fn fetch_formula(&self, name: &str) -> Result<Formula, Error> {
+        // Check if this is a tap formula reference (user/repo/formula)
+        if let Some(tap_ref) = TapFormula::parse(name) {
+            return self.tap_manager
+                .get_formula(&tap_ref.user, &tap_ref.repo, &tap_ref.formula)
+                .await;
+        }
+
+        // Try the main API first
+        match self.api_client.get_formula(name).await {
+            Ok(formula) => Ok(formula),
+            Err(Error::MissingFormula { .. }) => {
+                // Try installed taps in order
+                let taps = self.db.list_taps().unwrap_or_default();
+                for tap in &taps {
+                    let parts: Vec<&str> = tap.name.split('/').collect();
+                    if parts.len() == 2 {
+                        if let Ok(formula) = self.tap_manager
+                            .get_formula(parts[0], parts[1], name)
+                            .await
+                        {
+                            return Ok(formula);
+                        }
+                    }
+                }
+                // No tap had the formula, return the original error
+                Err(Error::MissingFormula {
+                    name: name.to_string(),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Recursively fetch a formula and all its dependencies in parallel batches
     async fn fetch_all_formulas(&self, name: &str) -> Result<BTreeMap<String, Formula>, Error> {
         use std::collections::HashSet;
@@ -207,10 +249,10 @@ impl Installer {
                 fetched.insert(n.clone());
             }
 
-            // Fetch all in parallel
+            // Fetch all in parallel using our tap-aware fetch method
             let futures: Vec<_> = batch
                 .iter()
-                .map(|n| self.api_client.get_formula(n))
+                .map(|n| self.fetch_formula(n))
                 .collect();
 
             let results = futures::future::join_all(futures).await;
@@ -820,6 +862,70 @@ impl Installer {
     pub fn list_dependencies(&self) -> Result<Vec<crate::db::InstalledKeg>, Error> {
         self.db.list_dependencies()
     }
+
+    // ========== Tap Operations ==========
+
+    /// Add a tap repository
+    pub async fn add_tap(&self, user: &str, repo: &str) -> Result<(), Error> {
+        // Normalize repo name
+        let repo = repo.strip_prefix("homebrew-").unwrap_or(repo);
+        let tap_name = format!("{}/{}", user, repo);
+
+        // Check if already tapped in database
+        if self.db.is_tapped(&tap_name) {
+            return Err(Error::StoreCorruption {
+                message: format!("tap '{}' is already installed", tap_name),
+            });
+        }
+
+        // Add tap via TapManager (validates and creates directory structure)
+        self.tap_manager.add_tap(user, repo).await?;
+
+        // Record in database
+        let url = format!("https://github.com/{}/homebrew-{}", user, repo);
+        self.db.add_tap(&tap_name, &url)?;
+
+        Ok(())
+    }
+
+    /// Remove a tap repository
+    pub fn remove_tap(&self, user: &str, repo: &str) -> Result<(), Error> {
+        // Normalize repo name
+        let repo = repo.strip_prefix("homebrew-").unwrap_or(repo);
+        let tap_name = format!("{}/{}", user, repo);
+
+        // Check if tapped
+        if !self.db.is_tapped(&tap_name) {
+            return Err(Error::MissingFormula {
+                name: format!("{} (tap not installed)", tap_name),
+            });
+        }
+
+        // Remove from TapManager (deletes directory)
+        self.tap_manager.remove_tap(user, repo)?;
+
+        // Remove from database
+        self.db.remove_tap(&tap_name)?;
+
+        Ok(())
+    }
+
+    /// List all installed taps
+    pub fn list_taps(&self) -> Result<Vec<InstalledTap>, Error> {
+        self.db.list_taps()
+    }
+
+    /// Check if a tap is installed
+    pub fn is_tapped(&self, user: &str, repo: &str) -> bool {
+        let repo = repo.strip_prefix("homebrew-").unwrap_or(repo);
+        let tap_name = format!("{}/{}", user, repo);
+        self.db.is_tapped(&tap_name)
+    }
+
+    /// Get reference to the TapManager
+    pub fn tap_manager(&self) -> &TapManager {
+        &self.tap_manager
+    }
 }
 
 /// Create an Installer with standard paths
@@ -856,6 +962,12 @@ pub fn create_installer(
         message: format!("failed to create db directory: {e}"),
     })?;
 
+    // Create taps directory
+    let taps_dir = root.join("taps");
+    fs::create_dir_all(&taps_dir).map_err(|e| Error::StoreCorruption {
+        message: format!("failed to create taps directory: {e}"),
+    })?;
+
     let api_client = ApiClient::new();
     let blob_cache = BlobCache::new(&root.join("cache")).map_err(|e| Error::StoreCorruption {
         message: format!("failed to create blob cache: {e}"),
@@ -871,6 +983,7 @@ pub fn create_installer(
         message: format!("failed to create linker: {e}"),
     })?;
     let db = Database::open(&root.join("db/zb.sqlite3"))?;
+    let tap_manager = TapManager::new(&taps_dir);
 
     Ok(Installer::new(
         api_client,
@@ -879,6 +992,8 @@ pub fn create_installer(
         cellar,
         linker,
         db,
+        tap_manager,
+        taps_dir,
         download_concurrency,
     ))
 }
@@ -1002,8 +1117,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install
         installer.install("testpkg", true).await.unwrap();
@@ -1077,8 +1195,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install
         installer.install("uninstallme", true).await.unwrap();
@@ -1154,8 +1275,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install and uninstall
         installer.install("gctest", true).await.unwrap();
@@ -1234,8 +1358,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install but don't uninstall
         installer.install("keepme", true).await.unwrap();
@@ -1345,8 +1472,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install main package (should also install dependency)
         installer.install("mainpkg", true).await.unwrap();
@@ -1438,8 +1568,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install root (should install all 5 packages)
         installer.install("root", true).await.unwrap();
@@ -1521,8 +1654,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install slow package (which depends on fast)
         // With streaming, fast should be extracted while slow is still downloading
@@ -1622,8 +1758,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install - should succeed (first download is valid in this test)
         installer.install("retrypkg", true).await.unwrap();
@@ -1741,8 +1880,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install main package - should succeed despite macos-only-dep not having Linux bottles
         let result = installer.install("mainpkg", true).await;
@@ -1864,8 +2006,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install old version
         installer.install("upgrademe", true).await.unwrap();
@@ -1955,8 +2100,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install
         installer.install("current", true).await.unwrap();
@@ -1987,8 +2135,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Try to upgrade a package that's not installed
         let result = installer.upgrade_one("notinstalled", true, None).await;
@@ -2100,8 +2251,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install both packages at v1
         installer.install("pkg1", true).await.unwrap();
@@ -2163,8 +2317,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install
         installer.install("uptodate", true).await.unwrap();
@@ -2238,8 +2395,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install with linking
         installer.install("linkedpkg", true).await.unwrap();
@@ -2296,8 +2456,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install
         installer.install("pinnable", true).await.unwrap();
@@ -2346,8 +2509,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Try to pin a package that's not installed
         let result = installer.pin("notinstalled");
@@ -2443,8 +2609,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install both packages at v1
         installer.install("pkg1", true).await.unwrap();
@@ -2523,8 +2692,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install root package (should also install deppkg as dependency)
         installer.install("rootpkg", true).await.unwrap();
@@ -2600,8 +2772,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install mypkg (which installs mydep as dependency)
         installer.install("mypkg", true).await.unwrap();
@@ -2674,8 +2849,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install parent (which installs child as dependency)
         installer.install("parent", true).await.unwrap();
@@ -2752,8 +2930,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Install app (which installs lib as dependency)
         installer.install("app", true).await.unwrap();
@@ -2792,8 +2973,11 @@ mod tests {
         let cellar = Cellar::new(&root).unwrap();
         let linker = Linker::new(&prefix).unwrap();
         let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
 
         // Marking a non-installed package as explicit should fail
         let result = installer.mark_explicit("nonexistent");

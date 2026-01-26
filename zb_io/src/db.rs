@@ -19,6 +19,17 @@ pub struct InstalledKeg {
     pub explicit: bool,
 }
 
+/// Information about an installed tap
+#[derive(Debug, Clone)]
+pub struct InstalledTap {
+    /// Tap name in "user/repo" format
+    pub name: String,
+    /// GitHub URL for the tap
+    pub url: String,
+    /// Unix timestamp when the tap was added
+    pub added_at: i64,
+}
+
 impl Database {
     pub fn open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path).map_err(|e| Error::StoreCorruption {
@@ -63,6 +74,12 @@ impl Database {
                 linked_path TEXT NOT NULL,
                 target_path TEXT NOT NULL,
                 PRIMARY KEY (name, linked_path)
+            );
+
+            CREATE TABLE IF NOT EXISTS taps (
+                name TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                added_at INTEGER NOT NULL
             );
             ",
         )
@@ -391,6 +408,95 @@ impl Database {
             })?;
 
         Ok(files)
+    }
+
+    // ========== Tap Operations ==========
+
+    /// Add a tap to the database
+    pub fn add_tap(&self, name: &str, url: &str) -> Result<(), Error> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO taps (name, url, added_at) VALUES (?1, ?2, ?3)",
+                params![name, url, now],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to add tap: {e}"),
+            })?;
+
+        Ok(())
+    }
+
+    /// Remove a tap from the database
+    pub fn remove_tap(&self, name: &str) -> Result<bool, Error> {
+        let rows_affected = self
+            .conn
+            .execute("DELETE FROM taps WHERE name = ?1", params![name])
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to remove tap: {e}"),
+            })?;
+
+        Ok(rows_affected > 0)
+    }
+
+    /// Check if a tap is installed
+    pub fn is_tapped(&self, name: &str) -> bool {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM taps WHERE name = ?1",
+                params![name],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+
+    /// Get information about a specific tap
+    pub fn get_tap(&self, name: &str) -> Option<InstalledTap> {
+        self.conn
+            .query_row(
+                "SELECT name, url, added_at FROM taps WHERE name = ?1",
+                params![name],
+                |row| {
+                    Ok(InstalledTap {
+                        name: row.get(0)?,
+                        url: row.get(1)?,
+                        added_at: row.get(2)?,
+                    })
+                },
+            )
+            .ok()
+    }
+
+    /// List all installed taps
+    pub fn list_taps(&self) -> Result<Vec<InstalledTap>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, url, added_at FROM taps ORDER BY name")
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to prepare statement: {e}"),
+            })?;
+
+        let taps = stmt
+            .query_map([], |row| {
+                Ok(InstalledTap {
+                    name: row.get(0)?,
+                    url: row.get(1)?,
+                    added_at: row.get(2)?,
+                })
+            })
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to query taps: {e}"),
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to collect results: {e}"),
+            })?;
+
+        Ok(taps)
     }
 }
 
@@ -807,5 +913,112 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let files = db.get_linked_files("nonexistent").unwrap();
         assert!(files.is_empty());
+    }
+
+    // ========== Tap Tests ==========
+
+    #[test]
+    fn add_and_list_taps() {
+        let db = Database::in_memory().unwrap();
+
+        // Initially no taps
+        let taps = db.list_taps().unwrap();
+        assert!(taps.is_empty());
+
+        // Add a tap
+        db.add_tap("user/repo", "https://github.com/user/homebrew-repo")
+            .unwrap();
+
+        // Should be listed
+        let taps = db.list_taps().unwrap();
+        assert_eq!(taps.len(), 1);
+        assert_eq!(taps[0].name, "user/repo");
+        assert_eq!(taps[0].url, "https://github.com/user/homebrew-repo");
+        assert!(taps[0].added_at > 0);
+    }
+
+    #[test]
+    fn is_tapped_returns_correct_status() {
+        let db = Database::in_memory().unwrap();
+
+        assert!(!db.is_tapped("user/repo"));
+
+        db.add_tap("user/repo", "https://github.com/user/homebrew-repo")
+            .unwrap();
+
+        assert!(db.is_tapped("user/repo"));
+        assert!(!db.is_tapped("other/tap"));
+    }
+
+    #[test]
+    fn get_tap_returns_tap_info() {
+        let db = Database::in_memory().unwrap();
+
+        assert!(db.get_tap("user/repo").is_none());
+
+        db.add_tap("user/repo", "https://github.com/user/homebrew-repo")
+            .unwrap();
+
+        let tap = db.get_tap("user/repo").unwrap();
+        assert_eq!(tap.name, "user/repo");
+        assert_eq!(tap.url, "https://github.com/user/homebrew-repo");
+    }
+
+    #[test]
+    fn remove_tap_deletes_tap() {
+        let db = Database::in_memory().unwrap();
+
+        db.add_tap("user/repo", "https://github.com/user/homebrew-repo")
+            .unwrap();
+        assert!(db.is_tapped("user/repo"));
+
+        let removed = db.remove_tap("user/repo").unwrap();
+        assert!(removed);
+        assert!(!db.is_tapped("user/repo"));
+    }
+
+    #[test]
+    fn remove_tap_returns_false_for_nonexistent() {
+        let db = Database::in_memory().unwrap();
+
+        let removed = db.remove_tap("nonexistent/tap").unwrap();
+        assert!(!removed);
+    }
+
+    #[test]
+    fn add_tap_updates_existing() {
+        let db = Database::in_memory().unwrap();
+
+        db.add_tap("user/repo", "https://github.com/user/homebrew-repo")
+            .unwrap();
+
+        // Add again with different URL (should update)
+        db.add_tap("user/repo", "https://github.com/user/homebrew-repo-new")
+            .unwrap();
+
+        let tap = db.get_tap("user/repo").unwrap();
+        assert_eq!(tap.url, "https://github.com/user/homebrew-repo-new");
+
+        // Should still be just one tap
+        let taps = db.list_taps().unwrap();
+        assert_eq!(taps.len(), 1);
+    }
+
+    #[test]
+    fn list_taps_sorted_by_name() {
+        let db = Database::in_memory().unwrap();
+
+        db.add_tap("zulu/tools", "https://github.com/zulu/homebrew-tools")
+            .unwrap();
+        db.add_tap("alpha/utils", "https://github.com/alpha/homebrew-utils")
+            .unwrap();
+        db.add_tap("mike/apps", "https://github.com/mike/homebrew-apps")
+            .unwrap();
+
+        let taps = db.list_taps().unwrap();
+        assert_eq!(taps.len(), 3);
+        assert_eq!(taps[0].name, "alpha/utils");
+        assert_eq!(taps[1].name, "mike/apps");
+        assert_eq!(taps[2].name, "zulu/tools");
     }
 }

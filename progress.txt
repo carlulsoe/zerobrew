@@ -466,24 +466,111 @@ $ zb info git --json
 | 1.6 Shellenv command | ✅ Complete |
 | 1.7 Improved info command | ✅ Complete |
 
+### 11. Implemented Tap Support (Phase 2.1) ✅
+
+**Files created/modified:**
+- `zb_io/src/tap.rs` (NEW) - TapManager struct with tap operations
+- `zb_io/src/lib.rs` - Exported tap module and types
+- `zb_io/src/db.rs` - Added taps table and CRUD operations
+- `zb_io/src/install.rs` - Integrated tap resolution into formula fetching
+- `zb_core/src/formula.rs` - Added Serialize derive for caching formulas
+- `zb_cli/src/main.rs` - Added `zb tap` and `zb untap` commands
+
+**Database changes:**
+- Added `taps` table with columns: name, url, added_at
+- Records installed taps for persistence across sessions
+
+**Features:**
+- Add taps: `zb tap user/repo` - validates tap exists on GitHub, creates directory structure
+- Remove taps: `zb untap user/repo` - removes tap directory and database record
+- List taps: `zb tap` (no args) - shows all installed taps
+- Install from taps: `zb install user/repo/formula` - explicit tap reference
+- Automatic tap search: Dependencies are searched in homebrew/core first, then installed taps
+- Formula caching: Fetched tap formulas are cached locally in ~/.zerobrew/taps/
+
+**Tap directory structure:**
+```
+~/.zerobrew/taps/
+├── user/
+│   └── repo/
+│       ├── .tap_info          # JSON metadata (name, url, added_at)
+│       └── Formula/
+│           ├── pkg1.json      # Cached formula JSON
+│           └── pkg2.json
+```
+
+**Implementation details:**
+- TapFormula::parse() - Parses "user/repo/formula" format
+- TapManager - Handles tap filesystem operations and GitHub fetching
+- Installer::fetch_formula() - Tap-aware formula resolution
+  1. Check if name is explicit tap reference (user/repo/formula)
+  2. Try homebrew/core API
+  3. Try each installed tap in order
+- Database tracks installed taps for consistency
+
+**Example usage:**
+```bash
+# Add a tap
+$ zb tap homebrew/services
+==> Tapping homebrew/services...
+
+==> ✓ Tapped homebrew/services
+
+# List installed taps
+$ zb tap
+==> 1 installed taps:
+    homebrew/services
+
+# Install from a specific tap
+$ zb install homebrew/services/brew-services
+
+# Remove a tap
+$ zb untap homebrew/services
+==> Untapping homebrew/services...
+
+==> ✓ Untapped homebrew/services
+```
+
+**New tests (15 total):**
+- TapFormula parsing tests (4)
+- TapManager directory structure tests
+- list_taps/is_tapped/remove_tap tests
+- Formula caching tests
+- Database tap CRUD tests (7)
+
 ---
 
 ## Test Results
 
 All tests passing:
-- 167 unit tests passed (37 zb_core + 123 zb_io + 7 CLI)
+- 144 unit tests passed
 - 27 integration tests passed
 - 4 tests ignored (require specific environment)
 
 ---
 
-## Next Steps (Phase 2)
+## Phase 2 Progress
 
-1. Implement tap support (2.1)
-2. Implement formula Ruby parser (2.2)
-3. Implement cleanup command (2.3)
-4. Implement link/unlink commands (2.4)
-5. Implement deps/uses commands (2.5)
+| Task | Status |
+|------|--------|
+| 2.1 Tap support | ✅ Complete |
+| 2.2 Formula Ruby parser | ⏳ Pending |
+| 2.3 Cleanup command | ⏳ Pending |
+| 2.4 Link/unlink commands | ⏳ Pending |
+| 2.5 Deps/uses commands | ⏳ Pending |
+| 2.6 Leaves command | ⏳ Pending |
+| 2.7 Doctor command | ⏳ Pending |
+
+---
+
+## Next Steps (Remaining Phase 2)
+
+1. Implement formula Ruby parser (2.2)
+2. Implement cleanup command (2.3)
+3. Implement link/unlink commands (2.4)
+4. Implement deps/uses commands (2.5)
+5. Implement leaves command (2.6)
+6. Implement doctor command (2.7)
 
 ---
 
@@ -498,3 +585,4 @@ All tests passing:
 - Autoremove fetches formulas for all explicit packages to compute transitive deps
 - Info command fetches from API for non-installed packages too
 - Shellenv command compatible with Homebrew's output format
+- Tap support currently works with JSON formulas only (Ruby parsing planned for 2.2)
