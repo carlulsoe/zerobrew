@@ -1488,17 +1488,53 @@ Remaining Phase 4 tasks:
 
 Additional improvements to consider:
 - Service dependency ordering
-- `--json` flag for search command
-- Search filters (e.g., `--installed-only`)
+
+### 24. Search Command Enhancements ✅
+
+**Files modified:**
+- `zb_cli/src/main.rs` - Added `--json` and `--installed` flags to search command
+
+**New CLI flags:**
+- `zb search --json <query>` - Output search results as JSON array
+- `zb search --installed <query>` - Filter results to only show installed packages
+- Flags can be combined: `zb search --json --installed git`
+
+**JSON output format:**
+```json
+[
+  {
+    "name": "git",
+    "full_name": "git",
+    "version": "2.44.0",
+    "description": "Distributed revision control system",
+    "installed": true
+  }
+]
+```
+
+**Example usage:**
+```bash
+# JSON output for scripting
+$ zb search --json git | jq '.[0].name'
+"git"
+
+# Filter to installed packages only
+$ zb search --installed python
+==> Found 2 installed formulas:
+✓ python@3.12 3.12.0
+    Programming language
+✓ python@3.11 3.11.0
+    Programming language
+```
 
 ---
 
 ## Notes
 
 - Search command fetches ~7MB formula.json on first run (cached after)
+- Search command now supports `--json` flag for machine-readable output
+- Search command now supports `--installed` flag to filter to installed packages only
 - Outdated command fetches individual formula JSON for each installed package
-- Consider adding `--json` flag to search for machine-readable output
-- May want to add search filters (e.g., `--installed-only`)
 - Upgrade command reuses install progress display for consistency
 - Pin/unpin integrates with outdated/upgrade commands automatically
 - Autoremove fetches formulas for all explicit packages to compute transitive deps
