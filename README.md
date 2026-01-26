@@ -37,9 +37,37 @@ zb gc                # garbage collect unused store entries
 ## Why is it faster?
 
 - **Content-addressable store**: packages are stored by sha256 hash (at `/opt/zerobrew/store/{sha256}/`). Reinstalls are instant if the store entry exists.
-- **APFS clonefile**: materializing from store uses copy-on-write (zero disk overhead).
+- **APFS clonefile** (macOS) / **reflink** (Linux): materializing from store uses copy-on-write (zero disk overhead).
 - **Parallel downloads**: deduplicates in-flight requests, races across CDN connections.
 - **Streaming execution**: downloads, extractions, and linking happen concurrently.
+
+## Linux Support
+
+zerobrew also works on Linux (x86_64 and aarch64). It downloads Homebrew's Linux bottles and patches ELF binaries for your system.
+
+### Requirements
+
+- **patchelf**: Required to patch ELF binary rpaths and interpreters
+  ```bash
+  # Debian/Ubuntu
+  sudo apt install patchelf
+  
+  # Fedora/RHEL
+  sudo dnf install patchelf
+  
+  # Arch
+  sudo pacman -S patchelf
+  ```
+
+### Filesystem Notes
+
+- **btrfs/xfs**: Full reflink (copy-on-write) support — materialization is instant
+- **ext4/others**: Falls back to regular copy — still fast, but uses disk space
+
+### Linux Caveats
+
+- Homebrew's Linux bottles are built for specific glibc versions. Very old distros may have compatibility issues.
+- Some packages may need additional system libraries not bundled in bottles.
 
 ## Notes on LLMs
 
