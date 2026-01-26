@@ -32,6 +32,52 @@ pub struct Formula {
     pub keg_only_reason: Option<KegOnlyReason>,
     #[serde(default)]
     pub bottle: Bottle,
+    /// Source URLs for building from source
+    #[serde(default)]
+    pub urls: SourceUrls,
+}
+
+/// Source URLs for building from source
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SourceUrls {
+    /// Stable source tarball
+    #[serde(default)]
+    pub stable: Option<StableSource>,
+    /// HEAD (git) source
+    #[serde(default)]
+    pub head: Option<HeadSource>,
+}
+
+/// Stable source tarball information
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StableSource {
+    /// URL to download the source tarball
+    pub url: String,
+    /// SHA256 checksum of the tarball
+    #[serde(default)]
+    pub checksum: Option<String>,
+    /// Git tag if applicable
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// Git revision if applicable
+    #[serde(default)]
+    pub revision: Option<String>,
+    /// Special download method (e.g., "homebrew_curl")
+    #[serde(default)]
+    pub using: Option<String>,
+}
+
+/// HEAD source (git repository)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HeadSource {
+    /// Git repository URL
+    pub url: String,
+    /// Branch to checkout
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Special checkout method
+    #[serde(default)]
+    pub using: Option<String>,
 }
 
 /// Reason why a formula is keg-only

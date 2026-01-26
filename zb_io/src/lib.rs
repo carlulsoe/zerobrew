@@ -1,5 +1,6 @@
 pub mod api;
 pub mod blob;
+pub mod build;
 pub mod cache;
 pub mod db;
 pub mod download;
@@ -15,6 +16,7 @@ pub mod tap;
 
 pub use api::{ApiClient, FormulaInfo};
 pub use blob::BlobCache;
+pub use build::{BuildEnvironment, BuildResult, BuildSystem, Builder, detect_build_system};
 pub use cache::ApiCache;
 pub use db::{Database, InstalledKeg, InstalledTap};
 pub use download::{DownloadProgressCallback, DownloadRequest, Downloader, ParallelDownloader};

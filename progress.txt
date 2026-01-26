@@ -1213,13 +1213,101 @@ $ zb services disable redis
 
 ---
 
-## Next Steps (Phase 4)
+---
 
-Phase 4: Source Builds (v1.0) - marked as high complexity:
-1. Build environment setup
-2. Download and verify source tarballs
-3. Support common build systems (configure/make, cmake, meson)
-4. Build from HEAD (git clone)
+### 21. Source Build Foundation (Phase 4.1) ✅
+
+**Files created/modified:**
+- `zb_io/src/build.rs` (NEW) - Build module with environment setup and build system support
+- `zb_io/src/lib.rs` - Exported build module
+- `zb_core/src/formula.rs` - Added SourceUrls, StableSource, HeadSource structs
+
+**New types added to Formula:**
+
+```rust
+pub struct SourceUrls {
+    pub stable: Option<StableSource>,
+    pub head: Option<HeadSource>,
+}
+
+pub struct StableSource {
+    pub url: String,
+    pub checksum: Option<String>,
+    pub tag: Option<String>,
+    pub revision: Option<String>,
+    pub using: Option<String>,
+}
+
+pub struct HeadSource {
+    pub url: String,
+    pub branch: Option<String>,
+    pub using: Option<String>,
+}
+```
+
+**Build module features:**
+
+**BuildEnvironment** - Environment setup for compilation:
+- Compiler detection (CC, CXX from environment)
+- CFLAGS, CXXFLAGS, LDFLAGS with dependency include/lib paths
+- PKG_CONFIG_PATH with dependency pkgconfig directories
+- PATH with dependency bin directories
+- Parallel job count detection
+
+**BuildSystem detection:**
+- CMake (CMakeLists.txt)
+- Meson (meson.build)
+- Autotools (configure, configure.ac, autogen.sh)
+- Make (Makefile, GNUmakefile)
+
+**Builder** - Executes build commands:
+- `build_autotools()` - configure && make && make install
+- `build_cmake()` - cmake configure/build/install
+- `build_meson()` - meson setup && ninja && ninja install
+- `build_make()` - make && make install with PREFIX
+- `build_auto()` - auto-detect and build
+
+**Helper functions:**
+- `download_source()` - Download tarball with curl, verify SHA256
+- `compute_sha256()` - Compute SHA256 hash of file
+- `clone_git_repo()` - Clone git repository with depth=1
+- `extract_tarball()` - Extract tarball and find source directory
+- `collect_installed_files()` - Walk staging directory for installed files
+
+**New tests (11 total):**
+- `test_detect_build_system_cmake` - CMake detection
+- `test_detect_build_system_meson` - Meson detection
+- `test_detect_build_system_autotools` - Autotools detection
+- `test_detect_build_system_autotools_configure_ac` - configure.ac detection
+- `test_detect_build_system_make` - Makefile detection
+- `test_detect_build_system_unknown` - Empty directory
+- `test_detect_build_system_priority_cmake_over_make` - Priority ordering
+- `test_collect_installed_files` - File collection
+- `test_build_environment_creation` - Environment setup
+- `test_build_environment_get_env` - Environment variable extraction
+
+---
+
+## Phase 4.1 Complete! 🎉
+
+| Task | Status |
+|------|--------|
+| 4.1 Build environment setup | ✅ Complete |
+| 4.2 Source download and verification | ✅ Complete |
+| 4.3 Build system detection | ✅ Complete |
+| 4.4 Autotools builder | ✅ Complete |
+| 4.5 CMake builder | ✅ Complete |
+| 4.6 Meson builder | ✅ Complete |
+
+---
+
+## Next Steps (Phase 4.2)
+
+Remaining Phase 4 tasks:
+1. Integrate build module with Installer for `--build-from-source` flag
+2. Add `zb install --build-from-source <formula>` CLI support
+3. Add `zb install --HEAD <formula>` for git builds
+4. Test with real formulas
 
 Additional improvements to consider:
 - Service dependency ordering
