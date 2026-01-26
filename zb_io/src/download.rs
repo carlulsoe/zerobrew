@@ -466,7 +466,10 @@ async fn download_response_internal(
 
     let actual_hash = format!("{:x}", hasher.finalize());
 
-    if actual_hash != expected_sha256 {
+    // Normalize expected hash to lowercase for comparison (API may use mixed case)
+    let expected_normalized = expected_sha256.to_lowercase();
+
+    if actual_hash != expected_normalized {
         return Err(Error::ChecksumMismatch {
             expected: expected_sha256.to_string(),
             actual: actual_hash,

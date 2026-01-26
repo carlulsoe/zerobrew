@@ -134,6 +134,7 @@ pub fn parse_brewfile(content: &str) -> Result<Vec<BrewfileEntry>, Error> {
 }
 
 /// Parse a quoted string like `"foo"` and return `foo`
+/// Handles escaped quotes within the string (e.g., `"foo\"bar"` -> `foo"bar`)
 fn parse_quoted_string(s: &str) -> Result<String, Error> {
     let s = s.trim();
 
@@ -143,10 +144,49 @@ fn parse_quoted_string(s: &str) -> Result<String, Error> {
         });
     }
 
-    // Find the closing quote
-    let rest = &s[1..];
-    if let Some(end) = rest.find('"') {
-        Ok(rest[..end].to_string())
+    // Parse the string character by character to handle escape sequences
+    let mut result = String::new();
+    let mut chars = s[1..].chars().peekable();
+    let mut found_closing = false;
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                // Handle escape sequence
+                if let Some(&next) = chars.peek() {
+                    match next {
+                        '"' | '\\' => {
+                            result.push(next);
+                            chars.next();
+                        }
+                        'n' => {
+                            result.push('\n');
+                            chars.next();
+                        }
+                        't' => {
+                            result.push('\t');
+                            chars.next();
+                        }
+                        _ => {
+                            // Unknown escape, preserve the backslash
+                            result.push('\\');
+                        }
+                    }
+                } else {
+                    // Trailing backslash
+                    result.push('\\');
+                }
+            }
+            '"' => {
+                found_closing = true;
+                break;
+            }
+            _ => result.push(c),
+        }
+    }
+
+    if found_closing {
+        Ok(result)
     } else {
         Err(Error::StoreCorruption {
             message: format!("unterminated string: {}", s),
@@ -557,6 +597,18 @@ brew "neovim", args: ["--HEAD"]
         assert_eq!(parse_quoted_string(r#""foo/bar""#).unwrap(), "foo/bar");
         assert!(parse_quoted_string("hello").is_err());
         assert!(parse_quoted_string(r#""unterminated"#).is_err());
+
+        // Test escaped quotes
+        assert_eq!(parse_quoted_string(r#""foo\"bar""#).unwrap(), "foo\"bar");
+        assert_eq!(
+            parse_quoted_string(r#""escaped\\backslash""#).unwrap(),
+            "escaped\\backslash"
+        );
+        assert_eq!(parse_quoted_string(r#""tab\there""#).unwrap(), "tab\there");
+        assert_eq!(
+            parse_quoted_string(r#""newline\nhere""#).unwrap(),
+            "newline\nhere"
+        );
     }
 
     #[test]
