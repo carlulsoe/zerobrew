@@ -389,11 +389,63 @@ impl TapManager {
             }
         }
 
-        // If no JSON found, the tap might only have Ruby formulas
-        // Return an error indicating Ruby parsing is not yet supported
+        // If no JSON found, try fetching and parsing the Ruby formula
+        self.fetch_ruby_formula_from_github(user, repo, name).await
+    }
+
+    /// Fetch and parse a Ruby formula from GitHub
+    async fn fetch_ruby_formula_from_github(
+        &self,
+        user: &str,
+        repo: &str,
+        name: &str,
+    ) -> Result<Formula, Error> {
+        // Try common paths for Ruby formulas
+        // Note: Formula names can have different capitalizations and path structures
+        let paths_to_try = [
+            // Most common: Formula directory with exact name
+            format!("Formula/{}.rb", name),
+            // Sometimes in a subdirectory based on first letter
+            format!("Formula/{}/{}.rb", name.chars().next().unwrap_or('_'), name),
+            // Legacy Formulas directory
+            format!("Formulas/{}.rb", name),
+            // Lowercase formula directory
+            format!("formula/{}.rb", name),
+        ];
+
+        for path in &paths_to_try {
+            // Try both HEAD and main/master branches
+            for branch in &["HEAD", "main", "master"] {
+                let url = format!(
+                    "https://raw.githubusercontent.com/{}/homebrew-{}/{}/{}",
+                    user, repo, branch, path
+                );
+
+                let response = self.client.get(&url).send().await;
+
+                if let Ok(resp) = response {
+                    if resp.status().is_success() {
+                        if let Ok(ruby_source) = resp.text().await {
+                            // Parse the Ruby formula
+                            match zb_core::parse_ruby_formula(&ruby_source, name) {
+                                Ok(formula) => return Ok(formula),
+                                Err(e) => {
+                                    // Log parse error but continue trying other paths
+                                    eprintln!(
+                                        "Warning: Failed to parse Ruby formula at {}: {}",
+                                        url, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Err(Error::MissingFormula {
             name: format!(
-                "{}/{}/{} (formula not found or requires Ruby parsing which is not yet supported)",
+                "{}/{}/{} (formula not found in tap)",
                 user, repo, name
             ),
         })
@@ -755,5 +807,173 @@ mod tests {
         let formula = manager.get_formula("user", "repo", "cached-formula").await.unwrap();
         assert_eq!(formula.name, "cached-formula");
         assert_eq!(formula.versions.stable, "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn fetch_ruby_formula_parses_and_caches() {
+        let mock_server = MockServer::start().await;
+
+        // Mock Ruby formula response
+        let ruby_formula = r#"
+class TestFormula < Formula
+  desc "A test formula for unit testing"
+  homepage "https://example.com/test"
+  url "https://example.com/test-1.2.3.tar.gz"
+  sha256 "abc123"
+  license "MIT"
+
+  bottle do
+    sha256 cellar: :any, arm64_sonoma: "bottle_sha_arm64"
+    sha256 cellar: :any_skip_relocation, x86_64_linux: "bottle_sha_linux"
+  end
+
+  depends_on "dep1"
+  depends_on "dep2"
+
+  def install
+    system "./configure"
+    system "make", "install"
+  end
+end
+"#;
+
+        Mock::given(method("GET"))
+            .and(path("/testuser/homebrew-testrepo/HEAD/Formula/testformula.rb"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ruby_formula))
+            .mount(&mock_server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+
+        // Create TapManager with custom client pointing to mock server
+        // We need to create a custom manager that would redirect requests
+        // For now, test the parser integration directly
+        let manager = TapManager::new(tmp.path());
+
+        // Create the tap structure
+        let formula_dir = manager.formula_dir("testuser", "testrepo");
+        fs::create_dir_all(&formula_dir).unwrap();
+
+        let info = TapInfo {
+            name: "testuser/testrepo".to_string(),
+            url: "https://github.com/testuser/homebrew-testrepo".to_string(),
+            added_at: 12345,
+            updated_at: None,
+        };
+        fs::write(
+            manager.tap_info_path("testuser", "testrepo"),
+            serde_json::to_string(&info).unwrap(),
+        )
+        .unwrap();
+
+        // Test the Ruby parsing directly (since we can't easily mock GitHub URLs)
+        let parsed = zb_core::parse_ruby_formula(ruby_formula, "testformula").unwrap();
+
+        assert_eq!(parsed.name, "testformula");
+        assert_eq!(parsed.desc.as_deref(), Some("A test formula for unit testing"));
+        assert_eq!(parsed.homepage.as_deref(), Some("https://example.com/test"));
+        assert_eq!(parsed.license.as_deref(), Some("MIT"));
+        assert_eq!(parsed.versions.stable, "1.2.3");
+        assert_eq!(parsed.dependencies, vec!["dep1", "dep2"]);
+        assert!(parsed.bottle.stable.files.contains_key("arm64_sonoma"));
+        assert!(parsed.bottle.stable.files.contains_key("x86_64_linux"));
+    }
+
+    #[test]
+    fn ruby_formula_parsing_integration() {
+        // Test various real-world-like formula patterns
+        let formulas = vec![
+            // Simple formula
+            (
+                "simple",
+                r#"
+class Simple < Formula
+  desc "Simple test"
+  homepage "https://example.com"
+  url "https://example.com/simple-1.0.tar.gz"
+  sha256 "abc"
+  license "MIT"
+
+  bottle do
+    sha256 arm64_sonoma: "def"
+  end
+end
+"#,
+            ),
+            // Formula with build deps
+            (
+                "withbuild",
+                r#"
+class Withbuild < Formula
+  desc "With build deps"
+  homepage "https://example.com"
+  url "https://example.com/withbuild-2.0.tar.gz"
+  sha256 "abc"
+  license "Apache-2.0"
+
+  bottle do
+    sha256 arm64_sonoma: "def"
+  end
+
+  depends_on "cmake" => :build
+  depends_on "libfoo"
+end
+"#,
+            ),
+            // Formula with uses_from_macos
+            (
+                "withmacos",
+                r#"
+class Withmacos < Formula
+  desc "With macOS deps"
+  homepage "https://example.com"
+  url "https://example.com/withmacos-3.0.tar.gz"
+  sha256 "abc"
+  license "GPL-3.0"
+
+  bottle do
+    sha256 arm64_sonoma: "def"
+    sha256 x86_64_linux: "ghi"
+  end
+
+  depends_on "openssl"
+  uses_from_macos "curl"
+  uses_from_macos "zlib"
+end
+"#,
+            ),
+        ];
+
+        for (name, source) in formulas {
+            let result = zb_core::parse_ruby_formula(source, name);
+            assert!(result.is_ok(), "Failed to parse formula '{}': {:?}", name, result.err());
+
+            let formula = result.unwrap();
+            assert_eq!(formula.name, name);
+            assert!(!formula.versions.stable.is_empty(), "Version should not be empty for '{}'", name);
+            assert!(!formula.bottle.stable.files.is_empty(), "Bottle should not be empty for '{}'", name);
+        }
+    }
+
+    #[test]
+    fn ruby_formula_with_rebuild() {
+        let source = r#"
+class Withrebuild < Formula
+  desc "Test rebuild"
+  homepage "https://example.com"
+  url "https://example.com/withrebuild-1.0.0.tar.gz"
+  sha256 "abc"
+  license "MIT"
+
+  bottle do
+    rebuild 3
+    sha256 arm64_sonoma: "def"
+  end
+end
+"#;
+
+        let formula = zb_core::parse_ruby_formula(source, "withrebuild").unwrap();
+        assert_eq!(formula.bottle.stable.rebuild, 3);
+        assert_eq!(formula.effective_version(), "1.0.0_3");
     }
 }

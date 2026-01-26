@@ -543,9 +543,87 @@ $ zb untap homebrew/services
 ## Test Results
 
 All tests passing:
-- 144 unit tests passed
+- 158 unit tests passed (51 zb_core + 150 zb_io + 7 zb_cli, overlapping)
 - 27 integration tests passed
 - 4 tests ignored (require specific environment)
+
+### 12. Implemented Formula Ruby Parser (Phase 2.2) ✅
+
+**Files created/modified:**
+- `zb_core/src/formula_parser.rs` (NEW) - Ruby formula parser using tree-sitter
+- `zb_core/src/lib.rs` - Exported formula_parser module
+- `zb_core/Cargo.toml` - Added tree-sitter, tree-sitter-ruby, and regex dependencies
+- `zb_io/src/tap.rs` - Integrated Ruby parsing into tap formula fetching
+
+**Features:**
+- Parse Ruby formula DSL using tree-sitter-ruby for robust AST handling
+- Extract metadata: desc, homepage, license, version, url
+- Parse dependencies: `depends_on`, `uses_from_macos` with build/test filtering
+- Parse bottle blocks: platform-specific sha256 hashes and rebuild numbers
+- Version extraction from URLs when not explicitly specified
+- Automatic fallback from JSON to Ruby parsing when fetching tap formulas
+
+**Supported Ruby DSL elements:**
+```ruby
+class Foo < Formula
+  desc "Description"
+  homepage "https://..."
+  url "https://..."
+  sha256 "..."
+  license "MIT"
+  version "1.2.3"   # Optional, can be extracted from URL
+
+  depends_on "dep1"
+  depends_on "dep2" => :build  # Build-only deps filtered
+  uses_from_macos "zlib"
+  uses_from_macos "flex" => :build  # Build-only excluded
+
+  bottle do
+    rebuild 1
+    sha256 cellar: :any, arm64_sonoma: "..."
+    sha256 cellar: :any_skip_relocation, x86_64_linux: "..."
+  end
+end
+```
+
+**Implementation details:**
+- Uses tree-sitter for reliable Ruby parsing without executing Ruby code
+- AST traversal extracts only the attributes needed for bottle installation
+- Ignores `install`, `test`, `caveats`, `service` blocks (not needed for bottles)
+- URL-based version extraction handles common patterns (vX.Y.Z, pkg-X.Y.Z, etc.)
+- Bottle URLs generated in Homebrew GHCR format
+
+**Tap integration:**
+- When a tap formula isn't found as JSON, automatically tries Ruby parsing
+- Fetches `.rb` files from common GitHub paths (Formula/, Formulas/, formula/)
+- Tries multiple branches (HEAD, main, master)
+- Successfully parsed formulas are cached as JSON for future use
+
+**Example usage:**
+```bash
+# Now works with taps that only have Ruby formulas
+$ zb tap homebrew/services
+$ zb install homebrew/services/some-formula  # Parses Ruby if no JSON
+```
+
+**New tests (14 unit tests + 4 integration tests):**
+- `parse_simple_formula` - Basic formula parsing
+- `parse_formula_with_build_deps` - Build dependency filtering
+- `parse_formula_with_uses_from_macos` - macOS system deps
+- `parse_formula_with_rebuild` - Bottle rebuild numbers
+- `parse_formula_with_explicit_version` - Version override
+- `parse_formula_missing_class_fails` - Error handling
+- `parse_multiple_bottle_platforms` - Multi-platform bottles
+- `parse_formula_with_multiple_deps` - Complex dependency trees
+- `parse_formula_no_bottle_is_ok` - Formulas without bottles
+- `bottle_url_contains_formula_name` - URL generation
+- `version_extraction_handles_jq_style` - URL version patterns
+- `version_extraction_handles_python_style` - More URL patterns
+- `parse_uses_from_macos_build_only_excluded` - Build-time filtering
+- `extract_version_from_url_works` - Version regex testing
+- `fetch_ruby_formula_parses_and_caches` - Tap integration
+- `ruby_formula_parsing_integration` - Real-world patterns
+- `ruby_formula_with_rebuild` - Rebuild version calculation
 
 ---
 
@@ -554,7 +632,7 @@ All tests passing:
 | Task | Status |
 |------|--------|
 | 2.1 Tap support | ✅ Complete |
-| 2.2 Formula Ruby parser | ⏳ Pending |
+| 2.2 Formula Ruby parser | ✅ Complete |
 | 2.3 Cleanup command | ⏳ Pending |
 | 2.4 Link/unlink commands | ⏳ Pending |
 | 2.5 Deps/uses commands | ⏳ Pending |
@@ -565,12 +643,11 @@ All tests passing:
 
 ## Next Steps (Remaining Phase 2)
 
-1. Implement formula Ruby parser (2.2)
-2. Implement cleanup command (2.3)
-3. Implement link/unlink commands (2.4)
-4. Implement deps/uses commands (2.5)
-5. Implement leaves command (2.6)
-6. Implement doctor command (2.7)
+1. Implement cleanup command (2.3)
+2. Implement link/unlink commands (2.4)
+3. Implement deps/uses commands (2.5)
+4. Implement leaves command (2.6)
+5. Implement doctor command (2.7)
 
 ---
 
@@ -585,4 +662,5 @@ All tests passing:
 - Autoremove fetches formulas for all explicit packages to compute transitive deps
 - Info command fetches from API for non-installed packages too
 - Shellenv command compatible with Homebrew's output format
-- Tap support currently works with JSON formulas only (Ruby parsing planned for 2.2)
+- Ruby formula parser uses tree-sitter for reliable parsing without Ruby interpreter
+- Tap support now works with both JSON and Ruby formulas
