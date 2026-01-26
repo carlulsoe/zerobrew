@@ -577,7 +577,12 @@ pub fn extract_tarball(tarball: &Path, dest: &Path) -> Result<PathBuf, Error> {
 
     // Use tar to extract
     let output = Command::new("tar")
-        .args(["-xf", &tarball.to_string_lossy(), "-C", &dest.to_string_lossy()])
+        .args([
+            "-xf",
+            &tarball.to_string_lossy(),
+            "-C",
+            &dest.to_string_lossy(),
+        ])
         .output()
         .map_err(|e| Error::StoreCorruption {
             message: format!("failed to extract {}: {}", tarball.display(), e),
@@ -615,7 +620,11 @@ mod tests {
     #[test]
     fn test_detect_build_system_cmake() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.0)").unwrap();
+        std::fs::write(
+            tmp.path().join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.0)",
+        )
+        .unwrap();
 
         assert_eq!(detect_build_system(tmp.path()), BuildSystem::CMake);
     }
@@ -700,7 +709,13 @@ mod tests {
         let opt_dir = PathBuf::from("/opt/zerobrew/prefix/opt");
         let staging_dir = PathBuf::from("/tmp/test-staging");
 
-        let env = BuildEnvironment::new(&formula, source_dir.clone(), &prefix, &opt_dir, staging_dir.clone());
+        let env = BuildEnvironment::new(
+            &formula,
+            source_dir.clone(),
+            &prefix,
+            &opt_dir,
+            staging_dir.clone(),
+        );
 
         assert_eq!(env.source_dir, source_dir);
         assert_eq!(env.build_dir, source_dir.join("build"));

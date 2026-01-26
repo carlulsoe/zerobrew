@@ -25,7 +25,7 @@ pub fn search_formulas(formulas: &[FormulaInfo], query: &str) -> Vec<SearchResul
     let is_regex = query.starts_with('/') && query.ends_with('/') && query.len() > 2;
 
     let results: Vec<SearchResult> = if is_regex {
-        let pattern = &query[1..query.len()-1];
+        let pattern = &query[1..query.len() - 1];
         match Regex::new(pattern) {
             Ok(re) => search_by_regex(formulas, &re),
             Err(_) => {
@@ -39,9 +39,7 @@ pub fn search_formulas(formulas: &[FormulaInfo], query: &str) -> Vec<SearchResul
 
     // Sort by score (descending), then by name (ascending)
     let mut sorted = results;
-    sorted.sort_by(|a, b| {
-        b.score.cmp(&a.score).then_with(|| a.name.cmp(&b.name))
-    });
+    sorted.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.name.cmp(&b.name)));
 
     sorted
 }
@@ -75,7 +73,11 @@ fn search_by_text(formulas: &[FormulaInfo], query: &str) -> Vec<SearchResult> {
                 score += 10;
             }
             // Check aliases
-            else if f.aliases.iter().any(|a| a.to_lowercase().contains(&query_lower)) {
+            else if f
+                .aliases
+                .iter()
+                .any(|a| a.to_lowercase().contains(&query_lower))
+            {
                 score += 15;
             }
 
@@ -83,7 +85,11 @@ fn search_by_text(formulas: &[FormulaInfo], query: &str) -> Vec<SearchResult> {
                 Some(SearchResult {
                     name: f.name.clone(),
                     full_name: f.full_name.clone(),
-                    version: f.versions.stable.clone().unwrap_or_else(|| "HEAD".to_string()),
+                    version: f
+                        .versions
+                        .stable
+                        .clone()
+                        .unwrap_or_else(|| "HEAD".to_string()),
                     description: f.desc.clone().unwrap_or_default(),
                     score,
                 })
@@ -107,7 +113,11 @@ fn search_by_regex(formulas: &[FormulaInfo], re: &Regex) -> Vec<SearchResult> {
                 Some(SearchResult {
                     name: f.name.clone(),
                     full_name: f.full_name.clone(),
-                    version: f.versions.stable.clone().unwrap_or_else(|| "HEAD".to_string()),
+                    version: f
+                        .versions
+                        .stable
+                        .clone()
+                        .unwrap_or_else(|| "HEAD".to_string()),
                     description: f.desc.clone().unwrap_or_default(),
                     score,
                 })
@@ -157,7 +167,10 @@ mod tests {
         let formulas = vec![
             make_formula("node", "JavaScript runtime"),
             make_formula("nodenv", "Node version manager"),
-            make_formula("libuv", "Multi-platform support library with focus on async I/O for node"),
+            make_formula(
+                "libuv",
+                "Multi-platform support library with focus on async I/O for node",
+            ),
         ];
 
         let results = search_formulas(&formulas, "node");
@@ -194,11 +207,7 @@ mod tests {
         let mut disabled = make_formula("broken-pkg", "Broken package");
         disabled.disabled = true;
 
-        let formulas = vec![
-            make_formula("pkg", "Good package"),
-            deprecated,
-            disabled,
-        ];
+        let formulas = vec![make_formula("pkg", "Good package"), deprecated, disabled];
 
         let results = search_formulas(&formulas, "pkg");
 
@@ -208,9 +217,7 @@ mod tests {
 
     #[test]
     fn invalid_regex_falls_back_to_text() {
-        let formulas = vec![
-            make_formula("test", "Test package"),
-        ];
+        let formulas = vec![make_formula("test", "Test package")];
 
         // Invalid regex (unmatched bracket)
         let results = search_formulas(&formulas, "/[invalid/");

@@ -133,7 +133,10 @@ impl BlobCache {
 
     /// Remove all blobs except those in the keep_set
     /// Returns the list of removed sha256 hashes and the total bytes freed
-    pub fn remove_blobs_except(&self, keep_set: &std::collections::HashSet<String>) -> io::Result<(Vec<String>, u64)> {
+    pub fn remove_blobs_except(
+        &self,
+        keep_set: &std::collections::HashSet<String>,
+    ) -> io::Result<(Vec<String>, u64)> {
         let mut removed = Vec::new();
         let mut bytes_freed = 0;
 
@@ -378,10 +381,8 @@ mod tests {
         }
 
         // Keep set
-        let keep: std::collections::HashSet<String> = ["keep1", "keep2"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let keep: std::collections::HashSet<String> =
+            ["keep1", "keep2"].iter().map(|s| s.to_string()).collect();
 
         let (removed, _) = cache.remove_blobs_except(&keep).unwrap();
         assert_eq!(removed.len(), 2);
@@ -402,8 +403,16 @@ mod tests {
 
         // Create some fake temp files
         let tmp_dir = tmp.path().join("tmp");
-        fs::write(tmp_dir.join("abc123.1234.thread1.tar.gz.part"), b"incomplete").unwrap();
-        fs::write(tmp_dir.join("def456.5678.thread2.tar.gz.part"), b"also incomplete").unwrap();
+        fs::write(
+            tmp_dir.join("abc123.1234.thread1.tar.gz.part"),
+            b"incomplete",
+        )
+        .unwrap();
+        fs::write(
+            tmp_dir.join("def456.5678.thread2.tar.gz.part"),
+            b"also incomplete",
+        )
+        .unwrap();
 
         let (count, _) = cache.cleanup_temp_files().unwrap();
         assert_eq!(count, 2);

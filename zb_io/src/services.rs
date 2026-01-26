@@ -141,17 +141,20 @@ impl ServiceManager {
     /// Get the service file path for a formula
     #[cfg(target_os = "linux")]
     fn service_file_path(&self, formula: &str) -> PathBuf {
-        self.service_dir.join(format!("zerobrew.{}.service", formula))
+        self.service_dir
+            .join(format!("zerobrew.{}.service", formula))
     }
 
     #[cfg(target_os = "macos")]
     fn service_file_path(&self, formula: &str) -> PathBuf {
-        self.service_dir.join(format!("com.zerobrew.{}.plist", formula))
+        self.service_dir
+            .join(format!("com.zerobrew.{}.plist", formula))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn service_file_path(&self, formula: &str) -> PathBuf {
-        self.service_dir.join(format!("zerobrew.{}.service", formula))
+        self.service_dir
+            .join(format!("zerobrew.{}.service", formula))
     }
 
     /// Get the service label/name for a formula
@@ -181,7 +184,11 @@ impl ServiceManager {
 
         // Read service files
         let entries = std::fs::read_dir(&self.service_dir).map_err(|e| Error::StoreCorruption {
-            message: format!("failed to read service directory {}: {}", self.service_dir.display(), e),
+            message: format!(
+                "failed to read service directory {}: {}",
+                self.service_dir.display(),
+                e
+            ),
         })?;
 
         for entry in entries.flatten() {
@@ -190,9 +197,11 @@ impl ServiceManager {
 
             // Filter to zerobrew services only
             #[cfg(target_os = "linux")]
-            let is_zerobrew_service = file_name.starts_with("zerobrew.") && file_name.ends_with(".service");
+            let is_zerobrew_service =
+                file_name.starts_with("zerobrew.") && file_name.ends_with(".service");
             #[cfg(target_os = "macos")]
-            let is_zerobrew_service = file_name.starts_with("com.zerobrew.") && file_name.ends_with(".plist");
+            let is_zerobrew_service =
+                file_name.starts_with("com.zerobrew.") && file_name.ends_with(".plist");
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             let is_zerobrew_service = file_name.starts_with("zerobrew.");
 
@@ -286,9 +295,7 @@ impl ServiceManager {
         let label = self.service_label(formula);
 
         // First check if service is loaded
-        let output = Command::new("launchctl")
-            .args(["list"])
-            .output();
+        let output = Command::new("launchctl").args(["list"]).output();
 
         match output {
             Ok(out) => {
@@ -307,7 +314,10 @@ impl ServiceManager {
                                 if exit_status == "0" {
                                     return Ok(ServiceStatus::Stopped);
                                 } else {
-                                    return Ok(ServiceStatus::Error(format!("exited with status {}", exit_status)));
+                                    return Ok(ServiceStatus::Error(format!(
+                                        "exited with status {}",
+                                        exit_status
+                                    )));
                                 }
                             } else {
                                 return Ok(ServiceStatus::Running);
@@ -376,9 +386,7 @@ impl ServiceManager {
     #[cfg(target_os = "macos")]
     pub fn get_pid(&self, formula: &str) -> Result<Option<u32>, Error> {
         let label = self.service_label(formula);
-        let output = Command::new("launchctl")
-            .args(["list", &label])
-            .output();
+        let output = Command::new("launchctl").args(["list", &label]).output();
 
         match output {
             Ok(out) if out.status.success() => {
@@ -433,19 +441,31 @@ impl ServiceManager {
     pub fn create_service(&self, formula: &str, config: &ServiceConfig) -> Result<(), Error> {
         // Ensure service directory exists
         std::fs::create_dir_all(&self.service_dir).map_err(|e| Error::StoreCorruption {
-            message: format!("failed to create service directory {}: {}", self.service_dir.display(), e),
+            message: format!(
+                "failed to create service directory {}: {}",
+                self.service_dir.display(),
+                e
+            ),
         })?;
 
         // Ensure log directory exists
         std::fs::create_dir_all(&self.log_dir).map_err(|e| Error::StoreCorruption {
-            message: format!("failed to create log directory {}: {}", self.log_dir.display(), e),
+            message: format!(
+                "failed to create log directory {}: {}",
+                self.log_dir.display(),
+                e
+            ),
         })?;
 
         let file_path = self.service_file_path(formula);
         let content = self.generate_service_file(formula, config);
 
         std::fs::write(&file_path, content).map_err(|e| Error::StoreCorruption {
-            message: format!("failed to write service file {}: {}", file_path.display(), e),
+            message: format!(
+                "failed to write service file {}: {}",
+                file_path.display(),
+                e
+            ),
         })?;
 
         // Reload daemon
@@ -494,12 +514,14 @@ ExecStart={program}"#,
         }
 
         // Logging
-        let stdout_log = config.stdout_log.clone().unwrap_or_else(|| {
-            self.log_dir.join(format!("{}.log", formula))
-        });
-        let stderr_log = config.stderr_log.clone().unwrap_or_else(|| {
-            self.log_dir.join(format!("{}.error.log", formula))
-        });
+        let stdout_log = config
+            .stdout_log
+            .clone()
+            .unwrap_or_else(|| self.log_dir.join(format!("{}.log", formula)));
+        let stderr_log = config
+            .stderr_log
+            .clone()
+            .unwrap_or_else(|| self.log_dir.join(format!("{}.error.log", formula)));
         unit.push_str(&format!("StandardOutput=append:{}\n", stdout_log.display()));
         unit.push_str(&format!("StandardError=append:{}\n", stderr_log.display()));
 
@@ -515,12 +537,14 @@ ExecStart={program}"#,
     #[cfg(target_os = "macos")]
     fn generate_service_file(&self, formula: &str, config: &ServiceConfig) -> String {
         let label = self.service_label(formula);
-        let stdout_log = config.stdout_log.clone().unwrap_or_else(|| {
-            self.log_dir.join(format!("{}.log", formula))
-        });
-        let stderr_log = config.stderr_log.clone().unwrap_or_else(|| {
-            self.log_dir.join(format!("{}.error.log", formula))
-        });
+        let stdout_log = config
+            .stdout_log
+            .clone()
+            .unwrap_or_else(|| self.log_dir.join(format!("{}.log", formula)));
+        let stderr_log = config
+            .stderr_log
+            .clone()
+            .unwrap_or_else(|| self.log_dir.join(format!("{}.error.log", formula)));
 
         let mut plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -610,7 +634,11 @@ ExecStart={program}"#,
         let file_path = self.service_file_path(formula);
         if file_path.exists() {
             std::fs::remove_file(&file_path).map_err(|e| Error::StoreCorruption {
-                message: format!("failed to remove service file {}: {}", file_path.display(), e),
+                message: format!(
+                    "failed to remove service file {}: {}",
+                    file_path.display(),
+                    e
+                ),
             })?;
         }
 
@@ -666,7 +694,11 @@ ExecStart={program}"#,
         // Start the service
         let label = self.service_label(formula);
         let _ = Command::new("launchctl")
-            .args(["kickstart", "-k", &format!("gui/{}/{}", self.get_uid(), label)])
+            .args([
+                "kickstart",
+                "-k",
+                &format!("gui/{}/{}", self.get_uid(), label),
+            ])
             .output();
 
         Ok(())
@@ -879,7 +911,7 @@ ExecStart={program}"#,
         // First, check if there's a standard service binary
         let possible_binaries = vec![
             bin_path.join(formula),
-            bin_path.join(format!("{}d", formula)),  // daemon suffix
+            bin_path.join(format!("{}d", formula)), // daemon suffix
             bin_path.join(format!("{}-server", formula)),
         ];
 
@@ -896,7 +928,9 @@ ExecStart={program}"#,
         // Check for existing homebrew service files in the keg
         #[cfg(target_os = "macos")]
         {
-            let plist_path = keg_path.join("homebrew.mxcl.").join(format!("{}.plist", formula));
+            let plist_path = keg_path
+                .join("homebrew.mxcl.")
+                .join(format!("{}.plist", formula));
             if plist_path.exists() {
                 return self.parse_homebrew_plist(&plist_path);
             }
@@ -904,7 +938,9 @@ ExecStart={program}"#,
 
         #[cfg(target_os = "linux")]
         {
-            let service_path = keg_path.join("systemd").join(format!("{}.service", formula));
+            let service_path = keg_path
+                .join("systemd")
+                .join(format!("{}.service", formula));
             if service_path.exists() {
                 return self.parse_homebrew_systemd(&service_path);
             }
@@ -948,12 +984,11 @@ ExecStart={program}"#,
         }
 
         // Check for RunAtLoad
-        config.run_at_load = content.contains("<key>RunAtLoad</key>")
-            && content.contains("<true/>");
+        config.run_at_load =
+            content.contains("<key>RunAtLoad</key>") && content.contains("<true/>");
 
         // Check for KeepAlive
-        config.keep_alive = content.contains("<key>KeepAlive</key>")
-            && content.contains("<true/>");
+        config.keep_alive = content.contains("<key>KeepAlive</key>") && content.contains("<true/>");
 
         Some(config)
     }
@@ -1000,7 +1035,10 @@ ExecStart={program}"#,
     }
 
     /// Find services whose formulas are no longer installed
-    pub fn find_orphaned_services(&self, installed_formulas: &[String]) -> Result<Vec<ServiceInfo>, Error> {
+    pub fn find_orphaned_services(
+        &self,
+        installed_formulas: &[String],
+    ) -> Result<Vec<ServiceInfo>, Error> {
         let all_services = self.list()?;
         let orphaned: Vec<ServiceInfo> = all_services
             .into_iter()
@@ -1030,7 +1068,10 @@ mod tests {
         assert_eq!(format!("{}", ServiceStatus::Running), "running");
         assert_eq!(format!("{}", ServiceStatus::Stopped), "stopped");
         assert_eq!(format!("{}", ServiceStatus::Unknown), "unknown");
-        assert_eq!(format!("{}", ServiceStatus::Error("test".to_string())), "error: test");
+        assert_eq!(
+            format!("{}", ServiceStatus::Error("test".to_string())),
+            "error: test"
+        );
     }
 
     #[test]

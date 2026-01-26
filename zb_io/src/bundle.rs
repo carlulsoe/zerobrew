@@ -36,10 +36,7 @@ pub enum BrewfileEntry {
     /// A tap to add: `tap "user/repo"`
     Tap { name: String },
     /// A formula to install: `brew "formula"` or `brew "formula", args: ["--HEAD"]`
-    Brew {
-        name: String,
-        args: Vec<String>,
-    },
+    Brew { name: String, args: Vec<String> },
     /// A comment or empty line (ignored during install but preserved in dump)
     Comment(String),
 }
@@ -252,11 +249,7 @@ pub fn find_brewfile(start_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Generate Brewfile content from installed packages and taps
-pub fn generate_brewfile(
-    taps: &[String],
-    formulas: &[String],
-    include_comments: bool,
-) -> String {
+pub fn generate_brewfile(taps: &[String], formulas: &[String], include_comments: bool) -> String {
     let mut lines = Vec::new();
 
     // Add header comment

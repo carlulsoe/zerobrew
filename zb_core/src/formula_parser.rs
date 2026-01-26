@@ -45,7 +45,10 @@ pub enum ParseError {
     /// Required field is missing.
     MissingField(&'static str),
     /// Invalid field value.
-    InvalidValue { field: &'static str, message: String },
+    InvalidValue {
+        field: &'static str,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for ParseError {
@@ -146,7 +149,11 @@ fn find_formula_class<'a>(root: &'a Node, source: &str) -> Result<Node<'a>, Pars
 }
 
 /// Parses the body of a Formula class and extracts metadata.
-fn parse_class_body(class_node: &Node, source: &str, formula: &mut Formula) -> Result<(), ParseError> {
+fn parse_class_body(
+    class_node: &Node,
+    source: &str,
+    formula: &mut Formula,
+) -> Result<(), ParseError> {
     let Some(body) = class_node.child_by_field_name("body") else {
         return Ok(());
     };
@@ -342,7 +349,9 @@ fn parse_dependency_pair(node: &Node, source: &str) -> Option<(String, String)> 
     let value = node.child_by_field_name("value")?;
 
     let name = extract_string_value(&key, source)?;
-    let dep_type = get_node_text(&value, source).trim_start_matches(':').to_string();
+    let dep_type = get_node_text(&value, source)
+        .trim_start_matches(':')
+        .to_string();
 
     Some((name, dep_type))
 }
@@ -399,15 +408,15 @@ fn parse_uses_from_macos(node: &Node, source: &str, formula: &mut Formula) {
 /// Parses a bottle block.
 fn parse_bottle_block(node: &Node, source: &str, formula: &mut Formula) -> Result<(), ParseError> {
     // Find the do_block
-    let block = find_child_by_kind(node, "do_block")
-        .or_else(|| find_child_by_kind(node, "block"));
+    let block = find_child_by_kind(node, "do_block").or_else(|| find_child_by_kind(node, "block"));
 
     let Some(block) = block else {
         return Ok(());
     };
 
     // Find the body of the block
-    let body = block.child_by_field_name("body")
+    let body = block
+        .child_by_field_name("body")
         .or_else(|| find_child_by_kind(&block, "body_statement"));
 
     let Some(body) = body else {
@@ -426,7 +435,11 @@ fn parse_bottle_block(node: &Node, source: &str, formula: &mut Formula) -> Resul
 }
 
 /// Parses a statement inside a bottle block.
-fn parse_bottle_statement(node: &Node, source: &str, formula: &mut Formula) -> Result<(), ParseError> {
+fn parse_bottle_statement(
+    node: &Node,
+    source: &str,
+    formula: &mut Formula,
+) -> Result<(), ParseError> {
     let method_name = if let Some(method_node) = node.child_by_field_name("method") {
         get_node_text(&method_node, source)
     } else if let Some(first_child) = node.child(0) {
@@ -516,10 +529,11 @@ fn parse_bottle_sha256(node: &Node, source: &str, formula: &mut Formula) -> Resu
             formula.name, hash
         );
 
-        formula.bottle.stable.files.insert(
-            platform_key,
-            BottleFile { url, sha256: hash },
-        );
+        formula
+            .bottle
+            .stable
+            .files
+            .insert(platform_key, BottleFile { url, sha256: hash });
     }
 
     Ok(())
@@ -542,9 +556,9 @@ fn extract_version_from_url(url: &str) -> Option<String> {
     // - jq-1.7.1.tar.gz
 
     // Pattern with lookahead to avoid capturing file extension
-    let version_regex = regex::Regex::new(
-        r"[-_/]v?(\d+\.\d+(?:\.\d+)?)(?:[-_.](?:tar|zip|gz|tgz|xz|bz2)|/|$)"
-    ).ok()?;
+    let version_regex =
+        regex::Regex::new(r"[-_/]v?(\d+\.\d+(?:\.\d+)?)(?:[-_.](?:tar|zip|gz|tgz|xz|bz2)|/|$)")
+            .ok()?;
 
     version_regex
         .captures(url)
@@ -562,7 +576,8 @@ fn get_node_text(node: &Node, source: &str) -> String {
 /// Finds a child node by kind.
 fn find_child_by_kind<'a>(node: &'a Node, kind: &str) -> Option<Node<'a>> {
     let mut cursor = node.walk();
-    node.children(&mut cursor).find(|child| child.kind() == kind)
+    node.children(&mut cursor)
+        .find(|child| child.kind() == kind)
 }
 
 #[cfg(test)]
@@ -596,8 +611,14 @@ end
         let formula = parse_ruby_formula(source, "jq").unwrap();
 
         assert_eq!(formula.name, "jq");
-        assert_eq!(formula.desc.as_deref(), Some("Lightweight and flexible command-line JSON processor"));
-        assert_eq!(formula.homepage.as_deref(), Some("https://jqlang.github.io/jq/"));
+        assert_eq!(
+            formula.desc.as_deref(),
+            Some("Lightweight and flexible command-line JSON processor")
+        );
+        assert_eq!(
+            formula.homepage.as_deref(),
+            Some("https://jqlang.github.io/jq/")
+        );
         assert_eq!(formula.license.as_deref(), Some("MIT"));
         assert_eq!(formula.versions.stable, "1.7.1");
         assert_eq!(formula.dependencies, vec!["oniguruma"]);
@@ -745,7 +766,9 @@ end
             Some("2.0.0".to_string())
         );
         assert_eq!(
-            extract_version_from_url("https://github.com/foo/bar/releases/download/v1.0/bar.tar.gz"),
+            extract_version_from_url(
+                "https://github.com/foo/bar/releases/download/v1.0/bar.tar.gz"
+            ),
             Some("1.0".to_string())
         );
     }
@@ -815,11 +838,23 @@ end
 
         // Verify sha256 values are correct
         assert_eq!(
-            formula.bottle.stable.files.get("arm64_sonoma").unwrap().sha256,
+            formula
+                .bottle
+                .stable
+                .files
+                .get("arm64_sonoma")
+                .unwrap()
+                .sha256,
             "ccc333"
         );
         assert_eq!(
-            formula.bottle.stable.files.get("x86_64_linux").unwrap().sha256,
+            formula
+                .bottle
+                .stable
+                .files
+                .get("x86_64_linux")
+                .unwrap()
+                .sha256,
             "fff666"
         );
     }
@@ -914,15 +949,23 @@ end
         let formula = parse_ruby_formula(source, "mytool").unwrap();
 
         let bottle = formula.bottle.stable.files.get("arm64_sonoma").unwrap();
-        assert!(bottle.url.contains("mytool"), "URL should contain formula name");
-        assert!(bottle.url.contains("def456789abc"), "URL should contain sha256");
+        assert!(
+            bottle.url.contains("mytool"),
+            "URL should contain formula name"
+        );
+        assert!(
+            bottle.url.contains("def456789abc"),
+            "URL should contain sha256"
+        );
     }
 
     #[test]
     fn version_extraction_handles_jq_style() {
         // jq uses version in the URL like jq-1.7.1
         assert_eq!(
-            extract_version_from_url("https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"),
+            extract_version_from_url(
+                "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
+            ),
             Some("1.7.1".to_string())
         );
     }

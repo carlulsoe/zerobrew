@@ -523,11 +523,9 @@ impl Database {
     /// Check if a tap is installed
     pub fn is_tapped(&self, name: &str) -> bool {
         self.conn
-            .query_row(
-                "SELECT 1 FROM taps WHERE name = ?1",
-                params![name],
-                |_| Ok(()),
-            )
+            .query_row("SELECT 1 FROM taps WHERE name = ?1", params![name], |_| {
+                Ok(())
+            })
             .is_ok()
     }
 
@@ -579,7 +577,12 @@ impl Database {
     // ========== Service Operations ==========
 
     /// Record a service for a formula
-    pub fn record_service(&self, name: &str, formula: &str, config: Option<&str>) -> Result<(), Error> {
+    pub fn record_service(
+        &self,
+        name: &str,
+        formula: &str,
+        config: Option<&str>,
+    ) -> Result<(), Error> {
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO services (name, formula, status, config)
@@ -594,7 +597,12 @@ impl Database {
     }
 
     /// Update service status
-    pub fn update_service_status(&self, name: &str, status: &str, pid: Option<u32>) -> Result<bool, Error> {
+    pub fn update_service_status(
+        &self,
+        name: &str,
+        status: &str,
+        pid: Option<u32>,
+    ) -> Result<bool, Error> {
         let started_at = if status == "running" {
             Some(
                 std::time::SystemTime::now()
@@ -663,7 +671,9 @@ impl Database {
     pub fn list_services(&self) -> Result<Vec<ServiceRecord>, Error> {
         let mut stmt = self
             .conn
-            .prepare("SELECT name, formula, status, pid, started_at, config FROM services ORDER BY name")
+            .prepare(
+                "SELECT name, formula, status, pid, started_at, config FROM services ORDER BY name",
+            )
             .map_err(|e| Error::StoreCorruption {
                 message: format!("failed to prepare statement: {e}"),
             })?;
@@ -879,7 +889,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("pinnable", "1.0.0", "abc123", true).unwrap();
+            tx.record_install("pinnable", "1.0.0", "abc123", true)
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -925,9 +936,12 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("pinned1", "1.0.0", "abc123", true).unwrap();
-            tx.record_install("unpinned", "1.0.0", "def456", true).unwrap();
-            tx.record_install("pinned2", "2.0.0", "ghi789", true).unwrap();
+            tx.record_install("pinned1", "1.0.0", "abc123", true)
+                .unwrap();
+            tx.record_install("unpinned", "1.0.0", "def456", true)
+                .unwrap();
+            tx.record_install("pinned2", "2.0.0", "ghi789", true)
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -971,8 +985,10 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "shared123", true).unwrap();
-            tx.record_install("bar", "2.0.0", "shared123", true).unwrap();
+            tx.record_install("foo", "1.0.0", "shared123", true)
+                .unwrap();
+            tx.record_install("bar", "2.0.0", "shared123", true)
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -1048,7 +1064,8 @@ mod tests {
         {
             let tx = db.transaction().unwrap();
             // Explicit install
-            tx.record_install("user-requested", "1.0.0", "key1", true).unwrap();
+            tx.record_install("user-requested", "1.0.0", "key1", true)
+                .unwrap();
             // Dependency installs
             tx.record_install("dep1", "1.0.0", "key2", false).unwrap();
             tx.record_install("dep2", "2.0.0", "key3", false).unwrap();
@@ -1113,7 +1130,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("test-pkg", "1.0.0", "key1", true).unwrap();
+            tx.record_install("test-pkg", "1.0.0", "key1", true)
+                .unwrap();
             tx.record_linked_file(
                 "test-pkg",
                 "1.0.0",
@@ -1259,7 +1277,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("linktest", "1.0.0", "abc123", true).unwrap();
+            tx.record_install("linktest", "1.0.0", "abc123", true)
+                .unwrap();
             tx.record_linked_file(
                 "linktest",
                 "1.0.0",
@@ -1299,7 +1318,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("nolinks", "1.0.0", "def456", true).unwrap();
+            tx.record_install("nolinks", "1.0.0", "def456", true)
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -1341,7 +1361,8 @@ mod tests {
         // First install the package with a link
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("replace", "1.0.0", "jkl012", true).unwrap();
+            tx.record_install("replace", "1.0.0", "jkl012", true)
+                .unwrap();
             tx.record_linked_file(
                 "replace",
                 "1.0.0",

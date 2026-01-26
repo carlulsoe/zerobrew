@@ -96,9 +96,10 @@ impl ApiCache {
 
     /// Count the number of entries in the cache
     pub fn count(&self) -> Result<usize, rusqlite::Error> {
-        self.conn.query_row("SELECT COUNT(*) FROM api_cache", [], |row| {
-            row.get::<_, i64>(0).map(|n| n as usize)
-        })
+        self.conn
+            .query_row("SELECT COUNT(*) FROM api_cache", [], |row| {
+                row.get::<_, i64>(0).map(|n| n as usize)
+            })
     }
 
     /// Count entries older than the specified number of days
@@ -240,7 +241,9 @@ mod tests {
         };
 
         // Insert a recent entry
-        cache.put("https://example.com/recent.json", &entry).unwrap();
+        cache
+            .put("https://example.com/recent.json", &entry)
+            .unwrap();
 
         // Insert an old entry by manipulating the database directly
         let old_time = std::time::SystemTime::now()
@@ -278,7 +281,9 @@ mod tests {
         };
 
         // Insert a recent entry
-        cache.put("https://example.com/recent.json", &entry).unwrap();
+        cache
+            .put("https://example.com/recent.json", &entry)
+            .unwrap();
 
         // Insert old entries
         let old_time = std::time::SystemTime::now()
@@ -312,7 +317,9 @@ mod tests {
         };
 
         // Insert a recent entry
-        cache.put("https://example.com/recent.json", &entry).unwrap();
+        cache
+            .put("https://example.com/recent.json", &entry)
+            .unwrap();
 
         // Insert old entry with known size
         let old_time = std::time::SystemTime::now()

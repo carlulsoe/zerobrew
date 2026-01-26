@@ -9,7 +9,9 @@ use std::time::Instant;
 
 use zb_io::install::create_installer;
 use zb_io::search::search_formulas;
-use zb_io::{ApiClient, ApiCache, InstallProgress, ProgressCallback, ServiceManager, ServiceStatus};
+use zb_io::{
+    ApiCache, ApiClient, InstallProgress, ProgressCallback, ServiceManager, ServiceStatus,
+};
 
 #[derive(Parser)]
 #[command(name = "zb")]
@@ -615,9 +617,14 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
     let mut installer = create_installer(&cli.root, &cli.prefix, cli.concurrency)?;
 
     match cli.command {
-        Commands::Init => unreachable!(), // Handled above
+        Commands::Init => unreachable!(),            // Handled above
         Commands::Shellenv { .. } => unreachable!(), // Handled above
-        Commands::Install { formula, no_link, build_from_source, head } => {
+        Commands::Install {
+            formula,
+            no_link,
+            build_from_source,
+            head,
+        } => {
             let start = Instant::now();
 
             // HEAD implies building from source
@@ -638,7 +645,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     style("==>").cyan().bold()
                 );
 
-                let result = match installer.install_from_source(&formula, !no_link, head).await {
+                let result = match installer
+                    .install_from_source(&formula, !no_link, head)
+                    .await
+                {
                     Ok(r) => r,
                     Err(e) => {
                         suggest_homebrew(&formula, &e);
@@ -685,7 +695,12 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         println!("To use this formula, you can:");
                         println!(
                             "    • Add it to your PATH: {}",
-                            style(format!("export PATH=\"{}/opt/{}/bin:$PATH\"", cli.prefix.display(), formula)).cyan()
+                            style(format!(
+                                "export PATH=\"{}/opt/{}/bin:$PATH\"",
+                                cli.prefix.display(),
+                                formula
+                            ))
+                            .cyan()
                         );
                         println!(
                             "    • Link it with: {}",
@@ -698,7 +713,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         println!();
                         println!("{}", style("==> Caveats").yellow().bold());
                         // Replace $HOMEBREW_PREFIX with actual prefix
-                        let caveats = caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
+                        let caveats =
+                            caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
                         for line in caveats.lines() {
                             println!("{}", line);
                         }
@@ -721,9 +737,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 };
 
                 // Extract info from the root formula before executing the plan
-                let root_formula = plan.formulas
-                    .iter()
-                    .find(|f| f.name == plan.root_name);
+                let root_formula = plan.formulas.iter().find(|f| f.name == plan.root_name);
                 let root_caveats = root_formula.and_then(|f| f.caveats.clone());
                 let root_keg_only = root_formula.map(|f| f.keg_only).unwrap_or(false);
                 let root_keg_only_reason = root_formula.and_then(|f| f.keg_only_reason.clone());
@@ -886,7 +900,12 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     println!("To use this formula, you can:");
                     println!(
                         "    • Add it to your PATH: {}",
-                        style(format!("export PATH=\"{}/opt/{}/bin:$PATH\"", cli.prefix.display(), formula)).cyan()
+                        style(format!(
+                            "export PATH=\"{}/opt/{}/bin:$PATH\"",
+                            cli.prefix.display(),
+                            formula
+                        ))
+                        .cyan()
                     );
                     println!(
                         "    • Link it with: {}",
@@ -899,7 +918,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     println!();
                     println!("{}", style("==> Caveats").yellow().bold());
                     // Replace $HOMEBREW_PREFIX with actual prefix
-                    let caveats = caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
+                    let caveats =
+                        caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
                     for line in caveats.lines() {
                         println!("{}", line);
                     }
@@ -989,9 +1009,15 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
 
                 if let Some(ref keg) = keg {
                     info.insert("installed".to_string(), serde_json::json!(true));
-                    info.insert("installed_version".to_string(), serde_json::json!(keg.version));
+                    info.insert(
+                        "installed_version".to_string(),
+                        serde_json::json!(keg.version),
+                    );
                     info.insert("store_key".to_string(), serde_json::json!(keg.store_key));
-                    info.insert("installed_at".to_string(), serde_json::json!(keg.installed_at));
+                    info.insert(
+                        "installed_at".to_string(),
+                        serde_json::json!(keg.installed_at),
+                    );
                     info.insert("pinned".to_string(), serde_json::json!(keg.pinned));
                     info.insert("explicit".to_string(), serde_json::json!(keg.explicit));
 
@@ -1013,7 +1039,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 }
 
                 if let Some(ref f) = api_formula {
-                    info.insert("available_version".to_string(), serde_json::json!(f.effective_version()));
+                    info.insert(
+                        "available_version".to_string(),
+                        serde_json::json!(f.effective_version()),
+                    );
                     if let Some(ref desc) = f.desc {
                         info.insert("description".to_string(), serde_json::json!(desc));
                     }
@@ -1023,8 +1052,14 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     if let Some(ref license) = f.license {
                         info.insert("license".to_string(), serde_json::json!(license));
                     }
-                    info.insert("dependencies".to_string(), serde_json::json!(f.effective_dependencies()));
-                    info.insert("build_dependencies".to_string(), serde_json::json!(f.build_dependencies));
+                    info.insert(
+                        "dependencies".to_string(),
+                        serde_json::json!(f.effective_dependencies()),
+                    );
+                    info.insert(
+                        "build_dependencies".to_string(),
+                        serde_json::json!(f.build_dependencies),
+                    );
                     if let Some(ref caveats) = f.caveats {
                         info.insert("caveats".to_string(), serde_json::json!(caveats));
                     }
@@ -1040,11 +1075,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 }
 
                 // Header
-                println!(
-                    "{} {}",
-                    style("==>").cyan().bold(),
-                    style(&formula).bold()
-                );
+                println!("{} {}", style("==>").cyan().bold(), style(&formula).bold());
 
                 // Description from API
                 if let Some(ref f) = api_formula {
@@ -1060,7 +1091,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
 
                 // Version info
                 if let Some(ref keg) = keg {
-                    print!("{} {}", style("Installed:").dim(), style(&keg.version).green());
+                    print!(
+                        "{} {}",
+                        style("Installed:").dim(),
+                        style(&keg.version).green()
+                    );
                     if keg.pinned {
                         print!(" {}", style("(pinned)").yellow());
                     }
@@ -1152,7 +1187,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     && !linked_files.is_empty()
                 {
                     println!();
-                    println!("{} ({} files)", style("Linked files:").dim(), linked_files.len());
+                    println!(
+                        "{} ({} files)",
+                        style("Linked files:").dim(),
+                        linked_files.len()
+                    );
                     // Show first few linked files
                     for (link, _target) in linked_files.iter().take(5) {
                         println!("  {}", link);
@@ -1168,7 +1207,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     // Store info
                     println!();
                     println!("{} {}", style("Store key:").dim(), &keg.store_key[..12]);
-                    println!("{} {}", style("Installed:").dim(), chrono_lite_format(keg.installed_at));
+                    println!(
+                        "{} {}",
+                        style("Installed:").dim(),
+                        chrono_lite_format(keg.installed_at)
+                    );
                 }
 
                 // Caveats
@@ -1178,7 +1221,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     println!();
                     println!("{}", style("==> Caveats").yellow().bold());
                     // Replace $HOMEBREW_PREFIX with actual prefix
-                    let caveats = caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
+                    let caveats =
+                        caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
                     for line in caveats.lines() {
                         println!("{}", line);
                     }
@@ -1239,7 +1283,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     println!("No formulas found matching '{}'.", query);
                 }
             } else {
-                let label = if installed { "installed formulas" } else { "formulas" };
+                let label = if installed {
+                    "installed formulas"
+                } else {
+                    "formulas"
+                };
                 println!(
                     "{} Found {} {}:",
                     style("==>").cyan().bold(),
@@ -1361,7 +1409,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             let to_upgrade = if let Some(ref name) = formula {
                 // Single package
                 let outdated = installer.get_outdated().await?;
-                outdated.into_iter().filter(|p| p.name == *name).collect::<Vec<_>>()
+                outdated
+                    .into_iter()
+                    .filter(|p| p.name == *name)
+                    .collect::<Vec<_>>()
             } else {
                 // All packages
                 installer.get_outdated().await?
@@ -1371,12 +1422,23 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 if let Some(ref name) = formula {
                     // Check if the formula exists but is up to date
                     if installer.is_installed(name) {
-                        println!("{} {} is already up to date.", style("==>").cyan().bold(), style(name).bold());
+                        println!(
+                            "{} {} is already up to date.",
+                            style("==>").cyan().bold(),
+                            style(name).bold()
+                        );
                     } else {
-                        println!("{} {} is not installed.", style("==>").cyan().bold(), style(name).bold());
+                        println!(
+                            "{} {} is not installed.",
+                            style("==>").cyan().bold(),
+                            style(name).bold()
+                        );
                     }
                 } else {
-                    println!("{} All packages are up to date.", style("==>").cyan().bold());
+                    println!(
+                        "{} All packages are up to date.",
+                        style("==>").cyan().bold()
+                    );
                 }
                 return Ok(());
             }
@@ -1691,15 +1753,15 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
 
                 let result = installer.cleanup_dry_run(prune)?;
 
-                if result.store_entries_removed == 0 && result.blobs_removed == 0 && result.http_cache_removed == 0 {
+                if result.store_entries_removed == 0
+                    && result.blobs_removed == 0
+                    && result.http_cache_removed == 0
+                {
                     println!("Nothing to clean up.");
                     return Ok(());
                 }
 
-                println!(
-                    "{} Would remove:\n",
-                    style("==>").cyan().bold()
-                );
+                println!("{} Would remove:\n", style("==>").cyan().bold());
 
                 if result.store_entries_removed > 0 {
                     println!(
@@ -1735,10 +1797,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     style("zb cleanup").cyan()
                 );
             } else {
-                println!(
-                    "{} Cleaning up...",
-                    style("==>").cyan().bold()
-                );
+                println!("{} Cleaning up...", style("==>").cyan().bold());
 
                 let result = installer.cleanup(prune)?;
 
@@ -1896,10 +1955,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 let parts: Vec<&str> = user_repo.split('/').collect();
                 if parts.len() != 2 {
                     return Err(zb_core::Error::StoreCorruption {
-                        message: format!(
-                            "invalid tap format '{}': expected user/repo",
-                            user_repo
-                        ),
+                        message: format!("invalid tap format '{}': expected user/repo", user_repo),
                     });
                 }
 
@@ -1926,10 +1982,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             let parts: Vec<&str> = user_repo.split('/').collect();
             if parts.len() != 2 {
                 return Err(zb_core::Error::StoreCorruption {
-                    message: format!(
-                        "invalid tap format '{}': expected user/repo",
-                        user_repo
-                    ),
+                    message: format!("invalid tap format '{}': expected user/repo", user_repo),
                 });
             }
 
@@ -1951,7 +2004,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             );
         }
 
-        Commands::Link { formula, overwrite, force } => {
+        Commands::Link {
+            formula,
+            overwrite,
+            force,
+        } => {
             // Check if installed
             if !installer.is_installed(&formula) {
                 eprintln!(
@@ -1980,15 +2037,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     eprintln!("{}", reason.explanation);
                 }
                 eprintln!();
-                eprintln!(
-                    "If you need to have {} first in your PATH, run:",
-                    formula
-                );
-                eprintln!(
-                    "  {} link --force {}",
-                    style("zb").cyan(),
-                    formula
-                );
+                eprintln!("If you need to have {} first in your PATH, run:", formula);
+                eprintln!("  {} link --force {}", style("zb").cyan(), formula);
                 std::process::exit(1);
             }
 
@@ -2035,10 +2085,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         formula
                     );
                     eprintln!();
-                    eprintln!(
-                        "  {} already exists",
-                        path.display()
-                    );
+                    eprintln!("  {} already exists", path.display());
                     eprintln!();
                     eprintln!(
                         "To overwrite existing files, run:\n  {} link --overwrite {}",
@@ -2087,7 +2134,12 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
         }
 
-        Commands::Deps { formula, tree, installed, all } => {
+        Commands::Deps {
+            formula,
+            tree,
+            installed,
+            all,
+        } => {
             if tree {
                 // Tree view
                 println!(
@@ -2131,7 +2183,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
         }
 
-        Commands::Uses { formula, installed: _, recursive } => {
+        Commands::Uses {
+            formula,
+            installed: _,
+            recursive,
+        } => {
             println!(
                 "{} Checking what uses {}...",
                 style("==>").cyan().bold(),
@@ -2139,8 +2195,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             );
 
             // Check if the formula exists (either installed or in API)
-            let formula_exists = installer.is_installed(&formula)
-                || installer.get_formula(&formula).await.is_ok();
+            let formula_exists =
+                installer.is_installed(&formula) || installer.get_formula(&formula).await.is_ok();
 
             if !formula_exists {
                 println!("Formula '{}' not found.", formula);
@@ -2162,7 +2218,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     style("==>").cyan().bold(),
                     style(uses.len()).green().bold(),
                     style(&formula).bold(),
-                    if recursive { " (directly or indirectly)" } else { "" }
+                    if recursive {
+                        " (directly or indirectly)"
+                    } else {
+                        ""
+                    }
                 );
                 println!();
 
@@ -2173,10 +2233,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         }
 
         Commands::Leaves => {
-            println!(
-                "{} Finding leaf packages...",
-                style("==>").cyan().bold()
-            );
+            println!("{} Finding leaf packages...", style("==>").cyan().bold());
 
             let leaves = installer.get_leaves().await?;
 
@@ -2197,10 +2254,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         }
 
         Commands::Doctor => {
-            println!(
-                "{} Running diagnostics...\n",
-                style("==>").cyan().bold()
-            );
+            println!("{} Running diagnostics...\n", style("==>").cyan().bold());
 
             let result = installer.doctor().await;
 
@@ -2231,7 +2285,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         "{} {} {} found",
                         style("==>").cyan().bold(),
                         style(result.errors).red().bold(),
-                        if result.errors == 1 { "error" } else { "errors" }
+                        if result.errors == 1 {
+                            "error"
+                        } else {
+                            "errors"
+                        }
                     );
                 }
                 if result.warnings > 0 {
@@ -2239,7 +2297,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         "{} {} {} found",
                         style("==>").cyan().bold(),
                         style(result.warnings).yellow().bold(),
-                        if result.warnings == 1 { "warning" } else { "warnings" }
+                        if result.warnings == 1 {
+                            "warning"
+                        } else {
+                            "warnings"
+                        }
                     );
                 }
             }
@@ -2256,8 +2318,13 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     if services.is_empty() {
                         println!("{} No services available.", style("==>").cyan().bold());
                         println!();
-                        println!("    To start a service, first install a formula that provides one.");
-                        println!("    Then run: {} services start <formula>", style("zb").cyan());
+                        println!(
+                            "    To start a service, first install a formula that provides one."
+                        );
+                        println!(
+                            "    Then run: {} services start <formula>",
+                            style("zb").cyan()
+                        );
                     } else {
                         println!(
                             "{} {} services:",
@@ -2374,7 +2441,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                             );
                             eprintln!();
                             eprintln!("    Not all formulas provide services.");
-                            eprintln!("    Check the formula's caveats with: {} info {}", style("zb").cyan(), formula);
+                            eprintln!(
+                                "    Check the formula's caveats with: {} info {}",
+                                style("zb").cyan(),
+                                formula
+                            );
                             std::process::exit(1);
                         }
                     }
@@ -2523,15 +2594,18 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     })?;
                     let keg_path = cli.prefix.join("Cellar").join(&formula).join(&keg.version);
 
-                    if let Some(config) =
-                        service_manager.detect_service_config(&formula, &keg_path)
+                    if let Some(config) = service_manager.detect_service_config(&formula, &keg_path)
                     {
                         println!(
                             "{} Running {} in foreground...",
                             style("==>").cyan().bold(),
                             style(&formula).bold()
                         );
-                        println!("    Command: {} {}", config.program.display(), config.args.join(" "));
+                        println!(
+                            "    Command: {} {}",
+                            config.program.display(),
+                            config.args.join(" ")
+                        );
                         println!("    Press Ctrl+C to stop.");
                         println!();
 
@@ -2572,7 +2646,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     let info = service_manager.get_service_info(&formula)?;
                     let (stdout_log, stderr_log) = service_manager.get_log_paths(&formula);
 
-                    println!("{} Service: {}", style("==>").cyan().bold(), style(&formula).bold());
+                    println!(
+                        "{} Service: {}",
+                        style("==>").cyan().bold(),
+                        style(&formula).bold()
+                    );
                     println!();
 
                     // Status
@@ -2637,7 +2715,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     }
                 }
 
-                Some(ServicesAction::Log { formula, lines, follow }) => {
+                Some(ServicesAction::Log {
+                    formula,
+                    lines,
+                    follow,
+                }) => {
                     let (stdout_log, stderr_log) = service_manager.get_log_paths(&formula);
 
                     // Check if any log exists
@@ -2652,7 +2734,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         eprintln!("      {}", stdout_log.display());
                         eprintln!("      {}", stderr_log.display());
                         eprintln!();
-                        eprintln!("    Start the service first with: {} services start {}", style("zb").cyan(), formula);
+                        eprintln!(
+                            "    Start the service first with: {} services start {}",
+                            style("zb").cyan(),
+                            formula
+                        );
                         std::process::exit(1);
                     }
 
@@ -2696,8 +2782,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         println!();
 
                         // Read file and get last N lines
-                        let content = std::fs::read_to_string(log_file).map_err(|e| zb_core::Error::StoreCorruption {
-                            message: format!("failed to read log file: {}", e),
+                        let content = std::fs::read_to_string(log_file).map_err(|e| {
+                            zb_core::Error::StoreCorruption {
+                                message: format!("failed to read log file: {}", e),
+                            }
                         })?;
 
                         let all_lines: Vec<&str> = content.lines().collect();
@@ -2713,7 +2801,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
 
                         if stderr_log.exists() && stderr_log != *log_file {
                             println!();
-                            println!("    Note: Error log also exists at {}", stderr_log.display());
+                            println!(
+                                "    Note: Error log also exists at {}",
+                                stderr_log.display()
+                            );
                         }
                     }
                 }
@@ -2749,7 +2840,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         }
 
                         println!();
-                        println!("    → Run {} services cleanup to remove", style("zb").cyan());
+                        println!(
+                            "    → Run {} services cleanup to remove",
+                            style("zb").cyan()
+                        );
                     } else {
                         println!(
                             "{} Removing {} orphaned service{}...",
@@ -2787,7 +2881,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     // Default: install from Brewfile
                     let brewfile_path = installer.find_brewfile(&cwd).ok_or_else(|| {
                         zb_core::Error::StoreCorruption {
-                            message: "No Brewfile found in current directory or parent directories".to_string(),
+                            message: "No Brewfile found in current directory or parent directories"
+                                .to_string(),
                         }
                     })?;
 
@@ -2917,7 +3012,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     }
                 }
 
-                Some(BundleAction::Dump { file, describe, force }) => {
+                Some(BundleAction::Dump {
+                    file,
+                    describe,
+                    force,
+                }) => {
                     let content = installer.bundle_dump(describe)?;
 
                     if let Some(path) = file {
@@ -2931,8 +3030,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                             std::process::exit(1);
                         }
 
-                        std::fs::write(&path, &content).map_err(|e| zb_core::Error::StoreCorruption {
-                            message: format!("failed to write Brewfile: {}", e),
+                        std::fs::write(&path, &content).map_err(|e| {
+                            zb_core::Error::StoreCorruption {
+                                message: format!("failed to write Brewfile: {}", e),
+                            }
                         })?;
 
                         println!(
@@ -2955,7 +3056,9 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     } else {
                         installer.find_brewfile(&cwd).ok_or_else(|| {
                             zb_core::Error::StoreCorruption {
-                                message: "No Brewfile found in current directory or parent directories".to_string(),
+                                message:
+                                    "No Brewfile found in current directory or parent directories"
+                                        .to_string(),
                             }
                         })?
                     };
@@ -3006,7 +3109,9 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     } else {
                         installer.find_brewfile(&cwd).ok_or_else(|| {
                             zb_core::Error::StoreCorruption {
-                                message: "No Brewfile found in current directory or parent directories".to_string(),
+                                message:
+                                    "No Brewfile found in current directory or parent directories"
+                                        .to_string(),
                             }
                         })?
                     };
@@ -3034,11 +3139,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                                 if args.is_empty() {
                                     println!("brew {}", style(name).green());
                                 } else {
-                                    println!(
-                                        "brew {} ({})",
-                                        style(name).green(),
-                                        args.join(", ")
-                                    );
+                                    println!("brew {} ({})", style(name).green(), args.join(", "));
                                 }
                                 brew_count += 1;
                             }
@@ -3063,7 +3164,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             // List all available commands (built-in and external)
             let builtin_commands = [
                 ("autoremove", "Remove orphaned dependencies"),
-                ("bundle", "Install from a Brewfile or manage Brewfile configuration"),
+                (
+                    "bundle",
+                    "Install from a Brewfile or manage Brewfile configuration",
+                ),
                 ("cleanup", "Remove old versions and cache files"),
                 ("deps", "Show dependencies for a formula"),
                 ("doctor", "Diagnose common issues"),
@@ -3071,7 +3175,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 ("info", "Show info about an installed formula"),
                 ("init", "Initialize zerobrew directories"),
                 ("install", "Install a formula"),
-                ("leaves", "List installed formulas that are not dependencies"),
+                (
+                    "leaves",
+                    "List installed formulas that are not dependencies",
+                ),
                 ("link", "Create symlinks for a keg"),
                 ("list", "List installed formulas"),
                 ("outdated", "List outdated formulas"),
@@ -3392,9 +3499,15 @@ mod tests {
 
         assert!(output.contains("export HOMEBREW_PREFIX=\"/opt/zerobrew/prefix\""));
         assert!(output.contains("export HOMEBREW_CELLAR=\"/opt/zerobrew/prefix/Cellar\""));
-        assert!(output.contains("export PATH=\"/opt/zerobrew/prefix/bin:/opt/zerobrew/prefix/sbin:$PATH\""));
+        assert!(
+            output.contains(
+                "export PATH=\"/opt/zerobrew/prefix/bin:/opt/zerobrew/prefix/sbin:$PATH\""
+            )
+        );
         assert!(output.contains("export MANPATH=\"/opt/zerobrew/prefix/share/man:${MANPATH:-}\""));
-        assert!(output.contains("export INFOPATH=\"/opt/zerobrew/prefix/share/info:${INFOPATH:-}\""));
+        assert!(
+            output.contains("export INFOPATH=\"/opt/zerobrew/prefix/share/info:${INFOPATH:-}\"")
+        );
     }
 
     #[test]
@@ -3414,7 +3527,9 @@ mod tests {
 
         assert!(output.contains("set -gx HOMEBREW_PREFIX \"/opt/zerobrew/prefix\""));
         assert!(output.contains("set -gx HOMEBREW_CELLAR \"/opt/zerobrew/prefix/Cellar\""));
-        assert!(output.contains("set -gx PATH \"/opt/zerobrew/prefix/bin\" \"/opt/zerobrew/prefix/sbin\" $PATH"));
+        assert!(output.contains(
+            "set -gx PATH \"/opt/zerobrew/prefix/bin\" \"/opt/zerobrew/prefix/sbin\" $PATH"
+        ));
         assert!(output.contains("set -q MANPATH; or set MANPATH ''"));
         assert!(output.contains("set -q INFOPATH; or set INFOPATH ''"));
     }
@@ -3426,7 +3541,9 @@ mod tests {
 
         assert!(output.contains("setenv HOMEBREW_PREFIX \"/opt/zerobrew/prefix\""));
         assert!(output.contains("setenv HOMEBREW_CELLAR \"/opt/zerobrew/prefix/Cellar\""));
-        assert!(output.contains("setenv PATH \"/opt/zerobrew/prefix/bin:/opt/zerobrew/prefix/sbin:${PATH}\""));
+        assert!(output.contains(
+            "setenv PATH \"/opt/zerobrew/prefix/bin:/opt/zerobrew/prefix/sbin:${PATH}\""
+        ));
         assert!(output.contains("setenv MANPATH \"/opt/zerobrew/prefix/share/man:${MANPATH}\""));
         assert!(output.contains("setenv INFOPATH \"/opt/zerobrew/prefix/share/info:${INFOPATH}\""));
     }
@@ -3501,7 +3618,9 @@ mod tests {
         assert!(cli.is_ok());
         if let Ok(cli) = cli {
             match cli.command {
-                Commands::Services { action: Some(ServicesAction::List { json }) } => {
+                Commands::Services {
+                    action: Some(ServicesAction::List { json }),
+                } => {
                     assert!(json);
                 }
                 _ => panic!("Expected Services List command"),
@@ -3513,7 +3632,9 @@ mod tests {
         assert!(cli.is_ok());
         if let Ok(cli) = cli {
             match cli.command {
-                Commands::Services { action: Some(ServicesAction::List { json }) } => {
+                Commands::Services {
+                    action: Some(ServicesAction::List { json }),
+                } => {
                     assert!(!json);
                 }
                 _ => panic!("Expected Services List command"),
@@ -3529,7 +3650,9 @@ mod tests {
         assert!(cli.is_ok());
         if let Ok(cli) = cli {
             match cli.command {
-                Commands::Services { action: Some(ServicesAction::Enable { formula }) } => {
+                Commands::Services {
+                    action: Some(ServicesAction::Enable { formula }),
+                } => {
                     assert_eq!(formula, "redis");
                 }
                 _ => panic!("Expected Services Enable command"),
@@ -3545,7 +3668,9 @@ mod tests {
         assert!(cli.is_ok());
         if let Ok(cli) = cli {
             match cli.command {
-                Commands::Services { action: Some(ServicesAction::Disable { formula }) } => {
+                Commands::Services {
+                    action: Some(ServicesAction::Disable { formula }),
+                } => {
                     assert_eq!(formula, "postgresql");
                 }
                 _ => panic!("Expected Services Disable command"),

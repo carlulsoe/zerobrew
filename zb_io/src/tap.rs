@@ -113,7 +113,8 @@ impl TapManager {
 
     /// Get the path to a cached formula file
     fn formula_path(&self, user: &str, repo: &str, formula: &str) -> PathBuf {
-        self.formula_dir(user, repo).join(format!("{}.json", formula))
+        self.formula_dir(user, repo)
+            .join(format!("{}.json", formula))
     }
 
     /// Get the path to the tap info file
@@ -139,16 +140,16 @@ impl TapManager {
         }
 
         // Validate the tap exists on GitHub by checking the repository
-        let github_url = format!(
-            "https://api.github.com/repos/{}/homebrew-{}",
-            user, repo
-        );
+        let github_url = format!("https://api.github.com/repos/{}/homebrew-{}", user, repo);
 
-        let response = self.client.get(&github_url).send().await.map_err(|e| {
-            Error::NetworkFailure {
-                message: format!("failed to check tap: {}", e),
-            }
-        })?;
+        let response =
+            self.client
+                .get(&github_url)
+                .send()
+                .await
+                .map_err(|e| Error::NetworkFailure {
+                    message: format!("failed to check tap: {}", e),
+                })?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(Error::MissingFormula {
@@ -182,11 +183,10 @@ impl TapManager {
         };
 
         let info_path = self.tap_info_path(user, repo);
-        let info_json = serde_json::to_string_pretty(&tap_info).map_err(|e| {
-            Error::StoreCorruption {
+        let info_json =
+            serde_json::to_string_pretty(&tap_info).map_err(|e| Error::StoreCorruption {
                 message: format!("failed to serialize tap info: {}", e),
-            }
-        })?;
+            })?;
 
         fs::write(&info_path, info_json).map_err(|e| Error::StoreCorruption {
             message: format!("failed to write tap info: {}", e),
@@ -337,11 +337,14 @@ impl TapManager {
         // Try to fetch from formulae.brew.sh API for official taps
         if user == "homebrew" && repo == "core" {
             let url = format!("https://formulae.brew.sh/api/formula/{}.json", name);
-            let response = self.client.get(&url).send().await.map_err(|e| {
-                Error::NetworkFailure {
-                    message: format!("failed to fetch formula: {}", e),
-                }
-            })?;
+            let response =
+                self.client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| Error::NetworkFailure {
+                        message: format!("failed to fetch formula: {}", e),
+                    })?;
 
             if response.status().is_success() {
                 let body = response.text().await.map_err(|e| Error::NetworkFailure {
@@ -428,10 +431,7 @@ impl TapManager {
                         Ok(formula) => return Ok(formula),
                         Err(e) => {
                             // Log parse error but continue trying other paths
-                            eprintln!(
-                                "Warning: Failed to parse Ruby formula at {}: {}",
-                                url, e
-                            );
+                            eprintln!("Warning: Failed to parse Ruby formula at {}: {}", url, e);
                         }
                     }
                 }
@@ -439,10 +439,7 @@ impl TapManager {
         }
 
         Err(Error::MissingFormula {
-            name: format!(
-                "{}/{}/{} (formula not found in tap)",
-                user, repo, name
-            ),
+            name: format!("{}/{}/{} (formula not found in tap)", user, repo, name),
         })
     }
 
@@ -459,7 +456,12 @@ impl TapManager {
                     message: format!("failed to read cache entry: {}", e),
                 })?;
 
-                if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                if entry
+                    .path()
+                    .extension()
+                    .map(|e| e == "json")
+                    .unwrap_or(false)
+                {
                     fs::remove_file(entry.path()).map_err(|e| Error::StoreCorruption {
                         message: format!("failed to remove cached formula: {}", e),
                     })?;
@@ -695,7 +697,12 @@ mod tests {
 
         let result = manager.add_tap("user", "repo").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("already installed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("already installed")
+        );
     }
 
     #[tokio::test]
@@ -761,7 +768,12 @@ mod tests {
 
         let result = manager.get_formula("user", "repo", "formula").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("tap not installed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("tap not installed")
+        );
     }
 
     #[tokio::test]
@@ -799,7 +811,10 @@ mod tests {
         fs::write(formula_dir.join("cached-formula.json"), formula_json).unwrap();
 
         // Should return cached formula without network request
-        let formula = manager.get_formula("user", "repo", "cached-formula").await.unwrap();
+        let formula = manager
+            .get_formula("user", "repo", "cached-formula")
+            .await
+            .unwrap();
         assert_eq!(formula.name, "cached-formula");
         assert_eq!(formula.versions.stable, "1.0.0");
     }
@@ -833,7 +848,9 @@ end
 "#;
 
         Mock::given(method("GET"))
-            .and(path("/testuser/homebrew-testrepo/HEAD/Formula/testformula.rb"))
+            .and(path(
+                "/testuser/homebrew-testrepo/HEAD/Formula/testformula.rb",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(ruby_formula))
             .mount(&mock_server)
             .await;
@@ -865,7 +882,10 @@ end
         let parsed = zb_core::parse_ruby_formula(ruby_formula, "testformula").unwrap();
 
         assert_eq!(parsed.name, "testformula");
-        assert_eq!(parsed.desc.as_deref(), Some("A test formula for unit testing"));
+        assert_eq!(
+            parsed.desc.as_deref(),
+            Some("A test formula for unit testing")
+        );
         assert_eq!(parsed.homepage.as_deref(), Some("https://example.com/test"));
         assert_eq!(parsed.license.as_deref(), Some("MIT"));
         assert_eq!(parsed.versions.stable, "1.2.3");
@@ -941,12 +961,25 @@ end
 
         for (name, source) in formulas {
             let result = zb_core::parse_ruby_formula(source, name);
-            assert!(result.is_ok(), "Failed to parse formula '{}': {:?}", name, result.err());
+            assert!(
+                result.is_ok(),
+                "Failed to parse formula '{}': {:?}",
+                name,
+                result.err()
+            );
 
             let formula = result.unwrap();
             assert_eq!(formula.name, name);
-            assert!(!formula.versions.stable.is_empty(), "Version should not be empty for '{}'", name);
-            assert!(!formula.bottle.stable.files.is_empty(), "Bottle should not be empty for '{}'", name);
+            assert!(
+                !formula.versions.stable.is_empty(),
+                "Version should not be empty for '{}'",
+                name
+            );
+            assert!(
+                !formula.bottle.stable.files.is_empty(),
+                "Bottle should not be empty for '{}'",
+                name
+            );
         }
     }
 

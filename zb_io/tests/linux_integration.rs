@@ -52,7 +52,10 @@ fn shell_script(content: &str) -> Vec<u8> {
 
 /// Helper to set up a test store entry with various file types
 fn setup_test_store_entry(tmp: &TempDir, name: &str, version: &str) -> PathBuf {
-    let store_entry = tmp.path().join("store").join(format!("{}-{}", name, version));
+    let store_entry = tmp
+        .path()
+        .join("store")
+        .join(format!("{}-{}", name, version));
 
     // Create Homebrew-style bottle structure: {name}/{version}/
     let bottle_root = store_entry.join(name).join(version);
@@ -111,7 +114,9 @@ fn materialize_creates_correct_structure() {
     let store_entry = setup_test_store_entry(&tmp, "testpkg", "1.0.0");
 
     let cellar = Cellar::new(tmp.path()).unwrap();
-    let keg_path = cellar.materialize("testpkg", "1.0.0", &store_entry).unwrap();
+    let keg_path = cellar
+        .materialize("testpkg", "1.0.0", &store_entry)
+        .unwrap();
 
     // Verify structure
     assert!(keg_path.exists(), "Keg path should exist");
@@ -130,7 +135,9 @@ fn materialize_preserves_executable_permissions() {
     let store_entry = setup_test_store_entry(&tmp, "exectest", "1.0.0");
 
     let cellar = Cellar::new(tmp.path()).unwrap();
-    let keg_path = cellar.materialize("exectest", "1.0.0", &store_entry).unwrap();
+    let keg_path = cellar
+        .materialize("exectest", "1.0.0", &store_entry)
+        .unwrap();
 
     let script_path = keg_path.join("bin/script");
     let perms = fs::metadata(&script_path).unwrap().permissions();
@@ -402,7 +409,10 @@ fn aarch64_interpreter_path() {
     // Verify the path constant matches expected value
     // Don't check exists() as this may run in containers with different paths
     let expected = "/lib/ld-linux-aarch64.so.1";
-    assert!(expected.contains("aarch64"), "Path should reference aarch64");
+    assert!(
+        expected.contains("aarch64"),
+        "Path should reference aarch64"
+    );
     assert!(expected.starts_with("/lib"), "Path should be absolute");
 }
 
@@ -526,7 +536,9 @@ fn handles_false_positive_elf() {
     fs::write(content.join("bin/fake-elf"), &fake_elf).unwrap();
 
     let cellar = Cellar::new(tmp.path()).unwrap();
-    let keg = cellar.materialize("fakeelf", "1.0.0", &store_entry).unwrap();
+    let keg = cellar
+        .materialize("fakeelf", "1.0.0", &store_entry)
+        .unwrap();
 
     // File should exist and content should be unchanged
     let copied = fs::read(keg.join("bin/fake-elf")).unwrap();
@@ -566,7 +578,9 @@ fn handles_shared_and_static_libs() {
     fs::write(content.join("lib/libfoo.a"), b"!<arch>\n").unwrap();
 
     let cellar = Cellar::new(tmp.path()).unwrap();
-    let keg = cellar.materialize("duallib", "1.0.0", &store_entry).unwrap();
+    let keg = cellar
+        .materialize("duallib", "1.0.0", &store_entry)
+        .unwrap();
 
     assert!(keg.join("lib/libfoo.so").exists());
     assert!(keg.join("lib/libfoo.a").exists());
@@ -641,9 +655,7 @@ fn handles_long_paths() {
     let store_entry = tmp.path().join("store");
 
     // Create a long path (not exceeding PATH_MAX but long)
-    let long_dir = "share/".to_string()
-        + &"very_long_directory_name_".repeat(5)
-        + "end";
+    let long_dir = "share/".to_string() + &"very_long_directory_name_".repeat(5) + "end";
     let content = store_entry.join("longpath/1.0.0").join(&long_dir);
     fs::create_dir_all(&content).unwrap();
     fs::write(content.join("file.txt"), b"content").unwrap();
@@ -711,13 +723,33 @@ fn handles_multiple_symlinks_same_target() {
     std::os::unix::fs::symlink("real", content.join("bin/alias3")).unwrap();
 
     let cellar = Cellar::new(tmp.path()).unwrap();
-    let keg = cellar.materialize("multilink", "1.0.0", &store_entry).unwrap();
+    let keg = cellar
+        .materialize("multilink", "1.0.0", &store_entry)
+        .unwrap();
 
     // All should exist as symlinks
     assert!(keg.join("bin/real").exists());
-    assert!(keg.join("bin/alias1").symlink_metadata().unwrap().file_type().is_symlink());
-    assert!(keg.join("bin/alias2").symlink_metadata().unwrap().file_type().is_symlink());
-    assert!(keg.join("bin/alias3").symlink_metadata().unwrap().file_type().is_symlink());
+    assert!(
+        keg.join("bin/alias1")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        keg.join("bin/alias2")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        keg.join("bin/alias3")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 /// Test package with only data files (no executables)
@@ -734,7 +766,9 @@ fn handles_data_only_packages() {
     fs::write(content.join("share/icons/icon.png"), b"PNG\x89image data").unwrap();
 
     let cellar = Cellar::new(tmp.path()).unwrap();
-    let keg = cellar.materialize("dataonly", "1.0.0", &store_entry).unwrap();
+    let keg = cellar
+        .materialize("dataonly", "1.0.0", &store_entry)
+        .unwrap();
 
     assert!(keg.join("share/fonts/font.ttf").exists());
     assert!(keg.join("share/icons/icon.png").exists());
@@ -749,10 +783,16 @@ fn handles_include_directory() {
     fs::create_dir_all(content.join("include/pkg")).unwrap();
 
     fs::write(content.join("include/pkg/header.h"), b"#pragma once\n").unwrap();
-    fs::write(content.join("include/pkg/types.h"), b"typedef int my_int;\n").unwrap();
+    fs::write(
+        content.join("include/pkg/types.h"),
+        b"typedef int my_int;\n",
+    )
+    .unwrap();
 
     let cellar = Cellar::new(tmp.path()).unwrap();
-    let keg = cellar.materialize("headers", "1.0.0", &store_entry).unwrap();
+    let keg = cellar
+        .materialize("headers", "1.0.0", &store_entry)
+        .unwrap();
 
     assert!(keg.join("include/pkg/header.h").exists());
     assert!(keg.join("include/pkg/types.h").exists());
@@ -795,13 +835,33 @@ fn handles_versioned_so_files() {
     std::os::unix::fs::symlink("libssl.so.3", content.join("lib/libssl.so")).unwrap();
 
     let cellar = Cellar::new(tmp.path()).unwrap();
-    let keg = cellar.materialize("versioned", "1.0.0", &store_entry).unwrap();
+    let keg = cellar
+        .materialize("versioned", "1.0.0", &store_entry)
+        .unwrap();
 
     // All should exist
     assert!(keg.join("lib/libssl.so.3.0.0").exists());
-    assert!(keg.join("lib/libssl.so.3.0").symlink_metadata().unwrap().file_type().is_symlink());
-    assert!(keg.join("lib/libssl.so.3").symlink_metadata().unwrap().file_type().is_symlink());
-    assert!(keg.join("lib/libssl.so").symlink_metadata().unwrap().file_type().is_symlink());
+    assert!(
+        keg.join("lib/libssl.so.3.0")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        keg.join("lib/libssl.so.3")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        keg.join("lib/libssl.so")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 /// Test that relative symlinks outside package are handled
@@ -814,7 +874,11 @@ fn handles_relative_symlinks_within_package() {
     fs::create_dir_all(content.join("libexec")).unwrap();
 
     // Real executable in libexec
-    fs::write(content.join("libexec/real-binary"), shell_script("echo hello")).unwrap();
+    fs::write(
+        content.join("libexec/real-binary"),
+        shell_script("echo hello"),
+    )
+    .unwrap();
 
     // Symlink in bin pointing to ../libexec/
     std::os::unix::fs::symlink("../libexec/real-binary", content.join("bin/wrapper")).unwrap();

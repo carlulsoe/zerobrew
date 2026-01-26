@@ -604,9 +604,13 @@ fn patch_homebrew_placeholders_linux(
                 } else {
                     // Fallback to system dynamic linker
                     #[cfg(target_arch = "aarch64")]
-                    { new_interp = Some("/lib/ld-linux-aarch64.so.1".to_string()); }
+                    {
+                        new_interp = Some("/lib/ld-linux-aarch64.so.1".to_string());
+                    }
                     #[cfg(target_arch = "x86_64")]
-                    { new_interp = Some("/lib64/ld-linux-x86-64.so.2".to_string()); }
+                    {
+                        new_interp = Some("/lib64/ld-linux-x86-64.so.2".to_string());
+                    }
                 }
             }
         }
@@ -630,9 +634,7 @@ fn patch_homebrew_placeholders_linux(
 
             args.push(path.to_string_lossy().to_string());
 
-            let result = Command::new("patchelf")
-                .args(&args)
-                .output();
+            let result = Command::new("patchelf").args(&args).output();
 
             match result {
                 Ok(output) if !output.status.success() => {
@@ -649,11 +651,7 @@ fn patch_homebrew_placeholders_linux(
                 }
                 Err(e) => {
                     if new_rpath.is_some() {
-                        eprintln!(
-                            "    Warning: patchelf failed for {}: {}",
-                            path.display(),
-                            e
-                        );
+                        eprintln!("    Warning: patchelf failed for {}: {}", path.display(), e);
                         patch_failures.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -820,7 +818,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path, try_hardlink: bool) -> Result<(), 
             )?;
 
             #[cfg(not(unix))]
-            store_err(fs::copy(&src_path, &dst_path), "failed to copy symlink as file")?;
+            store_err(
+                fs::copy(&src_path, &dst_path),
+                "failed to copy symlink as file",
+            )?;
         } else {
             // Try hardlink first, then copy
             if try_hardlink && fs::hard_link(&src_path, &dst_path).is_ok() {
@@ -1242,11 +1243,17 @@ mod tests {
         // Check symlinks are preserved as symlinks
         let link1 = keg.join("lib/libfoo.so.1");
         assert!(link1.symlink_metadata().unwrap().file_type().is_symlink());
-        assert_eq!(fs::read_link(&link1).unwrap().to_string_lossy(), "libfoo.so.1.0.0");
+        assert_eq!(
+            fs::read_link(&link1).unwrap().to_string_lossy(),
+            "libfoo.so.1.0.0"
+        );
 
         let link2 = keg.join("lib/libfoo.so");
         assert!(link2.symlink_metadata().unwrap().file_type().is_symlink());
-        assert_eq!(fs::read_link(&link2).unwrap().to_string_lossy(), "libfoo.so.1");
+        assert_eq!(
+            fs::read_link(&link2).unwrap().to_string_lossy(),
+            "libfoo.so.1"
+        );
     }
 
     /// Test that find_bottle_content handles various bottle structures
@@ -1290,12 +1297,16 @@ mod tests {
 
         // Create files with different permissions
         fs::write(src.join("bin/executable"), b"#!/bin/sh\necho hi").unwrap();
-        let mut perms = fs::metadata(src.join("bin/executable")).unwrap().permissions();
+        let mut perms = fs::metadata(src.join("bin/executable"))
+            .unwrap()
+            .permissions();
         perms.set_mode(0o755);
         fs::set_permissions(src.join("bin/executable"), perms).unwrap();
 
         fs::write(src.join("bin/readonly"), b"data").unwrap();
-        let mut perms = fs::metadata(src.join("bin/readonly")).unwrap().permissions();
+        let mut perms = fs::metadata(src.join("bin/readonly"))
+            .unwrap()
+            .permissions();
         perms.set_mode(0o444);
         fs::set_permissions(src.join("bin/readonly"), perms).unwrap();
 
@@ -1303,12 +1314,22 @@ mod tests {
         let keg = cellar.materialize("test", "1.0.0", &src).unwrap();
 
         // Check executable permission
-        let exec_perms = fs::metadata(keg.join("bin/executable")).unwrap().permissions();
-        assert!(exec_perms.mode() & 0o111 != 0, "executable bit should be preserved");
+        let exec_perms = fs::metadata(keg.join("bin/executable"))
+            .unwrap()
+            .permissions();
+        assert!(
+            exec_perms.mode() & 0o111 != 0,
+            "executable bit should be preserved"
+        );
 
         // Check readonly permission
-        let ro_perms = fs::metadata(keg.join("bin/readonly")).unwrap().permissions();
-        assert!(ro_perms.mode() & 0o222 == 0, "write bit should not be set on readonly file");
+        let ro_perms = fs::metadata(keg.join("bin/readonly"))
+            .unwrap()
+            .permissions();
+        assert!(
+            ro_perms.mode() & 0o222 == 0,
+            "write bit should not be set on readonly file"
+        );
     }
 
     // ========================================================================
@@ -1359,9 +1380,8 @@ mod tests {
 
         // Create a fake ELF file (just the magic bytes, not a real binary)
         let elf_header: Vec<u8> = vec![
-            0x7f, b'E', b'L', b'F',
-            0x02, 0x01, 0x01, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
         ];
         fs::create_dir_all(keg.join("bin")).unwrap();
         fs::write(keg.join("bin/fake-elf"), &elf_header).unwrap();
@@ -1423,12 +1443,11 @@ mod tests {
 
         // Create a valid-looking ELF header but no dynamic section
         let elf_no_rpath: Vec<u8> = vec![
-            0x7f, b'E', b'L', b'F',
-            0x02, // 64-bit
+            0x7f, b'E', b'L', b'F', 0x02, // 64-bit
             0x01, // Little-endian
             0x01, // ELF version 1
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x03, 0x00, // e_type: ET_DYN
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+            0x00, // e_type: ET_DYN
             0x3e, 0x00, // e_machine: EM_X86_64
             0x01, 0x00, 0x00, 0x00, // e_version
         ];
@@ -1453,9 +1472,8 @@ mod tests {
 
         // Create ELF file
         let elf_data: Vec<u8> = vec![
-            0x7f, b'E', b'L', b'F',
-            0x02, 0x01, 0x01, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
         ];
         let elf_path = keg.join("bin/readonly-elf");
         fs::write(&elf_path, &elf_data).unwrap();
@@ -1491,9 +1509,8 @@ mod tests {
 
         // Create real ELF file
         let elf_data: Vec<u8> = vec![
-            0x7f, b'E', b'L', b'F',
-            0x02, 0x01, 0x01, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
         ];
         fs::write(keg.join("lib/libreal.so.1.0.0"), &elf_data).unwrap();
 
@@ -1540,7 +1557,10 @@ mod tests {
         let cellar = Cellar::new(tmp.path()).unwrap();
         let keg = cellar.materialize("deep-nest", "1.0.0", &src).unwrap();
 
-        assert!(keg.join("share/doc/pkg/examples/advanced/subdir1/subdir2/subdir3/readme.txt").exists());
+        assert!(
+            keg.join("share/doc/pkg/examples/advanced/subdir1/subdir2/subdir3/readme.txt")
+                .exists()
+        );
     }
 
     /// Test handling of files with special characters in names
@@ -1624,13 +1644,20 @@ mod tests {
         let result = cellar.materialize("broken-symlink", "1.0.0", &src);
 
         // Materialization should succeed
-        assert!(result.is_ok(), "Materialization should succeed with broken symlinks");
+        assert!(
+            result.is_ok(),
+            "Materialization should succeed with broken symlinks"
+        );
         let keg = result.unwrap();
 
         // The broken symlink should be preserved as a symlink (pointing to nonexistent target)
         let broken_link = keg.join("broken-link");
         assert!(
-            broken_link.symlink_metadata().unwrap().file_type().is_symlink(),
+            broken_link
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "Broken symlink should be preserved as a symlink"
         );
         assert_eq!(
@@ -1640,7 +1667,10 @@ mod tests {
         );
 
         // The valid file should also be copied
-        assert!(keg.join("valid.txt").exists(), "Valid file should be copied");
+        assert!(
+            keg.join("valid.txt").exists(),
+            "Valid file should be copied"
+        );
         assert_eq!(
             fs::read_to_string(keg.join("valid.txt")).unwrap(),
             "content",
@@ -1668,7 +1698,10 @@ mod tests {
         let result = cellar.materialize("circular-symlinks", "1.0.0", &src);
 
         // Materialization should succeed
-        assert!(result.is_ok(), "Materialization should succeed with circular symlinks");
+        assert!(
+            result.is_ok(),
+            "Materialization should succeed with circular symlinks"
+        );
         let keg = result.unwrap();
 
         // Both circular symlinks should be preserved as symlinks
@@ -1694,7 +1727,10 @@ mod tests {
         );
 
         // The valid file should also be copied
-        assert!(keg.join("valid.txt").exists(), "Valid file should be copied");
+        assert!(
+            keg.join("valid.txt").exists(),
+            "Valid file should be copied"
+        );
         assert_eq!(
             fs::read_to_string(keg.join("valid.txt")).unwrap(),
             "content",
@@ -1722,7 +1758,10 @@ mod tests {
         let keg2 = cellar.materialize("existing", "1.0.0", &src).unwrap();
 
         assert_eq!(keg1, keg2);
-        assert!(keg2.join("marker").exists(), "Should not overwrite existing keg");
+        assert!(
+            keg2.join("marker").exists(),
+            "Should not overwrite existing keg"
+        );
     }
 
     /// Test handling of multiple file types in same directory
@@ -1750,12 +1789,26 @@ mod tests {
         fs::write(src.join("foo.pc"), b"prefix=/opt/homebrew").unwrap();
 
         let cellar = Cellar::new(tmp.path()).unwrap();
-        let keg = cellar.materialize("mixed", "1.0.0", &tmp.path().join("src")).unwrap();
+        let keg = cellar
+            .materialize("mixed", "1.0.0", &tmp.path().join("src"))
+            .unwrap();
 
         // Verify all types present
         assert!(keg.join("lib/libfoo.so.1.2.3").exists());
-        assert!(keg.join("lib/libfoo.so.1").symlink_metadata().unwrap().file_type().is_symlink());
-        assert!(keg.join("lib/libfoo.so").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(
+            keg.join("lib/libfoo.so.1")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            keg.join("lib/libfoo.so")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert!(keg.join("lib/libfoo.a").exists());
         assert!(keg.join("lib/foo.pc").exists());
     }
@@ -1973,10 +2026,20 @@ int main() {
         use std::process::Command;
 
         // Skip if patchelf or readelf not available
-        if Command::new("patchelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        if Command::new("patchelf")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
             return;
         }
-        if Command::new("readelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        if Command::new("readelf")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
             return;
         }
 
@@ -2020,7 +2083,10 @@ int main() {
             .output();
 
         assert!(result.is_ok(), "patchelf should succeed");
-        assert!(result.unwrap().status.success(), "patchelf should exit successfully");
+        assert!(
+            result.unwrap().status.success(),
+            "patchelf should exit successfully"
+        );
 
         // Verify the binary structure is valid using readelf
         // If .interp is outside segments, readelf will show warnings
@@ -2034,7 +2100,8 @@ int main() {
 
         // Check for the corruption indicator
         assert!(
-            !stdout.contains("outside of ELF segments") && !stderr.contains("outside of ELF segments"),
+            !stdout.contains("outside of ELF segments")
+                && !stderr.contains("outside of ELF segments"),
             "ELF structure should be valid - no sections outside segments. stderr: {}",
             stderr
         );
@@ -2055,10 +2122,20 @@ int main() {
         use std::process::Command;
 
         // Skip if tools not available
-        if Command::new("patchelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        if Command::new("patchelf")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
             return;
         }
-        if Command::new("readelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        if Command::new("readelf")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
             return;
         }
 
@@ -2104,7 +2181,12 @@ int main() {
         use std::process::Command;
 
         // Skip if patchelf not available
-        if Command::new("patchelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        if Command::new("patchelf")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
             return;
         }
 
@@ -2129,7 +2211,10 @@ int main() {
         let expected_rpath = if orig_rpath.is_empty() {
             "/opt/zerobrew/test/lib:/opt/zerobrew/prefix/lib:/lib64:/usr/lib64".to_string()
         } else {
-            format!("/opt/zerobrew/test/lib:/opt/zerobrew/prefix/lib:{}", orig_rpath)
+            format!(
+                "/opt/zerobrew/test/lib:/opt/zerobrew/prefix/lib:{}",
+                orig_rpath
+            )
         };
         let expected_interp = "/lib64/ld-linux-x86-64.so.2";
 
@@ -2153,21 +2238,34 @@ int main() {
             .args(["--print-rpath", &test_binary.to_string_lossy()])
             .output()
             .expect("should read rpath");
-        let actual_rpath = String::from_utf8_lossy(&rpath_output.stdout).trim().to_string();
-        assert_eq!(actual_rpath, expected_rpath, "RPATH should be set correctly");
+        let actual_rpath = String::from_utf8_lossy(&rpath_output.stdout)
+            .trim()
+            .to_string();
+        assert_eq!(
+            actual_rpath, expected_rpath,
+            "RPATH should be set correctly"
+        );
 
         // Verify interpreter was set correctly
         let interp_output = Command::new("patchelf")
             .args(["--print-interpreter", &test_binary.to_string_lossy()])
             .output()
             .expect("should read interpreter");
-        let actual_interp = String::from_utf8_lossy(&interp_output.stdout).trim().to_string();
-        assert_eq!(actual_interp, expected_interp, "Interpreter should be set correctly");
+        let actual_interp = String::from_utf8_lossy(&interp_output.stdout)
+            .trim()
+            .to_string();
+        assert_eq!(
+            actual_interp, expected_interp,
+            "Interpreter should be set correctly"
+        );
 
         // Verify binary still executes (compiled or linuxbrew binaries)
         if is_compiled_or_linuxbrew_binary(&test_binary) {
             let exec_result = Command::new(&test_binary).output();
-            assert!(exec_result.is_ok(), "Binary should still be executable after patching");
+            assert!(
+                exec_result.is_ok(),
+                "Binary should still be executable after patching"
+            );
         }
     }
 
@@ -2179,10 +2277,20 @@ int main() {
         use std::process::Command;
 
         // Skip if tools not available
-        if Command::new("patchelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        if Command::new("patchelf")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
             return;
         }
-        if Command::new("readelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        if Command::new("readelf")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
             return;
         }
 
@@ -2195,7 +2303,8 @@ int main() {
 
         // Create ld.so symlink (simulating zerobrew prefix)
         fs::create_dir_all(prefix.join("lib")).unwrap();
-        std::os::unix::fs::symlink("/lib64/ld-linux-x86-64.so.2", prefix.join("lib/ld.so")).unwrap();
+        std::os::unix::fs::symlink("/lib64/ld-linux-x86-64.so.2", prefix.join("lib/ld.so"))
+            .unwrap();
 
         // Create or find a test binary directly in the keg/bin directory
         let test_binary = match create_or_find_patchable_binary(&keg.join("bin")) {
@@ -2223,14 +2332,18 @@ int main() {
         let stderr = String::from_utf8_lossy(&readelf_output.stderr);
 
         assert!(
-            !stdout.contains("outside of ELF segments") && !stderr.contains("outside of ELF segments"),
+            !stdout.contains("outside of ELF segments")
+                && !stderr.contains("outside of ELF segments"),
             "Binary should have valid ELF structure after patching function runs"
         );
 
         // Verify binary still executes (compiled or linuxbrew binaries)
         if is_compiled_or_linuxbrew_binary(&test_binary) {
             let exec_result = Command::new(&test_binary).output();
-            assert!(exec_result.is_ok(), "Binary should still execute after patching");
+            assert!(
+                exec_result.is_ok(),
+                "Binary should still execute after patching"
+            );
         }
     }
 

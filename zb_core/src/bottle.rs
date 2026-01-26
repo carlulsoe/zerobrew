@@ -549,7 +549,8 @@ mod tests {
         files.insert(
             tag.to_string(),
             BottleFile {
-                url: "https://ghcr.io/v2/homebrew/core/openssl%403.4/blobs/sha256:abc123def456".to_string(),
+                url: "https://ghcr.io/v2/homebrew/core/openssl%403.4/blobs/sha256:abc123def456"
+                    .to_string(),
                 sha256: "abc123def456".to_string(),
             },
         );
@@ -611,7 +612,10 @@ mod tests {
         };
 
         let selected = select_bottle(&formula).unwrap();
-        assert!(selected.url.contains("%2B%2B"), "URL encoding should be preserved");
+        assert!(
+            selected.url.contains("%2B%2B"),
+            "URL encoding should be preserved"
+        );
     }
 
     /// Test bottle with very long SHA256 (edge case validation)
@@ -816,11 +820,11 @@ mod tests {
     fn handles_various_version_formats() {
         let test_versions = vec![
             "1.0.0",
-            "1.0.0_1",       // With rebuild suffix
-            "2024-01-01",    // Date-based
-            "1.0.0-beta.1",  // Pre-release
-            "0.0.1",         // Very low version
-            "999.999.999",   // Very high version
+            "1.0.0_1",      // With rebuild suffix
+            "2024-01-01",   // Date-based
+            "1.0.0-beta.1", // Pre-release
+            "0.0.1",        // Very low version
+            "999.999.999",  // Very high version
         ];
 
         for version in test_versions {
@@ -845,7 +849,11 @@ mod tests {
             };
 
             let selected = select_bottle(&formula).unwrap();
-            assert_eq!(selected.tag, "all", "Should select 'all' for version {}", version);
+            assert_eq!(
+                selected.tag, "all",
+                "Should select 'all' for version {}",
+                version
+            );
         }
     }
 }

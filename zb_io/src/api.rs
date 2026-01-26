@@ -91,9 +91,7 @@ impl ApiClient {
 
             if response.status() == reqwest::StatusCode::NOT_FOUND {
                 // Only try alias resolution once
-                if !alias_resolved
-                    && let Some(target) = self.resolve_alias(&current_name).await
-                {
+                if !alias_resolved && let Some(target) = self.resolve_alias(&current_name).await {
                     current_name = target;
                     alias_resolved = true;
                     continue;
