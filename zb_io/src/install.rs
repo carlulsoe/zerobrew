@@ -73,21 +73,29 @@ impl Installer {
         // Resolve in topological order
         let ordered = resolve_closure(name, &formulas)?;
 
-        // Build list of formulas in order
-        let all_formulas: Vec<Formula> = ordered
-            .iter()
-            .map(|n| formulas.get(n).cloned().unwrap())
-            .collect();
-
-        // Select bottles for each formula
+        // Build list of formulas in order, selecting bottles
+        // Skip dependencies that don't have compatible bottles (e.g., macOS-only packages)
+        let mut result_formulas = Vec::new();
         let mut bottles = Vec::new();
-        for formula in &all_formulas {
-            let bottle = select_bottle(formula)?;
-            bottles.push(bottle);
+
+        for formula_name in &ordered {
+            let formula = formulas.get(formula_name).cloned().unwrap();
+            match select_bottle(&formula) {
+                Ok(bottle) => {
+                    result_formulas.push(formula);
+                    bottles.push(bottle);
+                }
+                Err(Error::UnsupportedBottle { .. }) if formula_name != name => {
+                    // Skip dependencies without compatible bottles (e.g., libiconv on Linux)
+                    // But fail if the root package doesn't have a compatible bottle
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         Ok(InstallPlan {
-            formulas: all_formulas,
+            formulas: result_formulas,
             bottles,
         })
     }
