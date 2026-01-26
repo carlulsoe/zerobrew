@@ -313,9 +313,148 @@ $ zb autoremove
 - `install::mark_explicit_prevents_autoremove` - Tests explicit marking prevents removal
 - `install::mark_explicit_not_installed_returns_error` - Tests error handling
 
+### 9. Implemented Shellenv Command (Phase 1.6) ✅
+
+**Files modified:**
+- `zb_cli/src/main.rs` - Added `zb shellenv` command and shell-specific output generation
+
+**Features:**
+- Auto-detect shell type from $SHELL environment variable
+- Support for multiple shells via `--shell` flag: bash, zsh, fish, csh/tcsh
+- Outputs environment variables compatible with Homebrew:
+  - `HOMEBREW_PREFIX` - the prefix directory
+  - `HOMEBREW_CELLAR` - the Cellar directory
+  - `PATH` - includes bin and sbin directories
+  - `MANPATH` - includes man pages
+  - `INFOPATH` - includes info pages
+- Different syntax for different shells (export vs setenv vs set -gx)
+
+**Implementation details:**
+- `detect_shell()` - checks $SHELL for fish/csh/zsh, defaults to bash-compatible
+- `generate_shellenv()` - generates shell-specific environment setup
+- `print_shellenv()` - outputs the generated commands
+
+**Example usage:**
+```bash
+# Auto-detect shell
+$ zb shellenv
+export HOMEBREW_PREFIX="/opt/zerobrew/prefix";
+export HOMEBREW_CELLAR="/opt/zerobrew/prefix/Cellar";
+export PATH="/opt/zerobrew/prefix/bin:/opt/zerobrew/prefix/sbin:$PATH";
+export MANPATH="/opt/zerobrew/prefix/share/man:${MANPATH:-}";
+export INFOPATH="/opt/zerobrew/prefix/share/info:${INFOPATH:-}";
+
+# Add to shell rc file
+$ eval "$(zb shellenv)"
+
+# Specify shell explicitly
+$ zb shellenv --shell fish
+set -gx HOMEBREW_PREFIX "/opt/zerobrew/prefix";
+set -gx HOMEBREW_CELLAR "/opt/zerobrew/prefix/Cellar";
+set -gx PATH "/opt/zerobrew/prefix/bin" "/opt/zerobrew/prefix/sbin" $PATH;
+...
+```
+
+**New tests (7 total):**
+- `test_generate_shellenv_bash` - Tests bash output format
+- `test_generate_shellenv_zsh` - Tests zsh output (same as bash)
+- `test_generate_shellenv_fish` - Tests fish shell syntax
+- `test_generate_shellenv_csh` - Tests csh/tcsh syntax
+- `test_generate_shellenv_tcsh` - Tests tcsh (same as csh)
+- `test_generate_shellenv_custom_prefix` - Tests with non-default prefix
+- `test_generate_shellenv_unknown_shell_defaults_to_posix` - Tests fallback
+
+### 10. Implemented Improved Info Command (Phase 1.7) ✅
+
+**Files modified:**
+- `zb_cli/src/main.rs` - Enhanced `zb info` command with detailed output and JSON support
+- `zb_core/src/formula.rs` - Added new fields to Formula struct (desc, homepage, license, caveats, keg_only, keg_only_reason, build_dependencies)
+- `zb_io/src/db.rs` - Added `get_linked_files()` method
+- `zb_io/src/install.rs` - Added `get_formula()`, `get_linked_files()`, `get_dependents()` methods
+
+**Features:**
+- Works for both installed and non-installed packages
+- Shows detailed metadata from Homebrew API:
+  - Description, homepage, license
+  - Available version (highlights if update available)
+  - Keg-only status with reason
+  - Caveats (post-install notes)
+- Shows installation state:
+  - Installed version with pinned/dependency markers
+  - Store key and installation timestamp
+- Shows dependency information:
+  - Lists all dependencies with ✓/✗ markers for installed status
+  - Lists build dependencies
+  - Lists reverse dependencies (packages that depend on this one)
+- Shows linked files (symlinks in prefix)
+- Supports `--json` flag for machine-readable output
+
+**Formula struct enhancements:**
+- Added `desc: Option<String>` - description
+- Added `homepage: Option<String>` - project homepage
+- Added `license: Option<String>` - license
+- Added `build_dependencies: Vec<String>` - build-time dependencies
+- Added `caveats: Option<String>` - post-install notes
+- Added `keg_only: bool` - whether formula is keg-only
+- Added `keg_only_reason: Option<KegOnlyReason>` - why it's keg-only
+- Added `Default` derive for easier test construction
+
+**Example usage:**
+```
+$ zb info git
+==> git
+Distributed revision control system
+https://git-scm.com
+
+Installed: 2.43.0
+
+License: GPL-2.0-only
+
+Dependencies:
+  ✓ gettext
+  ✓ pcre2
+  ✗ curl (not installed)
+
+Required by:
+  gh
+  lazygit
+
+Linked files: (15 files)
+  /opt/zerobrew/prefix/bin/git
+  /opt/zerobrew/prefix/bin/git-receive-pack
+  ...
+
+Store key: abc123def456
+Installed: 2024-01-26T10:30:00Z
+
+==> Caveats
+The Tcl/Tk GUIs (gitk, git-gui) are now in the `git-gui` formula.
+```
+
+**JSON output:**
+```
+$ zb info git --json
+{
+  "name": "git",
+  "installed": true,
+  "installed_version": "2.43.0",
+  "available_version": "2.44.0",
+  "description": "Distributed revision control system",
+  "homepage": "https://git-scm.com",
+  "license": "GPL-2.0-only",
+  "dependencies": ["gettext", "pcre2", "curl"],
+  "dependents": ["gh", "lazygit"],
+  "linked_files": [...],
+  "pinned": false,
+  "explicit": true,
+  "keg_only": false,
+  "caveats": "The Tcl/Tk GUIs..."
+}
+```
+
 ---
 
-## Remaining Phase 1 Tasks
+## Phase 1 Complete! 🎉
 
 | Task | Status |
 |------|--------|
@@ -324,24 +463,27 @@ $ zb autoremove
 | 1.3 Upgrade command | ✅ Complete |
 | 1.4 Pin/unpin commands | ✅ Complete |
 | 1.5 Autoremove command | ✅ Complete |
-| 1.6 Shellenv command | ⏳ Not started |
-| 1.7 Improved info command | ⏳ Not started |
+| 1.6 Shellenv command | ✅ Complete |
+| 1.7 Improved info command | ✅ Complete |
 
 ---
 
 ## Test Results
 
 All tests passing:
-- 155 unit tests passed (37 zb_core + 118 zb_io)
+- 167 unit tests passed (37 zb_core + 123 zb_io + 7 CLI)
 - 27 integration tests passed
 - 4 tests ignored (require specific environment)
 
 ---
 
-## Next Steps
+## Next Steps (Phase 2)
 
-1. Implement `zb shellenv` - output shell environment setup
-2. Improve `zb info` - show dependencies, caveats, etc.
+1. Implement tap support (2.1)
+2. Implement formula Ruby parser (2.2)
+3. Implement cleanup command (2.3)
+4. Implement link/unlink commands (2.4)
+5. Implement deps/uses commands (2.5)
 
 ---
 
@@ -354,3 +496,5 @@ All tests passing:
 - Upgrade command reuses install progress display for consistency
 - Pin/unpin integrates with outdated/upgrade commands automatically
 - Autoremove fetches formulas for all explicit packages to compute transitive deps
+- Info command fetches from API for non-installed packages too
+- Shellenv command compatible with Homebrew's output format
