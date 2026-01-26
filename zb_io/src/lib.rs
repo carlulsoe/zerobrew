@@ -8,9 +8,10 @@ pub mod install;
 pub mod link;
 pub mod materialize;
 pub mod progress;
+pub mod search;
 pub mod store;
 
-pub use api::ApiClient;
+pub use api::{ApiClient, FormulaInfo};
 pub use blob::BlobCache;
 pub use cache::ApiCache;
 pub use db::{Database, InstalledKeg};

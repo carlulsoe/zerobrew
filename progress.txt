@@ -1,0 +1,129 @@
+# Zerobrew Development Progress
+
+**Date**: 2026-01-26
+**Branch**: linux-compat
+
+---
+
+## Session Summary
+
+This session focused on PR review, code quality improvements, and starting Phase 1 implementation.
+
+---
+
+## Completed Tasks
+
+### 1. Comprehensive PR Review
+- Ran 4 specialized review agents in parallel (code-reviewer, test-analyzer, silent-failure-hunter, code-simplifier)
+- Identified 5 important issues and 4 suggestions
+
+### 2. Fixed All Review Issues
+
+**Silent Failure Warnings Added:**
+- `materialize.rs:468-471` - Warning when patchelf unavailable
+- `materialize.rs:616-638` - Log patchelf failures with stderr
+- `install.rs:91` - Warning when dependencies skipped (no compatible bottle)
+- `install.rs:228` - Warning when formulas skipped (not found)
+- `resolve.rs:71` - Warning when unavailable dependencies skipped
+- `api.rs:112` - Warning on cache write failures
+
+**Test Coverage Improvements:**
+- Fixed `handles_broken_symlinks` test to assert behavior
+- Fixed `handles_circular_symlinks` test to assert behavior
+- Added `patches_rpath_without_changing_valid_interpreter` test
+- Added `install_skips_macos_only_uses_from_macos_deps` test
+
+**Code Quality Refactoring:**
+- Extracted shared `patch_homebrew_path()` function (eliminates 35+ lines duplication)
+- Added `WriteGuard` RAII pattern for permission handling (eliminates ~45 lines)
+- Simplified `is_compatible_fallback_tag()` - flattened nested #[cfg] blocks
+- Added `store_err()` helper for error mapping
+- Refactored `create_or_find_patchable_binary()` with iterator combinators
+
+### 3. Created Comprehensive Roadmap
+- Wrote `ROADMAP.md` with 5 phases to full Homebrew replacement
+- Phase 1 (v0.5): Daily Driver - search, outdated, upgrade, pin, autoremove, shellenv
+- Phase 2 (v0.7): Power User - taps, formula parser, doctor
+- Phase 3 (v0.8): Services - systemd/launchd
+- Phase 4 (v1.0): Source builds
+- Phase 5 (v1.x): Ecosystem - bundle, versioned formulas
+
+### 4. Implemented Search Command (Phase 1.1) ✅
+
+**Files created/modified:**
+- `zb_io/src/search.rs` (NEW) - Search module with relevance scoring
+- `zb_io/src/api.rs` - Added `get_all_formulas()` and `FormulaInfo` type
+- `zb_io/src/lib.rs` - Exported search module
+- `zb_cli/src/main.rs` - Added `zb search` command
+
+**Features:**
+- Plain text search (matches name and description)
+- Regex search with `/pattern/` syntax
+- Relevance scoring (exact match > prefix > contains > description)
+- Shows installed packages with ✓ marker
+- Excludes deprecated and disabled formulas
+- Limits output to top 20 results
+
+**Example usage:**
+```
+$ zb search git
+==> Found 245 formulas:
+✓ git 2.52.0
+    Distributed revision control system
+  git-absorb 0.8.0
+    Automatic git commit --fixup
+  ...
+
+$ zb search '/python@3\.1[12]/'
+==> Found 2 formulas:
+  python@3.11 3.11.14
+  python@3.12 3.12.12
+```
+
+---
+
+## Commits Created
+
+1. `d3cf8ed` - refactor: Improve error reporting and code quality
+2. `f5ed76b` - docs: Add comprehensive roadmap for full Homebrew replacement
+
+---
+
+## Remaining Phase 1 Tasks
+
+| Task | Status |
+|------|--------|
+| 1.1 Search command | ✅ Complete |
+| 1.2 Outdated command | ⏳ Not started |
+| 1.3 Upgrade command | ⏳ Not started |
+| 1.4 Pin/unpin commands | ⏳ Not started |
+| 1.5 Autoremove command | ⏳ Not started |
+| 1.6 Shellenv command | ⏳ Not started |
+| 1.7 Improved info command | ⏳ Not started |
+
+---
+
+## Test Results
+
+All tests passing:
+- 99 unit tests passed
+- 3 tests ignored (require specific environment)
+
+---
+
+## Next Steps
+
+1. Commit the search command implementation
+2. Implement `zb outdated` - compare installed vs API versions
+3. Implement `zb upgrade` - upgrade outdated packages
+4. Implement `zb pin/unpin` - prevent specific packages from upgrading
+5. Implement `zb autoremove` - remove orphaned dependencies
+6. Implement `zb shellenv` - output shell environment setup
+
+---
+
+## Notes
+
+- Search command fetches ~7MB formula.json on first run (cached after)
+- Consider adding `--json` flag for machine-readable output
+- May want to add search filters (e.g., `--installed-only`)

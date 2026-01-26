@@ -1,5 +1,27 @@
 use crate::cache::{ApiCache, CacheEntry};
+use serde::Deserialize;
 use zb_core::{Error, Formula};
+
+/// Minimal formula info for search results (faster to deserialize than full Formula)
+#[derive(Debug, Clone, Deserialize)]
+pub struct FormulaInfo {
+    pub name: String,
+    pub full_name: String,
+    pub desc: Option<String>,
+    pub homepage: Option<String>,
+    pub versions: FormulaVersions,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub deprecated: bool,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FormulaVersions {
+    pub stable: Option<String>,
+}
 
 pub struct ApiClient {
     base_url: String,
@@ -121,6 +143,80 @@ impl ApiClient {
 
             return Ok(formula);
         }
+    }
+
+    /// Fetch all formula metadata for search
+    pub async fn get_all_formulas(&self) -> Result<Vec<FormulaInfo>, Error> {
+        // The base_url is like "https://formulae.brew.sh/api/formula"
+        // We need "https://formulae.brew.sh/api/formula.json"
+        let url = format!("{}.json", self.base_url);
+
+        let cached_entry = self.cache.as_ref().and_then(|c| c.get(&url));
+
+        let mut request = self.client.get(&url);
+
+        if let Some(ref entry) = cached_entry {
+            if let Some(ref etag) = entry.etag {
+                request = request.header("If-None-Match", etag.as_str());
+            }
+            if let Some(ref last_modified) = entry.last_modified {
+                request = request.header("If-Modified-Since", last_modified.as_str());
+            }
+        }
+
+        let response = request.send().await.map_err(|e| Error::NetworkFailure {
+            message: e.to_string(),
+        })?;
+
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            if let Some(entry) = cached_entry {
+                let formulas: Vec<FormulaInfo> =
+                    serde_json::from_str(&entry.body).map_err(|e| Error::NetworkFailure {
+                        message: format!("failed to parse cached formula list: {e}"),
+                    })?;
+                return Ok(formulas);
+            }
+        }
+
+        if !response.status().is_success() {
+            return Err(Error::NetworkFailure {
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let last_modified = response
+            .headers()
+            .get("last-modified")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let body = response.text().await.map_err(|e| Error::NetworkFailure {
+            message: format!("failed to read response body: {e}"),
+        })?;
+
+        if let Some(ref cache) = self.cache {
+            let entry = CacheEntry {
+                etag,
+                last_modified,
+                body: body.clone(),
+            };
+            if let Err(e) = cache.put(&url, &entry) {
+                eprintln!("    Warning: failed to cache response: {}", e);
+            }
+        }
+
+        let formulas: Vec<FormulaInfo> =
+            serde_json::from_str(&body).map_err(|e| Error::NetworkFailure {
+                message: format!("failed to parse formula list: {e}"),
+            })?;
+
+        Ok(formulas)
     }
 
     /// Check if a formula name is an alias and return the target formula name

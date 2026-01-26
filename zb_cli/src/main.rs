@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use zb_io::install::create_installer;
-use zb_io::{InstallProgress, ProgressCallback};
+use zb_io::search::search_formulas;
+use zb_io::{ApiClient, ApiCache, InstallProgress, ProgressCallback};
 
 #[derive(Parser)]
 #[command(name = "zb")]
@@ -56,6 +57,12 @@ enum Commands {
     Info {
         /// Formula name
         formula: String,
+    },
+
+    /// Search for formulas
+    Search {
+        /// Search query (use /regex/ for regex search)
+        query: String,
     },
 
     /// Garbage collect unreferenced store entries
@@ -536,6 +543,73 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 );
             } else {
                 println!("Formula '{}' is not installed.", formula);
+            }
+        }
+
+        Commands::Search { query } => {
+            println!(
+                "{} Searching for '{}'...",
+                style("==>").cyan().bold(),
+                style(&query).bold()
+            );
+
+            // Create API client with cache
+            let cache_dir = cli.root.join("cache");
+            let cache = ApiCache::open(&cache_dir).ok();
+            let api_client = if let Some(c) = cache {
+                ApiClient::new().with_cache(c)
+            } else {
+                ApiClient::new()
+            };
+
+            let formulas = api_client.get_all_formulas().await?;
+            let results = search_formulas(&formulas, &query);
+
+            if results.is_empty() {
+                println!("No formulas found matching '{}'.", query);
+            } else {
+                println!(
+                    "{} Found {} formulas:",
+                    style("==>").cyan().bold(),
+                    style(results.len()).green().bold()
+                );
+                println!();
+
+                // Limit to top 20 results
+                for result in results.iter().take(20) {
+                    let installed = installer.is_installed(&result.name);
+                    let marker = if installed {
+                        style("✓").green().to_string()
+                    } else {
+                        " ".to_string()
+                    };
+
+                    println!(
+                        "{} {} {}",
+                        marker,
+                        style(&result.name).bold(),
+                        style(&result.version).dim()
+                    );
+
+                    if !result.description.is_empty() {
+                        // Truncate long descriptions
+                        let desc = if result.description.len() > 70 {
+                            format!("{}...", &result.description[..67])
+                        } else {
+                            result.description.clone()
+                        };
+                        println!("    {}", style(desc).dim());
+                    }
+                }
+
+                if results.len() > 20 {
+                    println!();
+                    println!(
+                        "    {} and {} more...",
+                        style("...").dim(),
+                        results.len() - 20
+                    );
+                }
             }
         }
 
