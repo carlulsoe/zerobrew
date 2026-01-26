@@ -229,6 +229,13 @@ enum Commands {
         #[command(subcommand)]
         action: Option<BundleAction>,
     },
+
+    /// List all available commands (built-in and external)
+    ZbCommands,
+
+    /// External subcommand - runs zb-<cmd> from PATH or ~/.zerobrew/cmd/
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 #[derive(Subcommand, Clone)]
@@ -647,6 +654,47 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         result.files_linked
                     );
                 }
+
+                // Display keg-only and caveats info if present
+                if let Ok(formula_info) = installer.get_formula(&formula).await {
+                    // Display keg-only info if applicable
+                    if formula_info.keg_only {
+                        println!();
+                        println!("{}", style("==> Keg-only").yellow().bold());
+                        println!(
+                            "{} is keg-only, which means it was not symlinked into {}",
+                            style(&formula).bold(),
+                            cli.prefix.display()
+                        );
+                        if let Some(ref reason) = formula_info.keg_only_reason {
+                            if !reason.explanation.is_empty() {
+                                println!();
+                                println!("{}", reason.explanation);
+                            }
+                        }
+                        println!();
+                        println!("To use this formula, you can:");
+                        println!(
+                            "    • Add it to your PATH: {}",
+                            style(format!("export PATH=\"{}/opt/{}/bin:$PATH\"", cli.prefix.display(), formula)).cyan()
+                        );
+                        println!(
+                            "    • Link it with: {}",
+                            style(format!("zb link {} --force", formula)).cyan()
+                        );
+                    }
+
+                    // Display caveats
+                    if let Some(ref caveats) = formula_info.caveats {
+                        println!();
+                        println!("{}", style("==> Caveats").yellow().bold());
+                        // Replace $HOMEBREW_PREFIX with actual prefix
+                        let caveats = caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
+                        for line in caveats.lines() {
+                            println!("{}", line);
+                        }
+                    }
+                }
             } else {
                 // Normal bottle install path
                 println!(
@@ -662,6 +710,14 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         return Err(e);
                     }
                 };
+
+                // Extract info from the root formula before executing the plan
+                let root_formula = plan.formulas
+                    .iter()
+                    .find(|f| f.name == plan.root_name);
+                let root_caveats = root_formula.and_then(|f| f.caveats.clone());
+                let root_keg_only = root_formula.map(|f| f.keg_only).unwrap_or(false);
+                let root_keg_only_reason = root_formula.and_then(|f| f.keg_only_reason.clone());
 
                 println!(
                     "{} Resolving dependencies ({} packages)...",
@@ -801,6 +857,44 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     style(result.installed).green().bold(),
                     elapsed.as_secs_f64()
                 );
+
+                // Display keg-only info if applicable
+                if root_keg_only {
+                    println!();
+                    println!("{}", style("==> Keg-only").yellow().bold());
+                    println!(
+                        "{} is keg-only, which means it was not symlinked into {}",
+                        style(&formula).bold(),
+                        cli.prefix.display()
+                    );
+                    if let Some(ref reason) = root_keg_only_reason {
+                        if !reason.explanation.is_empty() {
+                            println!();
+                            println!("{}", reason.explanation);
+                        }
+                    }
+                    println!();
+                    println!("To use this formula, you can:");
+                    println!(
+                        "    • Add it to your PATH: {}",
+                        style(format!("export PATH=\"{}/opt/{}/bin:$PATH\"", cli.prefix.display(), formula)).cyan()
+                    );
+                    println!(
+                        "    • Link it with: {}",
+                        style(format!("zb link {} --force", formula)).cyan()
+                    );
+                }
+
+                // Display caveats for the root formula if present
+                if let Some(ref caveats) = root_caveats {
+                    println!();
+                    println!("{}", style("==> Caveats").yellow().bold());
+                    // Replace $HOMEBREW_PREFIX with actual prefix
+                    let caveats = caveats.replace("$HOMEBREW_PREFIX", &cli.prefix.to_string_lossy());
+                    for line in caveats.lines() {
+                        println!("{}", line);
+                    }
+                }
             }
         }
 
@@ -2889,6 +2983,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     );
                     println!();
 
+                    #[allow(unused_mut)]
                     let mut tap_count = 0;
                     let mut brew_count = 0;
 
@@ -2926,9 +3021,185 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 }
             }
         }
+
+        Commands::ZbCommands => {
+            // List all available commands (built-in and external)
+            let builtin_commands = [
+                ("autoremove", "Remove orphaned dependencies"),
+                ("bundle", "Install from a Brewfile or manage Brewfile configuration"),
+                ("cleanup", "Remove old versions and cache files"),
+                ("deps", "Show dependencies for a formula"),
+                ("doctor", "Diagnose common issues"),
+                ("gc", "Garbage collect unreferenced store entries"),
+                ("info", "Show info about an installed formula"),
+                ("init", "Initialize zerobrew directories"),
+                ("install", "Install a formula"),
+                ("leaves", "List installed formulas that are not dependencies"),
+                ("link", "Create symlinks for a keg"),
+                ("list", "List installed formulas"),
+                ("outdated", "List outdated formulas"),
+                ("pin", "Pin a formula to prevent upgrades"),
+                ("reset", "Reset zerobrew (delete all data)"),
+                ("search", "Search for formulas"),
+                ("services", "Manage background services"),
+                ("shellenv", "Print shell environment setup"),
+                ("tap", "Manage third-party repositories"),
+                ("uninstall", "Uninstall a formula"),
+                ("unlink", "Remove symlinks for a keg"),
+                ("unpin", "Unpin a formula"),
+                ("untap", "Remove a tap repository"),
+                ("upgrade", "Upgrade outdated formulas"),
+                ("uses", "Show which formulas use a given formula"),
+                ("zb-commands", "List all available commands"),
+            ];
+
+            println!("{} Built-in commands:", style("==>").cyan().bold());
+            for (name, desc) in &builtin_commands {
+                println!("    {} {}", style(name).green().bold(), style(desc).dim());
+            }
+
+            // Find external commands
+            let external_commands = find_external_commands(&cli.root);
+            if !external_commands.is_empty() {
+                println!();
+                println!("{} External commands:", style("==>").cyan().bold());
+                for (name, path) in &external_commands {
+                    println!(
+                        "    {} ({})",
+                        style(name).green().bold(),
+                        style(path.display()).dim()
+                    );
+                }
+            }
+        }
+
+        Commands::External(args) => {
+            if args.is_empty() {
+                eprintln!("{} No command specified", style("error:").red().bold());
+                std::process::exit(1);
+            }
+
+            let cmd_name = &args[0];
+            let cmd_args = &args[1..];
+
+            // Look for zb-<cmd> executable
+            if let Some(cmd_path) = find_external_command(cmd_name, &cli.root) {
+                let status = Command::new(&cmd_path)
+                    .args(cmd_args)
+                    .env("ZB_ROOT", &cli.root)
+                    .env("ZB_PREFIX", &cli.prefix)
+                    .status();
+
+                match status {
+                    Ok(s) if s.success() => {}
+                    Ok(s) => {
+                        std::process::exit(s.code().unwrap_or(1));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "{} Failed to run external command '{}': {}",
+                            style("error:").red().bold(),
+                            cmd_name,
+                            e
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                eprintln!(
+                    "{} Unknown command '{}'\n\nRun 'zb zb-commands' to see available commands.",
+                    style("error:").red().bold(),
+                    cmd_name
+                );
+                std::process::exit(1);
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Find all external commands (zb-* executables in PATH and ~/.zerobrew/cmd/)
+fn find_external_commands(root: &Path) -> Vec<(String, PathBuf)> {
+    let mut commands = Vec::new();
+
+    // Look in ~/.zerobrew/cmd/
+    let cmd_dir = root.join("cmd");
+    if cmd_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&cmd_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && is_executable(&path) {
+                    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                        if let Some(cmd_name) = name.strip_prefix("zb-") {
+                            commands.push((cmd_name.to_string(), path));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Look in PATH for zb-* commands
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let dir_path = Path::new(dir);
+            if dir_path.exists() {
+                if let Ok(entries) = std::fs::read_dir(dir_path) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() && is_executable(&path) {
+                            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                                if let Some(cmd_name) = name.strip_prefix("zb-") {
+                                    // Don't add duplicates
+                                    if !commands.iter().any(|(n, _)| n == cmd_name) {
+                                        commands.push((cmd_name.to_string(), path));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    commands.sort_by(|a, b| a.0.cmp(&b.0));
+    commands
+}
+
+/// Find a specific external command
+fn find_external_command(name: &str, root: &Path) -> Option<PathBuf> {
+    let cmd_name = format!("zb-{}", name);
+
+    // First look in ~/.zerobrew/cmd/
+    let cmd_dir = root.join("cmd");
+    let local_cmd = cmd_dir.join(&cmd_name);
+    if local_cmd.exists() && is_executable(&local_cmd) {
+        return Some(local_cmd);
+    }
+
+    // Then look in PATH
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let cmd_path = Path::new(dir).join(&cmd_name);
+            if cmd_path.exists() && is_executable(&cmd_path) {
+                return Some(cmd_path);
+            }
+        }
+    }
+
+    None
+}
+
+/// Check if a file is executable
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = path.metadata() {
+        meta.permissions().mode() & 0o111 != 0
+    } else {
+        false
+    }
 }
 
 /// Detect the current shell from environment
