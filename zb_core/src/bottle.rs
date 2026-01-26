@@ -511,4 +511,347 @@ mod tests {
             assert!(!is_compatible_fallback_tag("x86_64_linux"));
         }
     }
+
+    // ========================================================================
+    // Edge case tests for bottle selection
+    // ========================================================================
+
+    /// Test bottle selection with multiple versions of same platform
+    #[test]
+    fn prefers_newer_macos_version_tag() {
+        // On macOS arm64, we prefer newer versions (tahoe > sequoia > sonoma)
+        // This test verifies the ordering in get_platform_tags()
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let tags = get_platform_tags();
+            assert!(tags.len() >= 2, "Should have multiple macOS tags");
+            // First tag should be newest
+            assert!(tags[0].contains("tahoe") || tags[0].contains("sequoia"));
+        }
+    }
+
+    /// Test that bottles with unusual but valid URLs work
+    #[test]
+    fn handles_ghcr_io_urls() {
+        let mut files = BTreeMap::new();
+
+        // Real Homebrew uses ghcr.io URLs
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let tag = "arm64_linux";
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let tag = "x86_64_linux";
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let tag = "arm64_sonoma";
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let tag = "sonoma";
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+        )))]
+        let tag = "all";
+
+        files.insert(
+            tag.to_string(),
+            BottleFile {
+                url: "https://ghcr.io/v2/homebrew/core/openssl%403.4/blobs/sha256:abc123def456".to_string(),
+                sha256: "abc123def456".to_string(),
+            },
+        );
+
+        let formula = Formula {
+            name: "openssl@3.4".to_string(),
+            versions: Versions {
+                stable: "3.4.1".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        let selected = select_bottle(&formula).unwrap();
+        assert!(selected.url.contains("ghcr.io"));
+        assert!(selected.url.contains("openssl"));
+    }
+
+    /// Test bottle selection with URL-encoded characters
+    #[test]
+    fn handles_url_encoded_bottle_urls() {
+        let mut files = BTreeMap::new();
+
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let tag = "arm64_linux";
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let tag = "x86_64_linux";
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let tag = "arm64_sonoma";
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let tag = "sonoma";
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+        )))]
+        let tag = "all";
+
+        files.insert(
+            tag.to_string(),
+            BottleFile {
+                url: "https://example.com/bottles/pkg%2B%2B-1.0.0.tar.gz".to_string(),
+                sha256: "encoded".to_string(),
+            },
+        );
+
+        let formula = Formula {
+            name: "pkg++".to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        let selected = select_bottle(&formula).unwrap();
+        assert!(selected.url.contains("%2B%2B"), "URL encoding should be preserved");
+    }
+
+    /// Test bottle with very long SHA256 (edge case validation)
+    #[test]
+    fn handles_standard_sha256_length() {
+        let mut files = BTreeMap::new();
+
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let tag = "arm64_linux";
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let tag = "x86_64_linux";
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let tag = "arm64_sonoma";
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let tag = "sonoma";
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+        )))]
+        let tag = "all";
+
+        let valid_sha256 = "a".repeat(64); // Standard SHA256 is 64 hex chars
+
+        files.insert(
+            tag.to_string(),
+            BottleFile {
+                url: "https://example.com/test.tar.gz".to_string(),
+                sha256: valid_sha256.clone(),
+            },
+        );
+
+        let formula = Formula {
+            name: "sha-test".to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        let selected = select_bottle(&formula).unwrap();
+        assert_eq!(selected.sha256.len(), 64);
+    }
+
+    /// Test that bottles with only incompatible architectures fail correctly
+    #[test]
+    fn rejects_incompatible_arch_only_bottles() {
+        let mut files = BTreeMap::new();
+
+        // Create bottle for a completely different architecture
+        #[cfg(target_arch = "aarch64")]
+        {
+            // On arm64, only x86_64 bottles available
+            files.insert(
+                "sonoma".to_string(), // x86_64 macOS
+                BottleFile {
+                    url: "https://example.com/x86.tar.gz".to_string(),
+                    sha256: "x86".to_string(),
+                },
+            );
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            // On x86_64, only arm64 bottles available
+            files.insert(
+                "arm64_sonoma".to_string(),
+                BottleFile {
+                    url: "https://example.com/arm64.tar.gz".to_string(),
+                    sha256: "arm64".to_string(),
+                },
+            );
+        }
+
+        let formula = Formula {
+            name: "wrong-arch-pkg".to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        let result = select_bottle(&formula);
+        // Should fail because architecture doesn't match
+        assert!(result.is_err(), "Should reject incompatible architecture");
+    }
+
+    /// Test bottle selection is deterministic (same input = same output)
+    #[test]
+    fn bottle_selection_is_deterministic() {
+        let mut files = BTreeMap::new();
+
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let tag = "arm64_linux";
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let tag = "x86_64_linux";
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let tag = "arm64_sonoma";
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let tag = "sonoma";
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+        )))]
+        let tag = "all";
+
+        files.insert(
+            tag.to_string(),
+            BottleFile {
+                url: "https://example.com/test.tar.gz".to_string(),
+                sha256: "test123".to_string(),
+            },
+        );
+        files.insert(
+            "all".to_string(),
+            BottleFile {
+                url: "https://example.com/all.tar.gz".to_string(),
+                sha256: "all123".to_string(),
+            },
+        );
+
+        let formula = Formula {
+            name: "deterministic".to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable {
+                    files: files.clone(),
+                    rebuild: 0,
+                },
+            },
+        };
+
+        // Run selection multiple times
+        let results: Vec<_> = (0..10).map(|_| select_bottle(&formula).unwrap()).collect();
+
+        // All results should be identical
+        for result in &results {
+            assert_eq!(result.tag, results[0].tag);
+            assert_eq!(result.url, results[0].url);
+            assert_eq!(result.sha256, results[0].sha256);
+        }
+    }
+
+    /// Test that formula name with special characters doesn't break selection
+    #[test]
+    fn handles_formula_names_with_special_chars() {
+        let mut files = BTreeMap::new();
+
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let tag = "arm64_linux";
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let tag = "x86_64_linux";
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let tag = "arm64_sonoma";
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let tag = "sonoma";
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+        )))]
+        let tag = "all";
+
+        files.insert(
+            tag.to_string(),
+            BottleFile {
+                url: "https://example.com/test.tar.gz".to_string(),
+                sha256: "test".to_string(),
+            },
+        );
+
+        // Test versioned formula name (e.g., python@3.12)
+        let formula = Formula {
+            name: "python@3.12".to_string(),
+            versions: Versions {
+                stable: "3.12.1".to_string(),
+            },
+            dependencies: Vec::new(),
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+        };
+
+        let selected = select_bottle(&formula).unwrap();
+        assert!(!selected.tag.is_empty());
+    }
+
+    /// Test version strings with various formats
+    #[test]
+    fn handles_various_version_formats() {
+        let test_versions = vec![
+            "1.0.0",
+            "1.0.0_1",       // With rebuild suffix
+            "2024-01-01",    // Date-based
+            "1.0.0-beta.1",  // Pre-release
+            "0.0.1",         // Very low version
+            "999.999.999",   // Very high version
+        ];
+
+        for version in test_versions {
+            let mut files = BTreeMap::new();
+            files.insert(
+                "all".to_string(),
+                BottleFile {
+                    url: format!("https://example.com/pkg-{}.tar.gz", version),
+                    sha256: "test".to_string(),
+                },
+            );
+
+            let formula = Formula {
+                name: "version-test".to_string(),
+                versions: Versions {
+                    stable: version.to_string(),
+                },
+                dependencies: Vec::new(),
+                bottle: Bottle {
+                    stable: BottleStable { files, rebuild: 0 },
+                },
+            };
+
+            let selected = select_bottle(&formula).unwrap();
+            assert_eq!(selected.tag, "all", "Should select 'all' for version {}", version);
+        }
+    }
 }

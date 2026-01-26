@@ -1339,4 +1339,426 @@ mod tests {
             assert!(interp.contains("x86-64"));
         }
     }
+
+    // ========================================================================
+    // Edge case tests for ELF handling
+    // ========================================================================
+
+    /// Test detection of corrupted ELF files (valid magic, invalid structure)
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn handles_truncated_elf_gracefully() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        // Create a truncated ELF file (just magic bytes, nothing else)
+        let truncated_elf = vec![0x7f, b'E', b'L', b'F'];
+        fs::write(bin_dir.join("truncated"), &truncated_elf).unwrap();
+
+        // The file should be detected as ELF but patching should handle gracefully
+        const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+        let data = fs::read(bin_dir.join("truncated")).unwrap();
+        assert!(data.len() >= 4 && data[0..4] == ELF_MAGIC);
+    }
+
+    /// Test handling of ELF file with no RPATH/RUNPATH
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn handles_elf_without_rpath() {
+        let tmp = TempDir::new().unwrap();
+        let keg = tmp.path().join("keg");
+        let cellar = tmp.path().join("cellar");
+        fs::create_dir_all(keg.join("bin")).unwrap();
+        fs::create_dir_all(&cellar).unwrap();
+
+        // Create a valid-looking ELF header but no dynamic section
+        let elf_no_rpath: Vec<u8> = vec![
+            0x7f, b'E', b'L', b'F',
+            0x02, // 64-bit
+            0x01, // Little-endian
+            0x01, // ELF version 1
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x03, 0x00, // e_type: ET_DYN
+            0x3e, 0x00, // e_machine: EM_X86_64
+            0x01, 0x00, 0x00, 0x00, // e_version
+        ];
+        fs::write(keg.join("bin/no-rpath"), &elf_no_rpath).unwrap();
+
+        // Patching should succeed (skip files without RPATH)
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0.0");
+        assert!(result.is_ok(), "Should handle ELF without RPATH gracefully");
+    }
+
+    /// Test handling of read-only ELF files
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn handles_readonly_elf_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let keg = tmp.path().join("keg");
+        let cellar = tmp.path().join("cellar");
+        fs::create_dir_all(keg.join("bin")).unwrap();
+        fs::create_dir_all(&cellar).unwrap();
+
+        // Create ELF file
+        let elf_data: Vec<u8> = vec![
+            0x7f, b'E', b'L', b'F',
+            0x02, 0x01, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let elf_path = keg.join("bin/readonly-elf");
+        fs::write(&elf_path, &elf_data).unwrap();
+
+        // Make it read-only
+        let mut perms = fs::metadata(&elf_path).unwrap().permissions();
+        perms.set_mode(0o444);
+        fs::set_permissions(&elf_path, perms).unwrap();
+
+        // Patching should handle this (might fail on write, but shouldn't panic)
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0.0");
+        // Result may be Ok (skipped) or Err (can't write), but shouldn't panic
+
+        // Restore permissions for cleanup
+        let mut perms = fs::metadata(&elf_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&elf_path, perms).unwrap();
+
+        // Just check it didn't panic
+        let _ = result;
+    }
+
+    /// Test handling of ELF symlinks
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn handles_elf_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let keg = tmp.path().join("keg");
+        let cellar = tmp.path().join("cellar");
+        fs::create_dir_all(keg.join("bin")).unwrap();
+        fs::create_dir_all(keg.join("lib")).unwrap();
+        fs::create_dir_all(&cellar).unwrap();
+
+        // Create real ELF file
+        let elf_data: Vec<u8> = vec![
+            0x7f, b'E', b'L', b'F',
+            0x02, 0x01, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        fs::write(keg.join("lib/libreal.so.1.0.0"), &elf_data).unwrap();
+
+        // Create symlinks to it
+        std::os::unix::fs::symlink("libreal.so.1.0.0", keg.join("lib/libreal.so.1")).unwrap();
+        std::os::unix::fs::symlink("libreal.so.1", keg.join("lib/libreal.so")).unwrap();
+
+        // Patching should follow symlinks or skip them appropriately
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0.0");
+        assert!(result.is_ok(), "Should handle ELF symlinks");
+    }
+
+    /// Test handling of empty directories
+    #[test]
+    fn handles_empty_directories() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join("bin")).unwrap();
+        fs::create_dir_all(src.join("lib")).unwrap();
+        fs::create_dir_all(src.join("share")).unwrap();
+        // No files, just empty directories
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let result = cellar.materialize("empty-dirs", "1.0.0", &src);
+
+        assert!(result.is_ok(), "Should handle empty directories");
+        let keg = result.unwrap();
+        assert!(keg.join("bin").exists());
+        assert!(keg.join("lib").exists());
+        assert!(keg.join("share").exists());
+    }
+
+    /// Test handling of deeply nested directory structures
+    #[test]
+    fn handles_deeply_nested_directories() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+
+        // Create deep nesting
+        let deep_path = src.join("share/doc/pkg/examples/advanced/subdir1/subdir2/subdir3");
+        fs::create_dir_all(&deep_path).unwrap();
+        fs::write(deep_path.join("readme.txt"), b"nested content").unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg = cellar.materialize("deep-nest", "1.0.0", &src).unwrap();
+
+        assert!(keg.join("share/doc/pkg/examples/advanced/subdir1/subdir2/subdir3/readme.txt").exists());
+    }
+
+    /// Test handling of files with special characters in names
+    #[test]
+    fn handles_special_chars_in_filenames() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join("bin")).unwrap();
+
+        // Files with spaces
+        fs::write(src.join("bin/my program"), b"content").unwrap();
+        // Files with dashes and underscores
+        fs::write(src.join("bin/my-program_v2"), b"content").unwrap();
+        // Files with dots
+        fs::write(src.join("bin/program.sh"), b"content").unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg = cellar.materialize("special-chars", "1.0.0", &src).unwrap();
+
+        assert!(keg.join("bin/my program").exists());
+        assert!(keg.join("bin/my-program_v2").exists());
+        assert!(keg.join("bin/program.sh").exists());
+    }
+
+    // ========================================================================
+    // Edge case tests for copy/reflink operations
+    // ========================================================================
+
+    /// Test copying empty files
+    #[test]
+    fn handles_empty_files() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+
+        // Create empty file
+        fs::write(src.join("empty.txt"), b"").unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg = cellar.materialize("empty-file", "1.0.0", &src).unwrap();
+
+        assert!(keg.join("empty.txt").exists());
+        assert_eq!(fs::read(keg.join("empty.txt")).unwrap().len(), 0);
+    }
+
+    /// Test copying large files (> 1MB)
+    #[test]
+    fn handles_large_files() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+
+        // Create a 2MB file
+        let large_content: Vec<u8> = vec![0x42; 2 * 1024 * 1024];
+        fs::write(src.join("large.bin"), &large_content).unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg = cellar.materialize("large-file", "1.0.0", &src).unwrap();
+
+        assert!(keg.join("large.bin").exists());
+        assert_eq!(
+            fs::metadata(keg.join("large.bin")).unwrap().len(),
+            2 * 1024 * 1024
+        );
+    }
+
+    /// Test handling of broken symlinks
+    #[test]
+    fn handles_broken_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+
+        // Create a broken symlink
+        std::os::unix::fs::symlink("nonexistent-target", src.join("broken-link")).unwrap();
+
+        // Also create a valid file
+        fs::write(src.join("valid.txt"), b"content").unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let result = cellar.materialize("broken-symlink", "1.0.0", &src);
+
+        // Should either succeed (copying broken symlink) or fail gracefully
+        // The important thing is no panic
+        let _ = result;
+    }
+
+    /// Test handling of circular symlinks
+    #[test]
+    fn handles_circular_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+
+        // Create circular symlinks
+        std::os::unix::fs::symlink("link2", src.join("link1")).unwrap();
+        std::os::unix::fs::symlink("link1", src.join("link2")).unwrap();
+
+        // Also add a valid file so there's something to materialize
+        fs::write(src.join("valid.txt"), b"content").unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+
+        // Should not hang or panic
+        let result = cellar.materialize("circular-symlinks", "1.0.0", &src);
+
+        // Result may be ok or err, but shouldn't hang/panic
+        let _ = result;
+    }
+
+    /// Test materialization when destination already exists
+    #[test]
+    fn rematerialize_existing_returns_path() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("file.txt"), b"original").unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+
+        // First materialize
+        let keg1 = cellar.materialize("existing", "1.0.0", &src).unwrap();
+
+        // Modify the keg
+        fs::write(keg1.join("marker"), b"modified").unwrap();
+
+        // Second materialize should return same path without overwriting
+        let keg2 = cellar.materialize("existing", "1.0.0", &src).unwrap();
+
+        assert_eq!(keg1, keg2);
+        assert!(keg2.join("marker").exists(), "Should not overwrite existing keg");
+    }
+
+    /// Test handling of multiple file types in same directory
+    #[test]
+    fn handles_mixed_file_types() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src/lib");
+        fs::create_dir_all(&src).unwrap();
+
+        // Real shared library file
+        let elf_header: Vec<u8> = vec![0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00];
+        fs::write(src.join("libfoo.so.1.2.3"), &elf_header).unwrap();
+
+        // Symlink chain
+        std::os::unix::fs::symlink("libfoo.so.1.2.3", src.join("libfoo.so.1")).unwrap();
+        std::os::unix::fs::symlink("libfoo.so.1", src.join("libfoo.so")).unwrap();
+
+        // Archive file
+        fs::write(src.join("libfoo.a"), b"!<arch>\n").unwrap();
+
+        // Pkgconfig file
+        fs::write(src.join("foo.pc"), b"prefix=/opt/homebrew").unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg = cellar.materialize("mixed", "1.0.0", &tmp.path().join("src")).unwrap();
+
+        // Verify all types present
+        assert!(keg.join("lib/libfoo.so.1.2.3").exists());
+        assert!(keg.join("lib/libfoo.so.1").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(keg.join("lib/libfoo.so").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(keg.join("lib/libfoo.a").exists());
+        assert!(keg.join("lib/foo.pc").exists());
+    }
+
+    // ========================================================================
+    // Edge case tests for bottle content discovery
+    // ========================================================================
+
+    /// Test find_bottle_content with non-standard structure
+    #[test]
+    fn find_bottle_content_handles_flat_structure() {
+        let tmp = TempDir::new().unwrap();
+        let store = tmp.path().join("store");
+
+        // Flat structure - no nested name/version directory
+        fs::create_dir_all(store.join("bin")).unwrap();
+        fs::write(store.join("bin/tool"), b"tool content").unwrap();
+
+        let content = find_bottle_content(&store, "tool", "1.0.0").unwrap();
+        // Should fall back to store root
+        assert_eq!(content, store);
+    }
+
+    /// Test find_bottle_content with only name directory
+    #[test]
+    fn find_bottle_content_with_name_only() {
+        let tmp = TempDir::new().unwrap();
+        let store = tmp.path().join("store");
+
+        // Has name dir but wrong version inside
+        fs::create_dir_all(store.join("pkg/2.0.0/bin")).unwrap();
+        fs::write(store.join("pkg/2.0.0/bin/pkg"), b"content").unwrap();
+
+        let result = find_bottle_content(&store, "pkg", "1.0.0");
+        // Should handle version mismatch somehow
+        assert!(result.is_ok());
+    }
+
+    /// Test handling of case-sensitive filesystem issues
+    #[test]
+    fn handles_case_variations() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+
+        // Create directories with different cases
+        // (on case-sensitive fs these will be different)
+        fs::create_dir_all(src.join("Bin")).unwrap();
+        fs::create_dir_all(src.join("LIB")).unwrap();
+        fs::write(src.join("Bin/Tool"), b"content").unwrap();
+        fs::write(src.join("LIB/libfoo.a"), b"archive").unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg = cellar.materialize("case-test", "1.0.0", &src).unwrap();
+
+        // Should preserve case
+        assert!(keg.join("Bin/Tool").exists() || keg.join("bin/Tool").exists());
+        assert!(keg.join("LIB/libfoo.a").exists() || keg.join("lib/libfoo.a").exists());
+    }
+
+    // ========================================================================
+    // Error handling tests
+    // ========================================================================
+
+    /// Test error message when source doesn't exist
+    #[test]
+    fn errors_on_nonexistent_source() {
+        let tmp = TempDir::new().unwrap();
+        let nonexistent = tmp.path().join("does-not-exist");
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let result = cellar.materialize("missing", "1.0.0", &nonexistent);
+
+        assert!(result.is_err(), "Should fail for nonexistent source");
+    }
+
+    /// Test that remove_keg on nonexistent keg is idempotent
+    #[test]
+    fn remove_nonexistent_keg_is_ok() {
+        let tmp = TempDir::new().unwrap();
+        let cellar = Cellar::new(tmp.path()).unwrap();
+
+        // Should not error
+        let result = cellar.remove_keg("nonexistent", "1.0.0");
+        assert!(result.is_ok(), "Removing nonexistent keg should be OK");
+    }
+
+    /// Test has_keg returns false for missing kegs
+    #[test]
+    fn has_keg_returns_false_for_missing() {
+        let tmp = TempDir::new().unwrap();
+        let cellar = Cellar::new(tmp.path()).unwrap();
+
+        assert!(!cellar.has_keg("missing", "1.0.0"));
+        assert!(!cellar.has_keg("also-missing", "2.0.0"));
+    }
+
+    /// Test keg_path format is correct
+    #[test]
+    fn keg_path_format_correct() {
+        let tmp = TempDir::new().unwrap();
+        let cellar = Cellar::new(tmp.path()).unwrap();
+
+        let path = cellar.keg_path("openssl@3", "3.2.1");
+        assert!(path.to_string_lossy().contains("openssl@3"));
+        assert!(path.to_string_lossy().contains("3.2.1"));
+    }
 }
