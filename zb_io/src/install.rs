@@ -31,7 +31,6 @@ pub struct Installer {
     linker: Linker,
     db: Database,
     tap_manager: TapManager,
-    taps_dir: PathBuf,
     prefix: PathBuf,
     cellar_path: PathBuf,
 }
@@ -102,7 +101,6 @@ impl Installer {
         linker: Linker,
         db: Database,
         tap_manager: TapManager,
-        taps_dir: PathBuf,
         prefix: PathBuf,
         cellar_path: PathBuf,
         download_concurrency: usize,
@@ -116,7 +114,6 @@ impl Installer {
             linker,
             db,
             tap_manager,
-            taps_dir,
             prefix,
             cellar_path,
         }
@@ -2171,7 +2168,6 @@ pub fn create_installer(
         linker,
         db,
         tap_manager,
-        taps_dir,
         prefix.to_path_buf(),
         cellar_path,
         download_concurrency,
@@ -2301,7 +2297,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("testpkg", true).await.unwrap();
@@ -2379,7 +2375,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("uninstallme", true).await.unwrap();
@@ -2459,7 +2455,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install and uninstall
         installer.install("gctest", true).await.unwrap();
@@ -2542,7 +2538,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install but don't uninstall
         installer.install("keepme", true).await.unwrap();
@@ -2656,7 +2652,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install main package (should also install dependency)
         installer.install("mainpkg", true).await.unwrap();
@@ -2752,7 +2748,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install root (should install all 5 packages)
         installer.install("root", true).await.unwrap();
@@ -2838,7 +2834,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install slow package (which depends on fast)
         // With streaming, fast should be extracted while slow is still downloading
@@ -2942,7 +2938,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install - should succeed (first download is valid in this test)
         installer.install("retrypkg", true).await.unwrap();
@@ -3064,7 +3060,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install main package - should succeed despite macos-only-dep not having Linux bottles
         let result = installer.install("mainpkg", true).await;
@@ -3190,7 +3186,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install old version
         installer.install("upgrademe", true).await.unwrap();
@@ -3284,7 +3280,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("current", true).await.unwrap();
@@ -3319,7 +3315,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Try to upgrade a package that's not installed
         let result = installer.upgrade_one("notinstalled", true, None).await;
@@ -3435,7 +3431,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install both packages at v1
         installer.install("pkg1", true).await.unwrap();
@@ -3501,7 +3497,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("uptodate", true).await.unwrap();
@@ -3579,7 +3575,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install with linking
         installer.install("linkedpkg", true).await.unwrap();
@@ -3640,7 +3636,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("pinnable", true).await.unwrap();
@@ -3693,7 +3689,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Try to pin a package that's not installed
         let result = installer.pin("notinstalled");
@@ -3793,7 +3789,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install both packages at v1
         installer.install("pkg1", true).await.unwrap();
@@ -3876,7 +3872,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install root package (should also install deppkg as dependency)
         installer.install("rootpkg", true).await.unwrap();
@@ -3956,7 +3952,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install mypkg (which installs mydep as dependency)
         installer.install("mypkg", true).await.unwrap();
@@ -4033,7 +4029,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install parent (which installs child as dependency)
         installer.install("parent", true).await.unwrap();
@@ -4114,7 +4110,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install app (which installs lib as dependency)
         installer.install("app", true).await.unwrap();
@@ -4157,7 +4153,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Marking a non-installed package as explicit should fail
         let result = installer.mark_explicit("nonexistent");
@@ -4220,7 +4216,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install and then uninstall
         installer.install("cleanuppkg", true).await.unwrap();
@@ -4301,7 +4297,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install and then uninstall
         installer.install("dryrunpkg", true).await.unwrap();
@@ -4377,7 +4373,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install but DON'T uninstall
         installer.install("keeppkg", true).await.unwrap();
@@ -4458,7 +4454,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install without linking
         installer.install("linkpkg", false).await.unwrap();
@@ -4542,7 +4538,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install with linking
         installer.install("unlinkpkg", true).await.unwrap();
@@ -4629,7 +4625,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install with linking
         installer.install("alreadylinked", true).await.unwrap();
@@ -4657,7 +4653,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Try to link non-existent package
         let result = installer.link("notinstalled", false, false);
@@ -4681,7 +4677,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Try to unlink non-existent package
         let result = installer.unlink("notinstalled");
@@ -4749,7 +4745,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install with linking
         installer.install("relinkpkg", true).await.unwrap();
@@ -4789,7 +4785,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // is_linked should return false for uninstalled package
         assert!(!installer.is_linked("nonexistent"));
@@ -4859,7 +4855,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Get direct deps (non-recursive)
         let deps = installer.get_deps("pkgA", false, false).await.unwrap();
@@ -4969,7 +4965,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Get leaves - should be independent and dependent (not deplib which is depended on)
         let leaves = installer.get_leaves().await.unwrap();
@@ -4996,7 +4992,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Doctor should run without panicking
         let result = installer.doctor().await;
