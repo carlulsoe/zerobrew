@@ -1,9 +1,42 @@
+//! Dependency resolution using topological sort.
+//!
+//! This module implements Kahn's algorithm to order package dependencies so that
+//! dependencies are always installed before the packages that depend on them.
+//!
+//! # Algorithm Overview
+//!
+//! 1. **Closure computation**: Find all transitive dependencies of the root package
+//! 2. **Graph construction**: Build a directed graph where edges point from
+//!    dependencies to dependents
+//! 3. **Topological sort**: Process packages with no remaining dependencies first,
+//!    removing them from the graph until all packages are ordered
+//! 4. **Cycle detection**: If not all packages can be ordered, a dependency cycle exists
+//!
+//! # Determinism
+//!
+//! The output order is deterministic: packages at the same dependency level are
+//! sorted alphabetically using `BTreeSet` for stable iteration order.
+
 use crate::{Error, Formula};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Map from package name to number of unprocessed dependencies
 type InDegreeMap = BTreeMap<String, usize>;
+
+/// Map from package name to set of packages that depend on it
 type AdjacencyMap = BTreeMap<String, BTreeSet<String>>;
 
+/// Resolve the transitive dependency closure for a package and return in install order.
+///
+/// Uses Kahn's algorithm for topological sorting, which naturally handles cycles
+/// by detecting when not all packages can be processed.
+///
+/// # Returns
+/// A vector of package names in installation order (dependencies before dependents).
+///
+/// # Errors
+/// - `MissingFormula` if the root package is not found
+/// - `DependencyCycle` if a circular dependency is detected
 pub fn resolve_closure(
     root: &str,
     formulas: &BTreeMap<String, Formula>,
@@ -49,6 +82,11 @@ pub fn resolve_closure(
     Ok(ordered)
 }
 
+/// Compute the transitive closure of dependencies for a package.
+///
+/// Uses depth-first traversal starting from the root package.
+/// Missing dependencies (e.g., `uses_from_macos` packages without Homebrew formulas)
+/// are skipped with a warning, but a missing root package is an error.
 fn compute_closure(
     root: &str,
     formulas: &BTreeMap<String, Formula>,
@@ -86,6 +124,13 @@ fn compute_closure(
     Ok(closure)
 }
 
+/// Build the dependency graph for topological sorting.
+///
+/// Returns two maps:
+/// - `indegree`: Count of unprocessed dependencies for each package
+/// - `adjacency`: Reverse edges (dependency -> dependents) for decrementing indegrees
+///
+/// Packages with indegree=0 have no unprocessed dependencies and can be installed.
 fn build_graph(
     closure: &BTreeSet<String>,
     formulas: &BTreeMap<String, Formula>,

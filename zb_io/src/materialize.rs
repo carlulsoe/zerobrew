@@ -1,3 +1,35 @@
+//! Materialization: copying packages from the content-addressable store to the Cellar.
+//!
+//! This module handles the "install" step where unpacked bottle contents are copied
+//! from the immutable store to a mutable Cellar directory where they can be used.
+//!
+//! # Copy Strategies
+//!
+//! Materialization uses a fallback chain for efficiency:
+//! 1. **Clonefile** (macOS APFS): Copy-on-write clone, instant and uses no extra disk space
+//! 2. **Hardlink**: Zero-copy on same filesystem, shares disk blocks
+//! 3. **Regular copy**: Standard file copy, used as final fallback
+//!
+//! # ELF Patching (Linux)
+//!
+//! Homebrew bottles contain binaries built for `/home/linuxbrew/.linuxbrew`.
+//! On zerobrew, we need to patch these binaries to use our prefix (`/opt/zerobrew/prefix`).
+//!
+//! The patching process:
+//! 1. Detect ELF binaries by magic bytes (`\x7fELF`)
+//! 2. Use `patchelf` to update:
+//!    - **RPATH**: Where the dynamic linker looks for shared libraries
+//!    - **Interpreter**: Path to the dynamic linker itself (`ld-linux.so`)
+//! 3. Gracefully handle missing `patchelf` (binaries may still work if system libraries are compatible)
+//!
+//! # Why Both RPATH and Interpreter?
+//!
+//! - **RPATH** tells the dynamic linker where to find the libraries the program needs
+//! - **Interpreter** tells the kernel which dynamic linker to use
+//!
+//! Homebrew bottles use their own dynamic linker to avoid glibc version mismatches.
+//! We patch both to point to zerobrew's prefix.
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -67,10 +99,19 @@ impl Drop for WriteGuard {
     }
 }
 
+/// Strategy used to copy files from store to Cellar.
+///
+/// Zerobrew tries strategies in order of efficiency:
+/// 1. `Clonefile` - Instant copy-on-write (macOS APFS/Linux btrfs+xfs)
+/// 2. `Hardlink` - Zero disk usage, shares blocks (same filesystem only)
+/// 3. `Copy` - Standard copy, always works
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyStrategy {
+    /// APFS clonefile / Linux reflink (copy-on-write)
     Clonefile,
+    /// Filesystem hardlink (shares disk blocks)
     Hardlink,
+    /// Standard file copy
     Copy,
 }
 

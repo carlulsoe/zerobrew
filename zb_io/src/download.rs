@@ -133,9 +133,17 @@ impl Downloader {
             .await
     }
 
-    /// Download with racing: start multiple parallel connections to the same URL
-    /// (hits different CDN edges) and optionally alternate mirrors.
-    /// First successful download wins, others are cancelled.
+    /// Download with racing: start multiple parallel connections simultaneously.
+    ///
+    /// This technique improves download speeds by:
+    /// 1. Opening multiple connections to the primary URL, which typically hit
+    ///    different CDN edges (controlled by `RACING_CONNECTIONS`)
+    /// 2. Adding any user-configured mirrors (via `HOMEBREW_BOTTLE_MIRRORS` env var)
+    ///
+    /// Connections are staggered by `RACING_STAGGER_MS` to give earlier connections
+    /// a head start. The first successful download wins and cancels the others.
+    ///
+    /// Only the first connection reports progress updates to avoid duplicate messages.
     async fn download_with_racing(
         &self,
         primary_url: &str,
