@@ -67,6 +67,10 @@ impl Cellar {
         #[cfg(target_os = "macos")]
         codesign_and_strip_xattrs(&keg_path)?;
 
+        // Patch Homebrew placeholders in ELF binaries (Linux)
+        #[cfg(target_os = "linux")]
+        patch_homebrew_placeholders_linux(&keg_path, &self.cellar_dir, name, version)?;
+
         Ok(keg_path)
     }
 
@@ -400,6 +404,216 @@ fn codesign_and_strip_xattrs(keg_path: &Path) -> Result<(), Error> {
             let _ = fs::set_permissions(path, perms);
         }
     });
+
+    Ok(())
+}
+
+/// Patch @@HOMEBREW_CELLAR@@ and @@HOMEBREW_PREFIX@@ placeholders in ELF binaries.
+/// Uses patchelf to modify RPATH/RUNPATH entries. Also fixes version mismatches.
+#[cfg(target_os = "linux")]
+fn patch_homebrew_placeholders_linux(
+    keg_path: &Path,
+    cellar_dir: &Path,
+    pkg_name: &str,
+    pkg_version: &str,
+) -> Result<(), Error> {
+    use rayon::prelude::*;
+    use regex::Regex;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Check if patchelf is available
+    if Command::new("patchelf")
+        .arg("--version")
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(true)
+    {
+        // patchelf not available - skip patching but don't fail
+        // Many simple packages work without rpath patching
+        return Ok(());
+    }
+
+    // Derive prefix from cellar (cellar_dir is typically prefix/Cellar)
+    let prefix = cellar_dir.parent().unwrap_or(Path::new("/opt/homebrew"));
+
+    let cellar_str = cellar_dir.to_string_lossy().to_string();
+    let prefix_str = prefix.to_string_lossy().to_string();
+
+    // Regex to match version mismatches in paths like /Cellar/ffmpeg/8.0.1_1/
+    let version_pattern = format!(r"(/{}/)([^/]+)(/)", regex::escape(pkg_name));
+    let version_regex = Regex::new(&version_pattern).ok();
+
+    // ELF magic bytes: 0x7f 'E' 'L' 'F'
+    const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+
+    // Collect all ELF files (skip symlinks to avoid double-processing)
+    let elf_files: Vec<PathBuf> = walkdir::WalkDir::new(keg_path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            if let Ok(data) = fs::read(e.path()) {
+                if data.len() >= 4 {
+                    return data[0..4] == ELF_MAGIC;
+                }
+            }
+            false
+        })
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    // Track patch failures
+    let patch_failures = AtomicUsize::new(0);
+
+    // Helper to patch a single rpath string
+    let patch_rpath = |rpath: &str| -> Option<String> {
+        let mut new_rpath = rpath.to_string();
+        let mut changed = false;
+
+        // Replace Homebrew placeholders
+        if rpath.contains("@@HOMEBREW_CELLAR@@") || rpath.contains("@@HOMEBREW_PREFIX@@") {
+            new_rpath = new_rpath
+                .replace("@@HOMEBREW_CELLAR@@", &cellar_str)
+                .replace("@@HOMEBREW_PREFIX@@", &prefix_str);
+            changed = true;
+        }
+
+        // Fix version mismatches for this package
+        if let Some(re) = &version_regex {
+            if re.is_match(&new_rpath) {
+                let replacement = format!("/{}/{}/", pkg_name, pkg_version);
+                let fixed = re.replace(&new_rpath, |caps: &regex::Captures| {
+                    let matched_version = &caps[2];
+                    if matched_version != pkg_version {
+                        replacement.clone()
+                    } else {
+                        caps[0].to_string()
+                    }
+                });
+                if fixed != new_rpath {
+                    new_rpath = fixed.to_string();
+                    changed = true;
+                }
+            }
+        }
+
+        if changed && new_rpath != rpath {
+            Some(new_rpath)
+        } else {
+            None
+        }
+    };
+
+    // Process ELF files in parallel
+    elf_files.par_iter().for_each(|path| {
+        // Get file permissions and make writable if needed
+        let metadata = match fs::metadata(path) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let original_mode = metadata.permissions().mode();
+        let is_readonly = original_mode & 0o200 == 0;
+
+        // Make writable for patching
+        if is_readonly {
+            let mut perms = metadata.permissions();
+            perms.set_mode(original_mode | 0o200);
+            if fs::set_permissions(path, perms).is_err() {
+                patch_failures.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+
+        // Get current RPATH/RUNPATH using patchelf --print-rpath
+        let rpath_output = Command::new("patchelf")
+            .args(["--print-rpath", &path.to_string_lossy()])
+            .output();
+
+        if let Ok(output) = rpath_output {
+            if output.status.success() {
+                let current_rpath = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+                if !current_rpath.is_empty() {
+                    // Process each path in RPATH (colon-separated)
+                    let new_rpath_parts: Vec<String> = current_rpath
+                        .split(':')
+                        .map(|p| patch_rpath(p).unwrap_or_else(|| p.to_string()))
+                        .collect();
+
+                    let new_rpath = new_rpath_parts.join(":");
+
+                    if new_rpath != current_rpath {
+                        // Apply the patched RPATH
+                        let result = Command::new("patchelf")
+                            .args(["--set-rpath", &new_rpath, &path.to_string_lossy()])
+                            .output();
+
+                        if result.map(|o| !o.status.success()).unwrap_or(true) {
+                            patch_failures.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also check and patch the interpreter (for executables)
+        let interp_output = Command::new("patchelf")
+            .args(["--print-interpreter", &path.to_string_lossy()])
+            .output();
+
+        if let Ok(output) = interp_output {
+            if output.status.success() {
+                let current_interp = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+                if !current_interp.is_empty() {
+                    // If interpreter contains Homebrew placeholder, use system loader
+                    let new_interp = if current_interp.contains("@@HOMEBREW") || current_interp.contains("ld.so") {
+                        // Use the system dynamic linker based on architecture
+                        #[cfg(target_arch = "aarch64")]
+                        { Some("/lib/ld-linux-aarch64.so.1".to_string()) }
+                        #[cfg(target_arch = "x86_64")]
+                        { Some("/lib64/ld-linux-x86-64.so.2".to_string()) }
+                        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+                        { None }
+                    } else {
+                        None
+                    };
+
+                    if let Some(interp) = new_interp {
+                        let result = Command::new("patchelf")
+                            .args(["--set-interpreter", &interp, &path.to_string_lossy()])
+                            .output();
+
+                        if result.map(|o| !o.status.success()).unwrap_or(true) {
+                            // Interpreter patching can fail for shared libraries, that's okay
+                            // Only count it as a real failure if we expected it to work
+                        }
+                    }
+                }
+            }
+        }
+
+        // Restore original permissions
+        if is_readonly {
+            let mut perms = metadata.permissions();
+            perms.set_mode(original_mode);
+            let _ = fs::set_permissions(path, perms);
+        }
+    });
+
+    let failures = patch_failures.load(Ordering::Relaxed);
+    if failures > 0 {
+        return Err(Error::StoreCorruption {
+            message: format!(
+                "failed to patch {} ELF files in {}",
+                failures,
+                keg_path.display()
+            ),
+        });
+    }
 
     Ok(())
 }

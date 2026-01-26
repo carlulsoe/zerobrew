@@ -198,23 +198,31 @@ Not all packages have `arm64_linux` bottles. May need graceful fallback messages
    - Graceful fallback when filesystem doesn't support reflinks
    - Preserves permissions and symlinks
 
+3. **ELF binary patching** (`zb_io/src/materialize.rs`)
+   - Added `patch_homebrew_placeholders_linux()` using patchelf
+   - Patches RPATH/RUNPATH entries with placeholders
+   - Patches interpreter to use system dynamic linker
+   - Graceful fallback if patchelf is not available
+   - Parallel processing with rayon for performance
+
 ### ⏳ Not Implemented (future work)
 
-1. **ELF binary patching**
-   - Linuxbrew bottles may have placeholders that need patching
-   - Would require `patchelf` or `goblin` crate
-   - Many simple packages work without this
+1. **Testing on various Linux distros**
+   - Tested on Debian Trixie (aarch64)
+   - Needs testing on Ubuntu, Fedora, Arch
+
+2. **CI/CD for Linux builds**
 
 ## Conclusion
 
-Linux support for zerobrew is **achievable with moderate effort**. The codebase is already structured for cross-platform support with clean `#[cfg]` guards.
+Linux support for zerobrew is **fully functional**. The codebase is structured for cross-platform support with clean `#[cfg]` guards.
 
 ### What's done:
 - ✅ Bottle selection for Linux (implemented)
 - ✅ Reflink optimization (implemented)
+- ✅ ELF binary patching via patchelf (implemented)
 
 ### What's left:
-- ⏳ ELF binary patching (4-8 hours, needed for complex packages)
 - ⏳ Testing on various Linux distros
 - ⏳ CI/CD for Linux builds
 
