@@ -112,6 +112,17 @@ enum Commands {
         dry_run: bool,
     },
 
+    /// Remove old versions and cache files
+    Cleanup {
+        /// Show what would be removed without doing it
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Remove cache files older than specified days (default: remove all unused)
+        #[arg(long)]
+        prune: Option<u32>,
+    },
+
     /// Reset zerobrew (delete all data for cold install testing)
     Reset {
         /// Skip confirmation prompt
@@ -1296,6 +1307,128 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             }
         }
 
+        Commands::Cleanup { dry_run, prune } => {
+            if dry_run {
+                println!(
+                    "{} Checking for files to clean up...",
+                    style("==>").cyan().bold()
+                );
+
+                let result = installer.cleanup_dry_run(prune)?;
+
+                if result.store_entries_removed == 0 && result.blobs_removed == 0 && result.http_cache_removed == 0 {
+                    println!("Nothing to clean up.");
+                    return Ok(());
+                }
+
+                println!(
+                    "{} Would remove:\n",
+                    style("==>").cyan().bold()
+                );
+
+                if result.store_entries_removed > 0 {
+                    println!(
+                        "  {} unreferenced store entries",
+                        style(result.store_entries_removed).yellow()
+                    );
+                }
+
+                if result.blobs_removed > 0 {
+                    println!(
+                        "  {} cached bottle downloads",
+                        style(result.blobs_removed).yellow()
+                    );
+                }
+
+                if result.http_cache_removed > 0 {
+                    println!(
+                        "  {} cached API responses",
+                        style(result.http_cache_removed).yellow()
+                    );
+                }
+
+                if result.bytes_freed > 0 {
+                    println!(
+                        "\n  Total: {}",
+                        style(format_bytes(result.bytes_freed)).yellow()
+                    );
+                }
+
+                println!(
+                    "\n    {} Run {} to clean up",
+                    style("→").dim(),
+                    style("zb cleanup").cyan()
+                );
+            } else {
+                println!(
+                    "{} Cleaning up...",
+                    style("==>").cyan().bold()
+                );
+
+                let result = installer.cleanup(prune)?;
+
+                if result.store_entries_removed == 0
+                    && result.blobs_removed == 0
+                    && result.temp_files_removed == 0
+                    && result.locks_removed == 0
+                    && result.http_cache_removed == 0
+                {
+                    println!("Nothing to clean up.");
+                    return Ok(());
+                }
+
+                println!();
+
+                if result.store_entries_removed > 0 {
+                    println!(
+                        "    {} Removed {} unreferenced store entries",
+                        style("✓").green(),
+                        result.store_entries_removed
+                    );
+                }
+
+                if result.blobs_removed > 0 {
+                    println!(
+                        "    {} Removed {} cached bottle downloads",
+                        style("✓").green(),
+                        result.blobs_removed
+                    );
+                }
+
+                if result.http_cache_removed > 0 {
+                    println!(
+                        "    {} Removed {} cached API responses",
+                        style("✓").green(),
+                        result.http_cache_removed
+                    );
+                }
+
+                if result.temp_files_removed > 0 {
+                    println!(
+                        "    {} Removed {} temp files/directories",
+                        style("✓").green(),
+                        result.temp_files_removed
+                    );
+                }
+
+                if result.locks_removed > 0 {
+                    println!(
+                        "    {} Removed {} stale lock files",
+                        style("✓").green(),
+                        result.locks_removed
+                    );
+                }
+
+                if result.bytes_freed > 0 {
+                    println!(
+                        "\n{} Freed {}",
+                        style("==>").cyan().bold(),
+                        style(format_bytes(result.bytes_freed)).green().bold()
+                    );
+                }
+            }
+        }
+
         Commands::Reset { yes } => {
             if !cli.root.exists() && !cli.prefix.exists() {
                 println!("Nothing to reset - directories do not exist.");
@@ -1537,6 +1670,23 @@ fn chrono_lite_format(timestamp: i64) -> String {
     format!("{:?}", dt)
 }
 
+/// Format bytes into a human-readable string (e.g., "1.5 GB")
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} bytes", bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1619,5 +1769,33 @@ mod tests {
 
         assert!(output.contains("export HOMEBREW_PREFIX="));
         assert!(output.contains("export PATH="));
+    }
+
+    #[test]
+    fn test_format_bytes_bytes() {
+        assert_eq!(format_bytes(0), "0 bytes");
+        assert_eq!(format_bytes(1), "1 bytes");
+        assert_eq!(format_bytes(512), "512 bytes");
+        assert_eq!(format_bytes(1023), "1023 bytes");
+    }
+
+    #[test]
+    fn test_format_bytes_kilobytes() {
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(10240), "10.0 KB");
+    }
+
+    #[test]
+    fn test_format_bytes_megabytes() {
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 + 512 * 1024), "1.5 MB");
+        assert_eq!(format_bytes(100 * 1024 * 1024), "100.0 MB");
+    }
+
+    #[test]
+    fn test_format_bytes_gigabytes() {
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0 GB");
     }
 }

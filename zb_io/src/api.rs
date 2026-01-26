@@ -244,6 +244,44 @@ impl ApiClient {
 
         Some(formula_name)
     }
+
+    /// Clean up HTTP cache entries older than the specified number of days
+    /// Returns the number of entries removed and their total size
+    pub fn cleanup_cache_older_than(&self, days: u32) -> Option<(usize, u64)> {
+        self.cache.as_ref().map(|c| {
+            let size = c.body_size_older_than(days).unwrap_or(0);
+            let removed = c.cleanup_older_than(days).unwrap_or(0);
+            (removed, size)
+        })
+    }
+
+    /// Clear all HTTP cache entries
+    /// Returns the number of entries removed and their total size
+    pub fn clear_cache(&self) -> Option<(usize, u64)> {
+        self.cache.as_ref().map(|c| {
+            let size = c.total_body_size().unwrap_or(0);
+            let removed = c.clear().unwrap_or(0);
+            (removed, size)
+        })
+    }
+
+    /// Count HTTP cache entries older than the specified days
+    pub fn cache_count_older_than(&self, days: u32) -> Option<(usize, u64)> {
+        self.cache.as_ref().map(|c| {
+            let count = c.count_older_than(days).unwrap_or(0);
+            let size = c.body_size_older_than(days).unwrap_or(0);
+            (count, size)
+        })
+    }
+
+    /// Get total count and size of HTTP cache entries
+    pub fn cache_stats(&self) -> Option<(usize, u64)> {
+        self.cache.as_ref().map(|c| {
+            let count = c.count().unwrap_or(0);
+            let size = c.total_body_size().unwrap_or(0);
+            (count, size)
+        })
+    }
 }
 
 impl Default for ApiClient {

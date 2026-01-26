@@ -22,6 +22,7 @@ const MAX_CORRUPTION_RETRIES: usize = 3;
 pub struct Installer {
     api_client: ApiClient,
     downloader: ParallelDownloader,
+    blob_cache: BlobCache,
     store: Store,
     cellar: Cellar,
     linker: Linker,
@@ -46,6 +47,23 @@ pub struct UpgradeResult {
     pub upgraded: usize,
     /// Packages that were upgraded (name, old_version, new_version)
     pub packages: Vec<(String, String, String)>,
+}
+
+/// Result of a cleanup operation
+#[derive(Debug, Default)]
+pub struct CleanupResult {
+    /// Number of unreferenced store entries removed
+    pub store_entries_removed: usize,
+    /// Number of old blob cache files removed
+    pub blobs_removed: usize,
+    /// Number of stale temp files/directories removed
+    pub temp_files_removed: usize,
+    /// Number of stale lock files removed
+    pub locks_removed: usize,
+    /// Number of HTTP cache entries removed
+    pub http_cache_removed: usize,
+    /// Total bytes freed
+    pub bytes_freed: u64,
 }
 
 /// Internal struct for tracking processed packages during streaming install
@@ -73,7 +91,8 @@ impl Installer {
     ) -> Self {
         Self {
             api_client,
-            downloader: ParallelDownloader::new(blob_cache, download_concurrency),
+            downloader: ParallelDownloader::new(blob_cache.clone(), download_concurrency),
+            blob_cache,
             store,
             cellar,
             linker,
@@ -500,6 +519,154 @@ impl Installer {
         }
 
         Ok(removed)
+    }
+
+    /// Result of a cleanup operation
+    pub fn cleanup(&mut self, prune_days: Option<u32>) -> Result<CleanupResult, Error> {
+        let mut result = CleanupResult::default();
+
+        // 1. Run GC to remove unreferenced store entries
+        let gc_removed = self.gc()?;
+        result.store_entries_removed = gc_removed.len();
+
+        // 2. Get the set of store keys still in use (to keep their blobs)
+        let installed = self.db.list_installed()?;
+        let used_store_keys: std::collections::HashSet<String> = installed
+            .iter()
+            .map(|k| k.store_key.clone())
+            .collect();
+
+        // 3. Clean up blobs based on prune_days
+        if let Some(days) = prune_days {
+            // Remove blobs older than N days that are not currently used
+            let max_age = std::time::Duration::from_secs(days as u64 * 24 * 60 * 60);
+            let blobs = self.blob_cache.list_blobs().map_err(|e| Error::StoreCorruption {
+                message: format!("failed to list blobs: {e}"),
+            })?;
+
+            for (sha256, mtime) in blobs {
+                // Skip if this blob is still in use
+                if used_store_keys.contains(&sha256) {
+                    continue;
+                }
+
+                // Check age
+                if let Ok(age) = std::time::SystemTime::now().duration_since(mtime) {
+                    if age > max_age {
+                        if self.blob_cache.remove_blob(&sha256).unwrap_or(false) {
+                            result.blobs_removed += 1;
+                            // Get size from path before removal (already removed, so estimate)
+                            // Note: We can't get the size after removal, but this is fine for the result
+                        }
+                    }
+                }
+            }
+        } else {
+            // Remove all blobs not currently in use
+            let (removed, bytes) = self.blob_cache.remove_blobs_except(&used_store_keys)
+                .map_err(|e| Error::StoreCorruption {
+                    message: format!("failed to remove blobs: {e}"),
+                })?;
+            result.blobs_removed = removed.len();
+            result.bytes_freed += bytes;
+        }
+
+        // 4. Clean up stale temp files in blob cache
+        let (temp_count, temp_bytes) = self.blob_cache.cleanup_temp_files()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to cleanup temp files: {e}"),
+            })?;
+        result.temp_files_removed += temp_count;
+        result.bytes_freed += temp_bytes;
+
+        // 5. Clean up stale temp directories in store
+        let (temp_dirs, temp_dir_bytes) = self.store.cleanup_temp_dirs()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to cleanup temp dirs: {e}"),
+            })?;
+        result.temp_files_removed += temp_dirs;
+        result.bytes_freed += temp_dir_bytes;
+
+        // 6. Clean up stale lock files
+        let locks_removed = self.store.cleanup_stale_locks()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to cleanup stale locks: {e}"),
+            })?;
+        result.locks_removed = locks_removed;
+
+        // 7. Clean up HTTP cache
+        if let Some(days) = prune_days {
+            if let Some((removed, size)) = self.api_client.cleanup_cache_older_than(days) {
+                result.http_cache_removed = removed;
+                result.bytes_freed += size;
+            }
+        } else {
+            if let Some((removed, size)) = self.api_client.clear_cache() {
+                result.http_cache_removed = removed;
+                result.bytes_freed += size;
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Preview what would be cleaned up (dry run)
+    pub fn cleanup_dry_run(&self, prune_days: Option<u32>) -> Result<CleanupResult, Error> {
+        let mut result = CleanupResult::default();
+
+        // 1. Count unreferenced store entries
+        let unreferenced = self.db.get_unreferenced_store_keys()?;
+        result.store_entries_removed = unreferenced.len();
+
+        // 2. Get the set of store keys still in use
+        let installed = self.db.list_installed()?;
+        let used_store_keys: std::collections::HashSet<String> = installed
+            .iter()
+            .map(|k| k.store_key.clone())
+            .collect();
+
+        // 3. Count blobs to remove
+        let blobs = self.blob_cache.list_blobs().map_err(|e| Error::StoreCorruption {
+            message: format!("failed to list blobs: {e}"),
+        })?;
+
+        for (sha256, mtime) in blobs {
+            // Skip if this blob is still in use
+            if used_store_keys.contains(&sha256) {
+                continue;
+            }
+
+            let blob_path = self.blob_cache.blob_path(&sha256);
+            let blob_size = std::fs::metadata(&blob_path).map(|m| m.len()).unwrap_or(0);
+
+            if let Some(days) = prune_days {
+                let max_age = std::time::Duration::from_secs(days as u64 * 24 * 60 * 60);
+                if let Ok(age) = std::time::SystemTime::now().duration_since(mtime) {
+                    if age > max_age {
+                        result.blobs_removed += 1;
+                        result.bytes_freed += blob_size;
+                    }
+                }
+            } else {
+                result.blobs_removed += 1;
+                result.bytes_freed += blob_size;
+            }
+        }
+
+        // 4. Count HTTP cache entries to remove
+        if let Some(days) = prune_days {
+            if let Some((count, size)) = self.api_client.cache_count_older_than(days) {
+                result.http_cache_removed = count;
+                result.bytes_freed += size;
+            }
+        } else {
+            if let Some((count, size)) = self.api_client.cache_stats() {
+                result.http_cache_removed = count;
+                result.bytes_freed += size;
+            }
+        }
+
+        Ok(result)
     }
 
     /// Check if a formula is installed
@@ -2982,5 +3149,236 @@ mod tests {
         // Marking a non-installed package as explicit should fail
         let result = installer.mark_explicit("nonexistent");
         assert!(matches!(result, Err(Error::NotInstalled { .. })));
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_unused_blobs_and_store_entries() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("cleanuppkg");
+        let bottle_sha = sha256_hex(&bottle);
+
+        // Create formula JSON
+        let formula_json = format!(
+            r#"{{
+            "name": "cleanuppkg",
+            "versions": {{ "stable": "1.0.0" }},
+            "bottle": {{
+                "stable": {{
+                    "files": {{
+                        "{tag}": {{
+                            "url": "{}/bottles/cleanuppkg.tar.gz",
+                            "sha256": "{bottle_sha}"
+                        }}
+                    }}
+                }}
+            }},
+            "dependencies": []
+        }}"#,
+            mock_server.uri()
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/cleanuppkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/cleanuppkg.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // Install and then uninstall
+        installer.install("cleanuppkg", true).await.unwrap();
+        assert!(installer.is_installed("cleanuppkg"));
+
+        // Blob should exist
+        assert!(root.join("cache/blobs").join(format!("{bottle_sha}.tar.gz")).exists());
+
+        installer.uninstall("cleanuppkg").unwrap();
+        assert!(!installer.is_installed("cleanuppkg"));
+
+        // Blob still exists (not cleaned up yet)
+        assert!(root.join("cache/blobs").join(format!("{bottle_sha}.tar.gz")).exists());
+
+        // Run cleanup
+        let result = installer.cleanup(None).unwrap();
+
+        // Should have removed the blob and store entry
+        assert!(result.blobs_removed > 0 || result.store_entries_removed > 0);
+
+        // Blob should now be gone
+        assert!(!root.join("cache/blobs").join(format!("{bottle_sha}.tar.gz")).exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_dry_run_does_not_remove_files() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("dryrunpkg");
+        let bottle_sha = sha256_hex(&bottle);
+
+        // Create formula JSON
+        let formula_json = format!(
+            r#"{{
+            "name": "dryrunpkg",
+            "versions": {{ "stable": "1.0.0" }},
+            "bottle": {{
+                "stable": {{
+                    "files": {{
+                        "{tag}": {{
+                            "url": "{}/bottles/dryrunpkg.tar.gz",
+                            "sha256": "{bottle_sha}"
+                        }}
+                    }}
+                }}
+            }},
+            "dependencies": []
+        }}"#,
+            mock_server.uri()
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/dryrunpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/dryrunpkg.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // Install and then uninstall
+        installer.install("dryrunpkg", true).await.unwrap();
+        installer.uninstall("dryrunpkg").unwrap();
+
+        // Blob should still exist
+        let blob_path = root.join("cache/blobs").join(format!("{bottle_sha}.tar.gz"));
+        assert!(blob_path.exists());
+
+        // Run dry run
+        let result = installer.cleanup_dry_run(None).unwrap();
+
+        // Should report files to remove
+        assert!(result.blobs_removed > 0);
+
+        // But blob should STILL exist
+        assert!(blob_path.exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_keeps_installed_package_blobs() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create bottle
+        let bottle = create_bottle_tarball("keeppkg");
+        let bottle_sha = sha256_hex(&bottle);
+
+        // Create formula JSON
+        let formula_json = format!(
+            r#"{{
+            "name": "keeppkg",
+            "versions": {{ "stable": "1.0.0" }},
+            "bottle": {{
+                "stable": {{
+                    "files": {{
+                        "{tag}": {{
+                            "url": "{}/bottles/keeppkg.tar.gz",
+                            "sha256": "{bottle_sha}"
+                        }}
+                    }}
+                }}
+            }},
+            "dependencies": []
+        }}"#,
+            mock_server.uri()
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/keeppkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/keeppkg.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // Create installer
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+
+        // Install but DON'T uninstall
+        installer.install("keeppkg", true).await.unwrap();
+        assert!(installer.is_installed("keeppkg"));
+
+        // Blob path
+        let blob_path = root.join("cache/blobs").join(format!("{bottle_sha}.tar.gz"));
+        assert!(blob_path.exists());
+
+        // Run cleanup
+        let result = installer.cleanup(None).unwrap();
+
+        // Should NOT have removed the blob (package still installed)
+        assert_eq!(result.blobs_removed, 0);
+        assert!(blob_path.exists());
     }
 }

@@ -627,13 +627,81 @@ $ zb install homebrew/services/some-formula  # Parses Ruby if no JSON
 
 ---
 
+### 13. Enhanced Cleanup Command with HTTP Cache (Phase 2.3) ✅
+
+**Files modified:**
+- `zb_io/src/cache.rs` - Added HTTP cache cleanup methods
+- `zb_io/src/api.rs` - Added API client cache cleanup methods
+- `zb_io/src/install.rs` - Added HTTP cache cleanup to CleanupResult and cleanup methods
+- `zb_cli/src/main.rs` - Updated CLI to show HTTP cache cleanup stats
+
+**Features:**
+- HTTP cache cleanup with age-based pruning: `zb cleanup --prune=30`
+- Clear all unused HTTP cache: `zb cleanup` (no prune days)
+- Dry-run mode shows HTTP cache entries to be removed
+- Tracks HTTP cache entries removed and bytes freed
+- Existing blob cache, store, temp file, and lock cleanup still functional
+
+**HTTP cache cleanup methods added to ApiCache:**
+- `cleanup_older_than(days)` - Remove entries older than N days
+- `clear()` - Remove all entries
+- `count()` - Count total entries
+- `count_older_than(days)` - Count old entries
+- `total_body_size()` - Get total cache size
+- `body_size_older_than(days)` - Get size of old entries
+
+**Example usage:**
+```bash
+# Dry run - see what would be cleaned
+$ zb cleanup --dry-run
+==> Checking for files to clean up...
+==> Would remove:
+
+  3 unreferenced store entries
+  5 cached bottle downloads
+  12 cached API responses
+
+  Total: 45.2 MB
+
+    → Run zb cleanup to clean up
+
+# Clean with 30-day prune threshold
+$ zb cleanup --prune=30
+==> Cleaning up...
+
+    ✓ Removed 3 unreferenced store entries
+    ✓ Removed 5 cached bottle downloads
+    ✓ Removed 8 cached API responses
+    ✓ Removed 2 temp files/directories
+
+==> Freed 45.2 MB
+
+# Clean everything unused
+$ zb cleanup
+==> Cleaning up...
+
+    ✓ Removed 12 cached API responses
+
+==> Freed 2.1 MB
+```
+
+**New tests (8 total):**
+- `count_returns_number_of_entries` - Tests counting cache entries
+- `clear_removes_all_entries` - Tests clearing all entries
+- `total_body_size_returns_sum_of_body_lengths` - Tests size calculation
+- `cleanup_older_than_removes_old_entries` - Tests age-based cleanup
+- `count_older_than_returns_count_of_old_entries` - Tests counting old entries
+- `body_size_older_than_returns_size_of_old_entries` - Tests size of old entries
+
+---
+
 ## Phase 2 Progress
 
 | Task | Status |
 |------|--------|
 | 2.1 Tap support | ✅ Complete |
 | 2.2 Formula Ruby parser | ✅ Complete |
-| 2.3 Cleanup command | ⏳ Pending |
+| 2.3 Cleanup command | ✅ Complete |
 | 2.4 Link/unlink commands | ⏳ Pending |
 | 2.5 Deps/uses commands | ⏳ Pending |
 | 2.6 Leaves command | ⏳ Pending |
@@ -643,11 +711,10 @@ $ zb install homebrew/services/some-formula  # Parses Ruby if no JSON
 
 ## Next Steps (Remaining Phase 2)
 
-1. Implement cleanup command (2.3)
-2. Implement link/unlink commands (2.4)
-3. Implement deps/uses commands (2.5)
-4. Implement leaves command (2.6)
-5. Implement doctor command (2.7)
+1. Implement link/unlink commands (2.4)
+2. Implement deps/uses commands (2.5)
+3. Implement leaves command (2.6)
+4. Implement doctor command (2.7)
 
 ---
 
@@ -664,3 +731,4 @@ $ zb install homebrew/services/some-formula  # Parses Ruby if no JSON
 - Shellenv command compatible with Homebrew's output format
 - Ruby formula parser uses tree-sitter for reliable parsing without Ruby interpreter
 - Tap support now works with both JSON and Ruby formulas
+- Cleanup command now includes HTTP cache cleanup with prune days support
