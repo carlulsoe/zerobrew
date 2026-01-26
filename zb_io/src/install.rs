@@ -2,8 +2,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use std::collections::HashSet;
+
 use crate::api::ApiClient;
 use crate::blob::BlobCache;
+use crate::bundle::{self, BrewfileEntry, BundleCheckResult, BundleInstallResult};
 use crate::db::{Database, InstalledTap};
 use crate::download::{
     DownloadProgressCallback, DownloadRequest, DownloadResult, ParallelDownloader,
@@ -1848,6 +1851,154 @@ impl Installer {
             files_linked: linked_files.len(),
             head,
         })
+    }
+
+    // ==================== Bundle/Brewfile Methods ====================
+
+    /// Check which entries from a Brewfile are not satisfied
+    pub fn bundle_check(&self, brewfile_path: &Path) -> Result<BundleCheckResult, Error> {
+        let entries = bundle::read_brewfile(brewfile_path)?;
+
+        // Get installed formulas
+        let installed_kegs = self.db.list_installed()?;
+        let installed_formulas: HashSet<String> = installed_kegs
+            .iter()
+            .map(|k| k.name.clone())
+            .collect();
+
+        // Get installed taps
+        let installed_taps_list = self.db.list_taps()?;
+        let installed_taps: HashSet<String> = installed_taps_list
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+
+        Ok(bundle::check_brewfile(&entries, &installed_formulas, &installed_taps))
+    }
+
+    /// Generate a Brewfile from installed packages and taps
+    pub fn bundle_dump(&self, include_comments: bool) -> Result<String, Error> {
+        // Get installed taps
+        let taps: Vec<String> = self.db
+            .list_taps()?
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+
+        // Get explicitly installed formulas (not dependencies)
+        let formulas: Vec<String> = self.db
+            .list_installed()?
+            .iter()
+            .filter(|k| k.explicit)
+            .map(|k| k.name.clone())
+            .collect();
+
+        Ok(bundle::generate_brewfile(&taps, &formulas, include_comments))
+    }
+
+    /// Install packages from a Brewfile
+    pub async fn bundle_install(
+        &mut self,
+        brewfile_path: &Path,
+    ) -> Result<BundleInstallResult, Error>
+    {
+        let entries = bundle::read_brewfile(brewfile_path)?;
+
+        let mut result = BundleInstallResult::default();
+
+        // Get currently installed formulas and taps
+        let installed_kegs = self.db.list_installed()?;
+        let installed_formulas: HashSet<String> = installed_kegs
+            .iter()
+            .map(|k| k.name.clone())
+            .collect();
+
+        let installed_taps_list = self.db.list_taps()?;
+        let installed_taps: HashSet<String> = installed_taps_list
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+
+        // Process taps first
+        for entry in &entries {
+            if let BrewfileEntry::Tap { name } = entry {
+                let normalized = bundle::check_brewfile(
+                    &[entry.clone()],
+                    &HashSet::new(),
+                    &installed_taps,
+                );
+                if !normalized.missing_taps.is_empty() {
+                    // Parse tap name (user/repo)
+                    if let Some((user, repo)) = name.split_once('/') {
+                        match self.add_tap(user, repo).await {
+                            Ok(_) => {
+                                result.taps_added.push(name.clone());
+                            }
+                            Err(e) => {
+                                result.failed.push((name.clone(), e.to_string()));
+                            }
+                        }
+                    } else {
+                        result.failed.push((name.clone(), "invalid tap name".to_string()));
+                    }
+                }
+            }
+        }
+
+        // Process formulas
+        for entry in &entries {
+            if let BrewfileEntry::Brew { name, args } = entry {
+                // Extract formula name (handle user/repo/formula format)
+                let formula_name = {
+                    let parts: Vec<_> = name.split('/').collect();
+                    if parts.len() == 3 {
+                        parts[2].to_string()
+                    } else {
+                        name.clone()
+                    }
+                };
+
+                // Check if already installed
+                if installed_formulas.contains(&formula_name) {
+                    result.formulas_skipped.push(name.clone());
+                    continue;
+                }
+
+                // Check for HEAD flag in args
+                let is_head = args.iter().any(|a| a == "--HEAD" || a == "-H");
+                let is_source = args.iter().any(|a| a == "--build-from-source" || a == "-s");
+
+                // Install the formula
+                let install_result = if is_head || is_source {
+                    self.install_from_source(name, true, is_head).await
+                        .map(|r| r.name)
+                } else {
+                    self.install(name, true).await
+                        .map(|_| name.clone())
+                };
+
+                match install_result {
+                    Ok(_) => {
+                        result.formulas_installed.push(name.clone());
+                    }
+                    Err(e) => {
+                        result.failed.push((name.clone(), e.to_string()));
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Parse a Brewfile and return its entries
+    pub fn parse_brewfile(&self, path: &Path) -> Result<Vec<BrewfileEntry>, Error> {
+        bundle::read_brewfile(path)
+    }
+
+    /// Find a Brewfile in the given directory or its parents
+    pub fn find_brewfile(&self, start_dir: &Path) -> Option<PathBuf> {
+        bundle::find_brewfile(start_dir)
     }
 }
 

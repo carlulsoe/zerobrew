@@ -1365,17 +1365,126 @@ $ zb install --HEAD neovim
 
 ---
 
-## Next Steps (Phase 4.3+)
+### 23. Bundle/Brewfile Support (Phase 5.1) ✅
+
+**Files created/modified:**
+- `zb_io/src/bundle.rs` (NEW) - Brewfile parsing, checking, and generation
+- `zb_io/src/lib.rs` - Exported bundle module and types
+- `zb_io/src/install.rs` - Added bundle_check, bundle_dump, bundle_install, parse_brewfile, find_brewfile methods
+- `zb_cli/src/main.rs` - Added `zb bundle` command with subcommands
+
+**Brewfile syntax supported:**
+```text
+# Comments are supported
+tap "user/repo"                        # Add a tap
+brew "formula"                         # Install a formula
+brew "formula", args: ["--HEAD"]       # Install with args
+```
+
+**New CLI commands:**
+
+**`zb bundle`** (or `zb bundle install`) - Install from Brewfile:
+- Searches for Brewfile in current directory or parent directories
+- Installs missing taps first, then formulas
+- Skips already-installed formulas
+- Supports `--file <path>` to specify Brewfile location
+- Handles `--HEAD` and `--build-from-source` args in Brewfile entries
+
+**`zb bundle dump`** - Generate Brewfile from installed packages:
+- Outputs installed taps and explicitly-installed formulas
+- `--file <path>` to write to file (default: stdout)
+- `--describe` to include comments and formatting
+- `--force` to overwrite existing file
+
+**`zb bundle check`** - Check if Brewfile is satisfied:
+- Reports missing taps and formulas
+- `--strict` to exit with code 1 if any entries missing
+- `--file <path>` to specify Brewfile location
+
+**`zb bundle list`** - List Brewfile entries:
+- Shows all taps and formulas from Brewfile
+- `--file <path>` to specify Brewfile location
+
+**Example usage:**
+```bash
+# Install from Brewfile
+$ zb bundle
+==> Installing from ./Brewfile
+
+==> Taps added:
+    ✓ homebrew/services
+
+==> Formulas installed:
+    ✓ git
+    ✓ ripgrep
+
+==> Already installed:
+    - neovim
+
+==> Bundle complete. 3 installed, 1 already satisfied.
+
+# Generate Brewfile
+$ zb bundle dump --file Brewfile --describe
+==> Brewfile written to Brewfile
+
+# Check Brewfile
+$ zb bundle check
+==> Checking ./Brewfile
+==> All entries are satisfied!
+
+# List Brewfile entries
+$ zb bundle list
+==> Entries in ./Brewfile:
+
+tap  homebrew/services
+brew git
+brew ripgrep
+brew neovim (--HEAD)
+
+==> 1 taps, 3 formulas
+```
+
+**New tests (14 total):**
+- `parse_simple_tap` - Tests tap directive parsing
+- `parse_simple_brew` - Tests brew directive parsing
+- `parse_brew_with_args` - Tests args: [...] parsing
+- `parse_brew_with_multiple_args` - Tests multiple args
+- `parse_comments_and_empty_lines` - Tests comment handling
+- `parse_full_brewfile` - Tests complete Brewfile parsing
+- `entry_to_brewfile_line` - Tests entry serialization
+- `generate_brewfile_basic` - Tests Brewfile generation
+- `check_brewfile_all_satisfied` - Tests satisfied check
+- `check_brewfile_missing_formula` - Tests missing formula detection
+- `check_brewfile_missing_tap` - Tests missing tap detection
+- `normalize_tap_name_strips_homebrew_prefix` - Tests tap normalization
+- `extract_formula_name_handles_qualified_names` - Tests name extraction
+- `parse_quoted_string_works` - Tests string parsing
+- `parse_args_array_works` - Tests args array parsing
+
+---
+
+## Phase 5.1 Complete! 🎉
+
+| Task | Status |
+|------|--------|
+| 5.1 Bundle/Brewfile install | ✅ Complete |
+| 5.2 Bundle dump | ✅ Complete |
+| 5.3 Bundle check | ✅ Complete |
+| 5.4 Bundle list | ✅ Complete |
+
+---
+
+## Next Steps (Phase 5.2+)
+
+Remaining Phase 5 (Ecosystem) tasks:
+- Versioned formulas (python@3.11, etc.)
+- External commands (`zb-*` in PATH)
+- Analytics (opt-in)
 
 Remaining Phase 4 tasks:
-1. Test source builds with real formulas (jq, curl, etc.)
-2. Add patch support for formulas that need patches
-3. Handle bottle generation from source builds
-
-Phase 5 (Ecosystem) tasks:
-- Bundle/Brewfile support
-- Versioned formulas
-- External commands
+- Test source builds with real formulas (jq, curl, etc.)
+- Add patch support for formulas that need patches
+- Handle bottle generation from source builds
 
 Additional improvements to consider:
 - Service dependency ordering
@@ -1400,3 +1509,4 @@ Additional improvements to consider:
 - Cleanup command now includes HTTP cache cleanup with prune days support
 - Link/unlink commands allow fine-grained control over symlink creation
 - Services module provides cross-platform service management (systemd/launchd)
+- Bundle module provides Brewfile compatibility for declarative package management

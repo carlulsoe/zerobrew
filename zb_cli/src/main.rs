@@ -223,6 +223,12 @@ enum Commands {
         #[command(subcommand)]
         action: Option<ServicesAction>,
     },
+
+    /// Install from a Brewfile or manage Brewfile configuration
+    Bundle {
+        #[command(subcommand)]
+        action: Option<BundleAction>,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -295,6 +301,49 @@ enum ServicesAction {
         /// Show what would be removed without removing
         #[arg(short = 'n', long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum BundleAction {
+    /// Install all entries from a Brewfile (default when running 'zb bundle')
+    Install {
+        /// Path to Brewfile (default: ./Brewfile or parent directories)
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+    },
+
+    /// Generate a Brewfile from installed packages
+    Dump {
+        /// Path to write Brewfile (default: stdout)
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+
+        /// Include comments and formatting
+        #[arg(long)]
+        describe: bool,
+
+        /// Overwrite existing file without prompting
+        #[arg(long, short = 'f')]
+        force: bool,
+    },
+
+    /// Check if all Brewfile entries are satisfied
+    Check {
+        /// Path to Brewfile (default: ./Brewfile or parent directories)
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+
+        /// Exit with code 1 if any entries are not satisfied
+        #[arg(long)]
+        strict: bool,
+    },
+
+    /// List all entries from a Brewfile
+    List {
+        /// Path to Brewfile (default: ./Brewfile or parent directories)
+        #[arg(short, long)]
+        file: Option<PathBuf>,
     },
 }
 
@@ -2593,6 +2642,287 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                             if count == 1 { "" } else { "s" }
                         );
                     }
+                }
+            }
+        }
+
+        Commands::Bundle { action } => {
+            let cwd = std::env::current_dir().map_err(|e| zb_core::Error::StoreCorruption {
+                message: format!("failed to get current directory: {}", e),
+            })?;
+
+            match action {
+                None | Some(BundleAction::Install { file: None }) => {
+                    // Default: install from Brewfile
+                    let brewfile_path = installer.find_brewfile(&cwd).ok_or_else(|| {
+                        zb_core::Error::StoreCorruption {
+                            message: "No Brewfile found in current directory or parent directories".to_string(),
+                        }
+                    })?;
+
+                    println!(
+                        "{} Installing from {}",
+                        style("==>").cyan().bold(),
+                        brewfile_path.display()
+                    );
+
+                    let result = installer.bundle_install(&brewfile_path).await?;
+
+                    // Report results
+                    if !result.taps_added.is_empty() {
+                        println!();
+                        println!("{} Taps added:", style("==>").cyan().bold());
+                        for tap in &result.taps_added {
+                            println!("    {} {}", style("✓").green(), tap);
+                        }
+                    }
+
+                    if !result.formulas_installed.is_empty() {
+                        println!();
+                        println!("{} Formulas installed:", style("==>").cyan().bold());
+                        for formula in &result.formulas_installed {
+                            println!("    {} {}", style("✓").green(), formula);
+                        }
+                    }
+
+                    if !result.formulas_skipped.is_empty() {
+                        println!();
+                        println!("{} Already installed:", style("==>").cyan().bold());
+                        for formula in &result.formulas_skipped {
+                            println!("    {} {}", style("-").dim(), formula);
+                        }
+                    }
+
+                    if !result.failed.is_empty() {
+                        println!();
+                        println!("{} Failed:", style("==>").red().bold());
+                        for (name, error) in &result.failed {
+                            println!("    {} {}: {}", style("✗").red(), name, error);
+                        }
+                    }
+
+                    // Summary
+                    println!();
+                    let total_installed = result.taps_added.len() + result.formulas_installed.len();
+                    if result.failed.is_empty() {
+                        println!(
+                            "{} Bundle complete. {} installed, {} already satisfied.",
+                            style("==>").cyan().bold(),
+                            total_installed,
+                            result.formulas_skipped.len()
+                        );
+                    } else {
+                        println!(
+                            "{} Bundle complete with errors. {} installed, {} already satisfied, {} failed.",
+                            style("==>").yellow().bold(),
+                            total_installed,
+                            result.formulas_skipped.len(),
+                            result.failed.len()
+                        );
+                        std::process::exit(1);
+                    }
+                }
+
+                Some(BundleAction::Install { file: Some(path) }) => {
+                    println!(
+                        "{} Installing from {}",
+                        style("==>").cyan().bold(),
+                        path.display()
+                    );
+
+                    let result = installer.bundle_install(&path).await?;
+
+                    // Same reporting as above
+                    if !result.taps_added.is_empty() {
+                        println!();
+                        println!("{} Taps added:", style("==>").cyan().bold());
+                        for tap in &result.taps_added {
+                            println!("    {} {}", style("✓").green(), tap);
+                        }
+                    }
+
+                    if !result.formulas_installed.is_empty() {
+                        println!();
+                        println!("{} Formulas installed:", style("==>").cyan().bold());
+                        for formula in &result.formulas_installed {
+                            println!("    {} {}", style("✓").green(), formula);
+                        }
+                    }
+
+                    if !result.formulas_skipped.is_empty() {
+                        println!();
+                        println!("{} Already installed:", style("==>").cyan().bold());
+                        for formula in &result.formulas_skipped {
+                            println!("    {} {}", style("-").dim(), formula);
+                        }
+                    }
+
+                    if !result.failed.is_empty() {
+                        println!();
+                        println!("{} Failed:", style("==>").red().bold());
+                        for (name, error) in &result.failed {
+                            println!("    {} {}: {}", style("✗").red(), name, error);
+                        }
+                    }
+
+                    let total_installed = result.taps_added.len() + result.formulas_installed.len();
+                    println!();
+                    if result.failed.is_empty() {
+                        println!(
+                            "{} Bundle complete. {} installed, {} already satisfied.",
+                            style("==>").cyan().bold(),
+                            total_installed,
+                            result.formulas_skipped.len()
+                        );
+                    } else {
+                        println!(
+                            "{} Bundle complete with errors. {} installed, {} already satisfied, {} failed.",
+                            style("==>").yellow().bold(),
+                            total_installed,
+                            result.formulas_skipped.len(),
+                            result.failed.len()
+                        );
+                        std::process::exit(1);
+                    }
+                }
+
+                Some(BundleAction::Dump { file, describe, force }) => {
+                    let content = installer.bundle_dump(describe)?;
+
+                    if let Some(path) = file {
+                        // Check if file exists and force flag not set
+                        if path.exists() && !force {
+                            eprintln!(
+                                "{} File '{}' already exists. Use --force to overwrite.",
+                                style("error:").red().bold(),
+                                path.display()
+                            );
+                            std::process::exit(1);
+                        }
+
+                        std::fs::write(&path, &content).map_err(|e| zb_core::Error::StoreCorruption {
+                            message: format!("failed to write Brewfile: {}", e),
+                        })?;
+
+                        println!(
+                            "{} Brewfile written to {}",
+                            style("==>").cyan().bold(),
+                            path.display()
+                        );
+                    } else {
+                        // Print to stdout
+                        print!("{}", content);
+                        if !content.ends_with('\n') {
+                            println!();
+                        }
+                    }
+                }
+
+                Some(BundleAction::Check { file, strict }) => {
+                    let brewfile_path = if let Some(path) = file {
+                        path
+                    } else {
+                        installer.find_brewfile(&cwd).ok_or_else(|| {
+                            zb_core::Error::StoreCorruption {
+                                message: "No Brewfile found in current directory or parent directories".to_string(),
+                            }
+                        })?
+                    };
+
+                    println!(
+                        "{} Checking {}",
+                        style("==>").cyan().bold(),
+                        brewfile_path.display()
+                    );
+
+                    let result = installer.bundle_check(&brewfile_path)?;
+
+                    if result.satisfied {
+                        println!();
+                        println!("{} All entries are satisfied!", style("==>").green().bold());
+                    } else {
+                        if !result.missing_taps.is_empty() {
+                            println!();
+                            println!("{} Missing taps:", style("==>").yellow().bold());
+                            for tap in &result.missing_taps {
+                                println!("    {} {}", style("✗").red(), tap);
+                            }
+                        }
+
+                        if !result.missing_formulas.is_empty() {
+                            println!();
+                            println!("{} Missing formulas:", style("==>").yellow().bold());
+                            for formula in &result.missing_formulas {
+                                println!("    {} {}", style("✗").red(), formula);
+                            }
+                        }
+
+                        println!();
+                        println!(
+                            "    → Run {} bundle to install missing entries",
+                            style("zb").cyan()
+                        );
+
+                        if strict {
+                            std::process::exit(1);
+                        }
+                    }
+                }
+
+                Some(BundleAction::List { file }) => {
+                    let brewfile_path = if let Some(path) = file {
+                        path
+                    } else {
+                        installer.find_brewfile(&cwd).ok_or_else(|| {
+                            zb_core::Error::StoreCorruption {
+                                message: "No Brewfile found in current directory or parent directories".to_string(),
+                            }
+                        })?
+                    };
+
+                    let entries = installer.parse_brewfile(&brewfile_path)?;
+
+                    println!(
+                        "{} Entries in {}:",
+                        style("==>").cyan().bold(),
+                        brewfile_path.display()
+                    );
+                    println!();
+
+                    let mut tap_count = 0;
+                    let mut brew_count = 0;
+
+                    for entry in &entries {
+                        match entry {
+                            zb_io::BrewfileEntry::Tap { name } => {
+                                println!("tap  {}", style(name).cyan());
+                                tap_count += 1;
+                            }
+                            zb_io::BrewfileEntry::Brew { name, args } => {
+                                if args.is_empty() {
+                                    println!("brew {}", style(name).green());
+                                } else {
+                                    println!(
+                                        "brew {} ({})",
+                                        style(name).green(),
+                                        args.join(", ")
+                                    );
+                                }
+                                brew_count += 1;
+                            }
+                            zb_io::BrewfileEntry::Comment(_) => {
+                                // Skip comments in list output
+                            }
+                        }
+                    }
+
+                    println!();
+                    println!(
+                        "{} {} taps, {} formulas",
+                        style("==>").cyan().bold(),
+                        tap_count,
+                        brew_count
+                    );
                 }
             }
         }
