@@ -612,7 +612,7 @@ ZEROBREW_ROOT           # /opt/zerobrew (zerobrew-specific)
 - [x] Source builds work for common build systems
 - [x] Services management functional
 - [x] Tap ecosystem accessible
-- [ ] Migration path from Homebrew documented
+- [x] Migration path from Homebrew documented
 
 ---
 

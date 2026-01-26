@@ -105,6 +105,22 @@ cargo install --path zb_cli
 ./benchmark.sh -h                             # show help
 ```
 
+## Migrating from Homebrew
+
+See [MIGRATION.md](MIGRATION.md) for a complete guide to migrating from Homebrew to Zerobrew.
+
+Quick start:
+```bash
+# Export your Homebrew packages
+brew bundle dump --file=~/.Brewfile
+
+# Install with Zerobrew
+zb bundle --file ~/.Brewfile
+
+# Update shell config
+eval "$(zb shellenv)"
+```
+
 ## Status
 
 Experimental. works for most core homebrew packages. Some formulas may need more work - please submit issues / PRs! 
