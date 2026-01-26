@@ -916,4 +916,117 @@ mod tests {
         }
         // Mock expectation of 1 call will verify deduplication worked
     }
+
+    #[test]
+    fn parse_www_authenticate_extracts_all_fields() {
+        let header = r#"Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:homebrew/core/jq:pull""#;
+        let (realm, service, scope) = parse_www_authenticate(header).unwrap();
+
+        assert_eq!(realm, "https://ghcr.io/token");
+        assert_eq!(service, "ghcr.io");
+        assert_eq!(scope, "repository:homebrew/core/jq:pull");
+    }
+
+    #[test]
+    fn parse_www_authenticate_rejects_non_bearer() {
+        let header = r#"Basic realm="test""#;
+        let err = parse_www_authenticate(header).unwrap_err();
+        assert!(
+            matches!(err, Error::NetworkFailure { message } if message.contains("unsupported auth"))
+        );
+    }
+
+    #[test]
+    fn parse_www_authenticate_rejects_missing_realm() {
+        let header = r#"Bearer service="ghcr.io",scope="test""#;
+        let err = parse_www_authenticate(header).unwrap_err();
+        assert!(
+            matches!(err, Error::NetworkFailure { message } if message.contains("missing realm"))
+        );
+    }
+
+    #[test]
+    fn parse_www_authenticate_rejects_missing_service() {
+        let header = r#"Bearer realm="https://ghcr.io/token",scope="test""#;
+        let err = parse_www_authenticate(header).unwrap_err();
+        assert!(
+            matches!(err, Error::NetworkFailure { message } if message.contains("missing service"))
+        );
+    }
+
+    #[test]
+    fn parse_www_authenticate_rejects_missing_scope() {
+        let header = r#"Bearer realm="https://ghcr.io/token",service="ghcr.io""#;
+        let err = parse_www_authenticate(header).unwrap_err();
+        assert!(
+            matches!(err, Error::NetworkFailure { message } if message.contains("missing scope"))
+        );
+    }
+
+    #[test]
+    fn extract_scope_prefix_for_ghcr_url() {
+        let url = "https://ghcr.io/v2/homebrew/core/jq/blobs/sha256:abc123";
+        let prefix = extract_scope_prefix(url);
+        assert_eq!(prefix, Some("repository:homebrew/core/".to_string()));
+    }
+
+    #[test]
+    fn extract_scope_prefix_returns_none_for_non_ghcr() {
+        let url = "https://example.com/downloads/package.tar.gz";
+        let prefix = extract_scope_prefix(url);
+        assert_eq!(prefix, None);
+    }
+
+    #[test]
+    fn get_alternate_urls_returns_empty_without_env() {
+        // Ensure HOMEBREW_BOTTLE_MIRRORS is not set
+        // SAFETY: This test runs in isolation and we're only removing an env var
+        unsafe { std::env::remove_var("HOMEBREW_BOTTLE_MIRRORS") };
+        let alternates = get_alternate_urls("https://ghcr.io/v2/homebrew/core/jq/blobs/sha256:abc");
+        assert!(alternates.is_empty());
+    }
+
+    #[test]
+    fn transform_url_to_mirror_replaces_ghcr_domain() {
+        let url = "https://ghcr.io/v2/homebrew/core/jq/blobs/sha256:abc";
+        let result = transform_url_to_mirror(url, "mirror.example.com");
+        assert_eq!(
+            result,
+            Some("https://mirror.example.com/v2/homebrew/core/jq/blobs/sha256:abc".to_string())
+        );
+    }
+
+    #[test]
+    fn transform_url_to_mirror_returns_none_for_non_ghcr() {
+        let url = "https://example.com/downloads/package.tar.gz";
+        let result = transform_url_to_mirror(url, "mirror.example.com");
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn download_reports_404_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/notfound.tar.gz"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let blob_cache = BlobCache::new(tmp.path()).unwrap();
+        let downloader = Downloader::new(blob_cache);
+
+        let url = format!("{}/notfound.tar.gz", mock_server.uri());
+        let result = downloader
+            .download(
+                &url,
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::NetworkFailure { message } if message.contains("404")));
+    }
 }

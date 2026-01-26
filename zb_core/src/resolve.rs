@@ -216,4 +216,75 @@ mod tests {
         let err = resolve_closure("alpha", &formulas).unwrap_err();
         assert!(matches!(err, Error::DependencyCycle { .. }));
     }
+
+    #[test]
+    fn resolves_single_package_with_no_deps() {
+        let mut formulas = BTreeMap::new();
+        formulas.insert("standalone".to_string(), formula("standalone", &[]));
+
+        let order = resolve_closure("standalone", &formulas).unwrap();
+        assert_eq!(order, vec!["standalone"]);
+    }
+
+    #[test]
+    fn returns_error_for_missing_root() {
+        let formulas: BTreeMap<String, Formula> = BTreeMap::new();
+
+        let err = resolve_closure("nonexistent", &formulas).unwrap_err();
+        assert!(matches!(err, Error::MissingFormula { name } if name == "nonexistent"));
+    }
+
+    #[test]
+    fn skips_missing_dependencies_gracefully() {
+        let mut formulas = BTreeMap::new();
+        // 'foo' depends on 'bar' (exists) and 'missing' (doesn't exist)
+        formulas.insert("foo".to_string(), formula("foo", &["bar", "missing"]));
+        formulas.insert("bar".to_string(), formula("bar", &[]));
+
+        // Should succeed, skipping 'missing'
+        let order = resolve_closure("foo", &formulas).unwrap();
+        assert_eq!(order, vec!["bar", "foo"]);
+    }
+
+    #[test]
+    fn handles_diamond_dependency() {
+        // Diamond: root -> [a, b], a -> c, b -> c
+        let mut formulas = BTreeMap::new();
+        formulas.insert("root".to_string(), formula("root", &["a", "b"]));
+        formulas.insert("a".to_string(), formula("a", &["c"]));
+        formulas.insert("b".to_string(), formula("b", &["c"]));
+        formulas.insert("c".to_string(), formula("c", &[]));
+
+        let order = resolve_closure("root", &formulas).unwrap();
+        // 'c' must come first, then 'a' and 'b' (alphabetical), then 'root'
+        assert_eq!(order, vec!["c", "a", "b", "root"]);
+    }
+
+    #[test]
+    fn detects_self_referential_cycle() {
+        let mut formulas = BTreeMap::new();
+        formulas.insert("selfref".to_string(), formula("selfref", &["selfref"]));
+
+        let err = resolve_closure("selfref", &formulas).unwrap_err();
+        assert!(matches!(err, Error::DependencyCycle { .. }));
+    }
+
+    #[test]
+    fn order_is_deterministic_across_runs() {
+        let mut formulas = BTreeMap::new();
+        formulas.insert("pkg".to_string(), formula("pkg", &["z", "a", "m"]));
+        formulas.insert("z".to_string(), formula("z", &[]));
+        formulas.insert("a".to_string(), formula("a", &[]));
+        formulas.insert("m".to_string(), formula("m", &[]));
+
+        // Run multiple times and verify same order
+        let order1 = resolve_closure("pkg", &formulas).unwrap();
+        let order2 = resolve_closure("pkg", &formulas).unwrap();
+        let order3 = resolve_closure("pkg", &formulas).unwrap();
+
+        assert_eq!(order1, order2);
+        assert_eq!(order2, order3);
+        // Alphabetical order for same-level deps: a, m, z
+        assert_eq!(order1, vec!["a", "m", "z", "pkg"]);
+    }
 }
