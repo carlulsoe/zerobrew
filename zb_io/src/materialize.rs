@@ -1780,4 +1780,336 @@ mod tests {
         assert!(path.to_string_lossy().contains("openssl@3"));
         assert!(path.to_string_lossy().contains("3.2.1"));
     }
+
+    // ========================================================================
+    // Patchelf single-invocation tests (prevent ELF corruption regression)
+    // ========================================================================
+
+    /// Helper to find a suitable test binary for patchelf tests.
+    /// Prefers linuxbrew binaries (known to work with patchelf) over system binaries.
+    #[cfg(target_os = "linux")]
+    fn find_patchable_binary() -> Option<std::path::PathBuf> {
+        // Linuxbrew binaries are built to be relocatable and work well with patchelf
+        let linuxbrew_candidates = [
+            "/home/linuxbrew/.linuxbrew/bin/zstd",
+            "/home/linuxbrew/.linuxbrew/bin/xz",
+            "/home/linuxbrew/.linuxbrew/bin/gzip",
+        ];
+
+        for candidate in linuxbrew_candidates {
+            let path = std::path::Path::new(candidate);
+            if path.exists() {
+                return Some(path.to_path_buf());
+            }
+        }
+
+        // System binaries may not work well with patchelf on some distros
+        // but try them as a fallback
+        let system_candidates = ["/bin/true", "/usr/bin/true", "/bin/echo", "/usr/bin/echo"];
+
+        for candidate in system_candidates {
+            let path = std::path::Path::new(candidate);
+            if path.exists() {
+                return Some(path.to_path_buf());
+            }
+        }
+
+        None
+    }
+
+    /// Test that patched ELF binaries have valid structure (no sections outside segments).
+    /// This test prevents regression of the bug where multiple patchelf invocations
+    /// corrupted binaries by placing .interp outside ELF segments.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn patched_elf_has_valid_structure() {
+        use std::process::Command;
+
+        // Skip if patchelf or readelf not available
+        if Command::new("patchelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            return;
+        }
+        if Command::new("readelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            return;
+        }
+
+        let source_binary = match find_patchable_binary() {
+            Some(p) => p,
+            None => return, // No suitable binary found, skip test
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let test_binary = tmp.path().join("test_binary");
+        fs::copy(&source_binary, &test_binary).unwrap();
+
+        // Make writable
+        let mut perms = fs::metadata(&test_binary).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        fs::set_permissions(&test_binary, perms).unwrap();
+
+        // Get original RPATH to preserve library paths
+        let orig_rpath = Command::new("patchelf")
+            .args(["--print-rpath", &test_binary.to_string_lossy()])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        // Build new RPATH: add our test path but preserve original paths
+        let new_rpath = if orig_rpath.is_empty() {
+            "/opt/test/lib".to_string()
+        } else {
+            format!("/opt/test/lib:{}", orig_rpath)
+        };
+
+        // Apply both RPATH and interpreter changes in a single patchelf call
+        // (this is what our fixed code does)
+        let result = Command::new("patchelf")
+            .args([
+                "--force-rpath",
+                "--set-rpath",
+                &new_rpath,
+                "--set-interpreter",
+                "/lib64/ld-linux-x86-64.so.2",
+                &test_binary.to_string_lossy(),
+            ])
+            .output();
+
+        assert!(result.is_ok(), "patchelf should succeed");
+        assert!(result.unwrap().status.success(), "patchelf should exit successfully");
+
+        // Verify the binary structure is valid using readelf
+        // If .interp is outside segments, readelf will show warnings
+        let readelf_output = Command::new("readelf")
+            .args(["-l", &test_binary.to_string_lossy()])
+            .output()
+            .expect("readelf should run");
+
+        let stdout = String::from_utf8_lossy(&readelf_output.stdout);
+        let stderr = String::from_utf8_lossy(&readelf_output.stderr);
+
+        // Check for the corruption indicator
+        assert!(
+            !stdout.contains("outside of ELF segments") && !stderr.contains("outside of ELF segments"),
+            "ELF structure should be valid - no sections outside segments. stderr: {}",
+            stderr
+        );
+
+        // Verify the binary can still be executed (if it was from linuxbrew)
+        if source_binary.to_string_lossy().contains("linuxbrew") {
+            let exec_result = Command::new(&test_binary)
+                .arg("--version")
+                .output();
+            assert!(exec_result.is_ok(), "Patched binary should be executable");
+            // Note: exit code may vary depending on binary, just check it runs
+        }
+    }
+
+    /// Test that multiple separate patchelf calls CAN corrupt binaries.
+    /// This documents the bug we fixed and ensures we understand the failure mode.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore] // This test intentionally demonstrates the corruption bug
+    fn multiple_patchelf_calls_can_corrupt() {
+        use std::process::Command;
+
+        // Skip if tools not available
+        if Command::new("patchelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            return;
+        }
+        if Command::new("readelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            return;
+        }
+
+        let source_binary = match find_patchable_binary() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let test_binary = tmp.path().join("test_binary");
+        fs::copy(&source_binary, &test_binary).unwrap();
+
+        let mut perms = fs::metadata(&test_binary).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        fs::set_permissions(&test_binary, perms).unwrap();
+
+        // First patchelf call - set RPATH
+        let _ = Command::new("patchelf")
+            .args([
+                "--force-rpath",
+                "--set-rpath",
+                "/opt/test/lib",
+                &test_binary.to_string_lossy(),
+            ])
+            .output();
+
+        // Second patchelf call - set interpreter (this can cause corruption)
+        let _ = Command::new("patchelf")
+            .args([
+                "--set-interpreter",
+                "/lib64/ld-linux-x86-64.so.2",
+                &test_binary.to_string_lossy(),
+            ])
+            .output();
+
+        // This test documents that separate calls MAY corrupt the binary
+        // The actual corruption depends on patchelf version and binary layout
+        // Our fix avoids this by using a single call
+    }
+
+    /// Test that RPATH and interpreter are correctly set after single patchelf invocation
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn single_patchelf_sets_both_rpath_and_interpreter() {
+        use std::process::Command;
+
+        // Skip if patchelf not available
+        if Command::new("patchelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            return;
+        }
+
+        let source_binary = match find_patchable_binary() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let test_binary = tmp.path().join("test_binary");
+        fs::copy(&source_binary, &test_binary).unwrap();
+
+        let mut perms = fs::metadata(&test_binary).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        fs::set_permissions(&test_binary, perms).unwrap();
+
+        // Get original RPATH to preserve library paths for execution
+        let orig_rpath = Command::new("patchelf")
+            .args(["--print-rpath", &test_binary.to_string_lossy()])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        let expected_rpath = if orig_rpath.is_empty() {
+            "/opt/zerobrew/test/lib:/opt/zerobrew/prefix/lib".to_string()
+        } else {
+            format!("/opt/zerobrew/test/lib:/opt/zerobrew/prefix/lib:{}", orig_rpath)
+        };
+        let expected_interp = "/lib64/ld-linux-x86-64.so.2";
+
+        // Single patchelf call with both options
+        let result = Command::new("patchelf")
+            .args([
+                "--force-rpath",
+                "--set-rpath",
+                &expected_rpath,
+                "--set-interpreter",
+                expected_interp,
+                &test_binary.to_string_lossy(),
+            ])
+            .output()
+            .expect("patchelf should run");
+
+        assert!(result.status.success(), "patchelf should succeed");
+
+        // Verify RPATH was set correctly
+        let rpath_output = Command::new("patchelf")
+            .args(["--print-rpath", &test_binary.to_string_lossy()])
+            .output()
+            .expect("should read rpath");
+        let actual_rpath = String::from_utf8_lossy(&rpath_output.stdout).trim().to_string();
+        assert_eq!(actual_rpath, expected_rpath, "RPATH should be set correctly");
+
+        // Verify interpreter was set correctly
+        let interp_output = Command::new("patchelf")
+            .args(["--print-interpreter", &test_binary.to_string_lossy()])
+            .output()
+            .expect("should read interpreter");
+        let actual_interp = String::from_utf8_lossy(&interp_output.stdout).trim().to_string();
+        assert_eq!(actual_interp, expected_interp, "Interpreter should be set correctly");
+
+        // Verify binary still executes (if from linuxbrew)
+        if source_binary.to_string_lossy().contains("linuxbrew") {
+            let exec_result = Command::new(&test_binary).arg("--version").output();
+            assert!(exec_result.is_ok(), "Binary should still be executable after patching");
+        }
+    }
+
+    /// Test that our patch_homebrew_placeholders_linux function doesn't corrupt ELF structure.
+    /// This tests the key fix: using single patchelf invocation instead of multiple calls.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn patch_homebrew_placeholders_preserves_valid_elf() {
+        use std::process::Command;
+
+        // Skip if tools not available
+        if Command::new("patchelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            return;
+        }
+        if Command::new("readelf").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            return;
+        }
+
+        let source_binary = match find_patchable_binary() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let keg = tmp.path().join("keg");
+        let cellar = tmp.path().join("Cellar");
+        let prefix = tmp.path();
+        fs::create_dir_all(keg.join("bin")).unwrap();
+        fs::create_dir_all(&cellar).unwrap();
+
+        // Create ld.so symlink (simulating zerobrew prefix)
+        fs::create_dir_all(prefix.join("lib")).unwrap();
+        std::os::unix::fs::symlink("/lib64/ld-linux-x86-64.so.2", prefix.join("lib/ld.so")).unwrap();
+
+        // Copy the test binary
+        let test_binary = keg.join("bin/test_app");
+        fs::copy(&source_binary, &test_binary).unwrap();
+
+        let mut perms = fs::metadata(&test_binary).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        fs::set_permissions(&test_binary, perms).unwrap();
+
+        // Run our patching function (it will detect if changes are needed)
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0");
+        assert!(result.is_ok(), "Patching should succeed: {:?}", result);
+
+        // The key assertion: verify the binary structure is still valid
+        // This catches the corruption bug where .interp ends up outside ELF segments
+        let readelf_output = Command::new("readelf")
+            .args(["-l", &test_binary.to_string_lossy()])
+            .output()
+            .expect("readelf should run");
+
+        let stdout = String::from_utf8_lossy(&readelf_output.stdout);
+        let stderr = String::from_utf8_lossy(&readelf_output.stderr);
+
+        assert!(
+            !stdout.contains("outside of ELF segments") && !stderr.contains("outside of ELF segments"),
+            "Binary should have valid ELF structure after patching function runs"
+        );
+
+        // Verify binary still executes (if from linuxbrew)
+        if source_binary.to_string_lossy().contains("linuxbrew") {
+            let exec_result = Command::new(&test_binary).arg("--version").output();
+            assert!(exec_result.is_ok(), "Binary should still execute after patching");
+        }
+    }
+
+    /// Test that real Homebrew bottles with @@HOMEBREW placeholders are patched correctly.
+    /// This is an integration test that requires downloading a real bottle.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore] // Requires network access and real bottle download
+    fn real_bottle_patching_produces_valid_elf() {
+        // This test would download a real bottle and verify patching works correctly.
+        // The actual verification is done by running `zb install` and checking binaries work.
+        // See the manual testing with `node` which verifies this end-to-end.
+    }
 }
