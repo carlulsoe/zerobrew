@@ -245,6 +245,33 @@ enum ServicesAction {
         /// Formula name to run
         formula: String,
     },
+
+    /// Show detailed information about a service
+    Info {
+        /// Formula name to show info for
+        formula: String,
+    },
+
+    /// View service logs
+    Log {
+        /// Formula name to view logs for
+        formula: String,
+
+        /// Show only the last N lines (default: 20)
+        #[arg(short = 'n', long, default_value = "20")]
+        lines: usize,
+
+        /// Follow log output in real-time
+        #[arg(short, long)]
+        follow: bool,
+    },
+
+    /// Remove services for uninstalled formulas
+    Cleanup {
+        /// Show what would be removed without removing
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
 }
 
 #[tokio::main]
@@ -2182,6 +2209,215 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                             formula
                         );
                         std::process::exit(1);
+                    }
+                }
+
+                Some(ServicesAction::Info { formula }) => {
+                    let info = service_manager.get_service_info(&formula)?;
+                    let (stdout_log, stderr_log) = service_manager.get_log_paths(&formula);
+
+                    println!("{} Service: {}", style("==>").cyan().bold(), style(&formula).bold());
+                    println!();
+
+                    // Status
+                    let status_display = match &info.status {
+                        ServiceStatus::Running => style("running").green().to_string(),
+                        ServiceStatus::Stopped => style("stopped").dim().to_string(),
+                        ServiceStatus::Unknown => style("unknown").yellow().to_string(),
+                        ServiceStatus::Error(msg) => format!("{} ({})", style("error").red(), msg),
+                    };
+                    println!("Status:        {}", status_display);
+
+                    // PID
+                    if let Some(pid) = info.pid {
+                        println!("PID:           {}", pid);
+                    }
+
+                    // Auto-start
+                    let auto_start_display = if info.auto_start {
+                        style("yes").green().to_string()
+                    } else {
+                        style("no").dim().to_string()
+                    };
+                    println!("Auto-start:    {}", auto_start_display);
+
+                    // Service file
+                    println!("Service file:  {}", info.file_path.display());
+
+                    // Log files
+                    println!();
+                    println!("{} Log files:", style("==>").cyan().bold());
+                    println!("Stdout:        {}", stdout_log.display());
+                    if stdout_log.exists() {
+                        let metadata = std::fs::metadata(&stdout_log);
+                        if let Ok(m) = metadata {
+                            println!("               ({} bytes)", m.len());
+                        }
+                    } else {
+                        println!("               (not yet created)");
+                    }
+
+                    println!("Stderr:        {}", stderr_log.display());
+                    if stderr_log.exists() {
+                        let metadata = std::fs::metadata(&stderr_log);
+                        if let Ok(m) = metadata {
+                            println!("               ({} bytes)", m.len());
+                        }
+                    } else {
+                        println!("               (not yet created)");
+                    }
+
+                    // Check if formula is installed
+                    if installer.is_installed(&formula) {
+                        println!();
+                        println!("{} Formula is installed", style("==>").cyan().bold());
+                    } else {
+                        println!();
+                        println!(
+                            "{} {} Formula is not installed",
+                            style("==>").cyan().bold(),
+                            style("!").yellow()
+                        );
+                        println!("    This service may be orphaned.");
+                        println!("    Run: {} services cleanup", style("zb").cyan());
+                    }
+                }
+
+                Some(ServicesAction::Log { formula, lines, follow }) => {
+                    let (stdout_log, stderr_log) = service_manager.get_log_paths(&formula);
+
+                    // Check if any log exists
+                    if !stdout_log.exists() && !stderr_log.exists() {
+                        eprintln!(
+                            "{} No log files found for '{}'.",
+                            style("error:").red().bold(),
+                            formula
+                        );
+                        eprintln!();
+                        eprintln!("    Expected log files:");
+                        eprintln!("      {}", stdout_log.display());
+                        eprintln!("      {}", stderr_log.display());
+                        eprintln!();
+                        eprintln!("    Start the service first with: {} services start {}", style("zb").cyan(), formula);
+                        std::process::exit(1);
+                    }
+
+                    // Prefer stdout log, fall back to stderr
+                    let log_file = if stdout_log.exists() {
+                        &stdout_log
+                    } else {
+                        &stderr_log
+                    };
+
+                    if follow {
+                        // Use tail -f for following
+                        println!(
+                            "{} Following logs for {} (Ctrl+C to stop)...",
+                            style("==>").cyan().bold(),
+                            style(&formula).bold()
+                        );
+                        println!("    {}", log_file.display());
+                        println!();
+
+                        let mut cmd = Command::new("tail");
+                        cmd.args(["-f", "-n", &lines.to_string()]);
+                        cmd.arg(log_file);
+
+                        let status = cmd.status().map_err(|e| zb_core::Error::StoreCorruption {
+                            message: format!("failed to tail log: {}", e),
+                        })?;
+
+                        if !status.success() {
+                            std::process::exit(status.code().unwrap_or(1));
+                        }
+                    } else {
+                        // Read last N lines
+                        println!(
+                            "{} Logs for {} (last {} lines):",
+                            style("==>").cyan().bold(),
+                            style(&formula).bold(),
+                            lines
+                        );
+                        println!("    {}", log_file.display());
+                        println!();
+
+                        // Read file and get last N lines
+                        let content = std::fs::read_to_string(log_file).map_err(|e| zb_core::Error::StoreCorruption {
+                            message: format!("failed to read log file: {}", e),
+                        })?;
+
+                        let all_lines: Vec<&str> = content.lines().collect();
+                        let start = if all_lines.len() > lines {
+                            all_lines.len() - lines
+                        } else {
+                            0
+                        };
+
+                        for line in &all_lines[start..] {
+                            println!("{}", line);
+                        }
+
+                        if stderr_log.exists() && stderr_log != *log_file {
+                            println!();
+                            println!("    Note: Error log also exists at {}", stderr_log.display());
+                        }
+                    }
+                }
+
+                Some(ServicesAction::Cleanup { dry_run }) => {
+                    // Get list of installed formulas
+                    let installed: Vec<String> = installer
+                        .list_installed()?
+                        .iter()
+                        .map(|k| k.name.clone())
+                        .collect();
+
+                    // Find orphaned services
+                    let orphaned = service_manager.find_orphaned_services(&installed)?;
+
+                    if orphaned.is_empty() {
+                        println!("{} No orphaned services found.", style("==>").cyan().bold());
+                        return Ok(());
+                    }
+
+                    if dry_run {
+                        println!(
+                            "{} Would remove {} orphaned service{}:",
+                            style("==>").cyan().bold(),
+                            orphaned.len(),
+                            if orphaned.len() == 1 { "" } else { "s" }
+                        );
+                        println!();
+
+                        for service in &orphaned {
+                            println!("    {}", service.name);
+                            println!("        {}", style(service.file_path.display()).dim());
+                        }
+
+                        println!();
+                        println!("    → Run {} services cleanup to remove", style("zb").cyan());
+                    } else {
+                        println!(
+                            "{} Removing {} orphaned service{}...",
+                            style("==>").cyan().bold(),
+                            orphaned.len(),
+                            if orphaned.len() == 1 { "" } else { "s" }
+                        );
+                        println!();
+
+                        let count = service_manager.cleanup_services(&orphaned)?;
+
+                        for service in &orphaned {
+                            println!("    {} Removed {}", style("✓").green(), service.name);
+                        }
+
+                        println!();
+                        println!(
+                            "{} Removed {} orphaned service{}",
+                            style("==>").cyan().bold(),
+                            count,
+                            if count == 1 { "" } else { "s" }
+                        );
                     }
                 }
             }

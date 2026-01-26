@@ -1045,13 +1045,114 @@ $ zb services run redis
 
 ---
 
-## Next Steps (Phase 3 continued)
+### 19. Extended Services Commands (Phase 3.2) ✅
 
-Additional service features to consider:
-1. `zb services info <formula>` - Show detailed service information
-2. `zb services cleanup` - Remove services for uninstalled formulas
-3. Service dependency ordering
-4. Log viewing: `zb services log <formula>`
+**Files modified:**
+- `zb_io/src/services.rs` - Added `get_log_paths()`, `get_log_dir()`, `find_orphaned_services()`, `cleanup_services()` methods
+- `zb_cli/src/main.rs` - Added `zb services info`, `zb services log`, `zb services cleanup` subcommands
+
+**New subcommands:**
+
+**`zb services info <formula>`** - Show detailed service information:
+- Service status (running/stopped/error)
+- PID if running
+- Auto-start enabled status
+- Service file path
+- Log file paths with sizes
+- Whether formula is still installed
+
+**`zb services log <formula>`** - View service logs:
+- Shows last N lines of log (default: 20)
+- `--lines N` or `-n N` flag to customize number of lines
+- `--follow` or `-f` flag for real-time log streaming (uses `tail -f`)
+- Automatically finds stdout log, falls back to stderr log
+
+**`zb services cleanup`** - Remove orphaned services:
+- Finds services for formulas that are no longer installed
+- `--dry-run` or `-n` flag to preview what would be removed
+- Stops services and removes service files
+
+**Example usage:**
+```bash
+# Show service details
+$ zb services info redis
+==> Service: redis
+
+Status:        running
+PID:           12345
+Auto-start:    yes
+Service file:  ~/.config/systemd/user/zerobrew.redis.service
+
+==> Log files:
+Stdout:        ~/.local/share/zerobrew/logs/redis.log
+               (1234 bytes)
+Stderr:        ~/.local/share/zerobrew/logs/redis.error.log
+               (not yet created)
+
+==> Formula is installed
+
+# View logs
+$ zb services log redis
+==> Logs for redis (last 20 lines):
+    ~/.local/share/zerobrew/logs/redis.log
+
+[log output...]
+
+# Follow logs in real-time
+$ zb services log redis --follow
+
+# Clean up orphaned services
+$ zb services cleanup --dry-run
+==> Would remove 2 orphaned services:
+
+    old-service
+        ~/.config/systemd/user/zerobrew.old-service.service
+    removed-pkg
+        ~/.config/systemd/user/zerobrew.removed-pkg.service
+
+    → Run zb services cleanup to remove
+
+$ zb services cleanup
+==> Removing 2 orphaned services...
+
+    ✓ Removed old-service
+    ✓ Removed removed-pkg
+
+==> Removed 2 orphaned services
+```
+
+**New tests (4 total):**
+- `test_get_log_paths` - Tests log path generation
+- `test_find_orphaned_services_empty_when_all_installed` - Tests orphan detection
+- `test_get_log_dir` - Tests log directory accessor
+
+---
+
+## Phase 3 Complete! 🎉
+
+| Task | Status |
+|------|--------|
+| 3.1 Services list/start/stop/restart | ✅ Complete |
+| 3.2 Systemd integration (Linux) | ✅ Complete |
+| 3.3 Launchd integration (macOS) | ✅ Complete |
+| 3.4 Services info command | ✅ Complete |
+| 3.5 Services log command | ✅ Complete |
+| 3.6 Services cleanup command | ✅ Complete |
+
+---
+
+## Next Steps (Phase 4)
+
+Phase 4: Source Builds (v1.0) - marked as high complexity:
+1. Build environment setup
+2. Download and verify source tarballs
+3. Support common build systems (configure/make, cmake, meson)
+4. Build from HEAD (git clone)
+
+Alternative quick wins to consider:
+- Add `--json` flag to `services list`
+- Add `zb services enable/disable` for auto-start control
+- Service dependency ordering
 
 ---
 

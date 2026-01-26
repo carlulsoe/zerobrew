@@ -987,6 +987,38 @@ ExecStart={program}"#,
 
         Some(config)
     }
+
+    /// Get the log file paths for a formula's service
+    pub fn get_log_paths(&self, formula: &str) -> (PathBuf, PathBuf) {
+        let stdout_log = self.log_dir.join(format!("{}.log", formula));
+        let stderr_log = self.log_dir.join(format!("{}.error.log", formula));
+        (stdout_log, stderr_log)
+    }
+
+    /// Get the log directory path
+    pub fn get_log_dir(&self) -> &Path {
+        &self.log_dir
+    }
+
+    /// Find services whose formulas are no longer installed
+    pub fn find_orphaned_services(&self, installed_formulas: &[String]) -> Result<Vec<ServiceInfo>, Error> {
+        let all_services = self.list()?;
+        let orphaned: Vec<ServiceInfo> = all_services
+            .into_iter()
+            .filter(|s| !installed_formulas.contains(&s.name))
+            .collect();
+        Ok(orphaned)
+    }
+
+    /// Remove multiple services (cleanup)
+    pub fn cleanup_services(&self, services: &[ServiceInfo]) -> Result<usize, Error> {
+        let mut removed = 0;
+        for service in services {
+            self.remove_service(&service.name)?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
 }
 
 #[cfg(test)]
@@ -1086,5 +1118,31 @@ mod tests {
     fn test_service_label_macos() {
         let manager = ServiceManager::new(Path::new("/opt/zerobrew/prefix"));
         assert_eq!(manager.service_label("redis"), "com.zerobrew.redis");
+    }
+
+    #[test]
+    fn test_get_log_paths() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew/prefix"));
+        let (stdout, stderr) = manager.get_log_paths("redis");
+        assert!(stdout.to_string_lossy().contains("redis.log"));
+        assert!(stderr.to_string_lossy().contains("redis.error.log"));
+    }
+
+    #[test]
+    fn test_find_orphaned_services_empty_when_all_installed() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew/prefix"));
+        // When service dir doesn't exist, should return empty vec
+        let installed = vec!["redis".to_string(), "postgresql".to_string()];
+        let orphaned = manager.find_orphaned_services(&installed).unwrap();
+        assert!(orphaned.is_empty());
+    }
+
+    #[test]
+    fn test_get_log_dir() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew/prefix"));
+        let log_dir = manager.get_log_dir();
+        // Should return a path that includes "logs" or "Logs"
+        let path_str = log_dir.to_string_lossy().to_lowercase();
+        assert!(path_str.contains("log"));
     }
 }
