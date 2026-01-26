@@ -145,6 +145,7 @@ mod tests {
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         }
     }
 

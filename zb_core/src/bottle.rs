@@ -153,11 +153,10 @@ mod tests {
             versions: Versions {
                 stable: "2024-01-01".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -189,11 +188,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -218,11 +216,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -255,11 +252,10 @@ mod tests {
             versions: Versions {
                 stable: "0.1.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let err = select_bottle(&formula).unwrap_err();
@@ -306,11 +302,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -348,11 +343,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -378,11 +372,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         // Should fail - no compatible bottle
@@ -409,11 +402,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         // Should fail - no compatible bottle
@@ -435,11 +427,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let err = select_bottle(&formula).unwrap_err();
@@ -568,11 +559,10 @@ mod tests {
             versions: Versions {
                 stable: "3.4.1".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -614,11 +604,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -661,11 +650,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -706,11 +694,10 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let result = select_bottle(&formula);
@@ -759,14 +746,13 @@ mod tests {
             versions: Versions {
                 stable: "1.0.0".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable {
                     files: files.clone(),
                     rebuild: 0,
                 },
             },
+            ..Default::default()
         };
 
         // Run selection multiple times
@@ -815,11 +801,10 @@ mod tests {
             versions: Versions {
                 stable: "3.12.1".to_string(),
             },
-            dependencies: Vec::new(),
-            uses_from_macos: Vec::new(),
             bottle: Bottle {
                 stable: BottleStable { files, rebuild: 0 },
             },
+            ..Default::default()
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -853,11 +838,10 @@ mod tests {
                 versions: Versions {
                     stable: version.to_string(),
                 },
-                dependencies: Vec::new(),
-                uses_from_macos: Vec::new(),
                 bottle: Bottle {
                     stable: BottleStable { files, rebuild: 0 },
                 },
+                ..Default::default()
             };
 
             let selected = select_bottle(&formula).unwrap();

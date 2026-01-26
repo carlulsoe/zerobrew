@@ -457,11 +457,10 @@ fn correct_bottle_tags_on_linux() {
         versions: Versions {
             stable: "1.0.0".to_string(),
         },
-        dependencies: Vec::new(),
-        uses_from_macos: Vec::new(),
         bottle: Bottle {
             stable: BottleStable { files, rebuild: 0 },
         },
+        ..Default::default()
     };
 
     let selected = select_bottle(&formula).unwrap();
