@@ -29,6 +29,8 @@ pub struct Installer {
     db: Database,
     tap_manager: TapManager,
     taps_dir: PathBuf,
+    prefix: PathBuf,
+    cellar_path: PathBuf,
 }
 
 pub struct InstallPlan {
@@ -66,6 +68,17 @@ pub struct CleanupResult {
     pub bytes_freed: u64,
 }
 
+/// Dependency tree node for displaying hierarchical dependencies
+#[derive(Debug, Clone)]
+pub struct DepsTree {
+    /// The formula name
+    pub name: String,
+    /// Whether this formula is installed
+    pub installed: bool,
+    /// Child dependencies
+    pub children: Vec<DepsTree>,
+}
+
 /// Internal struct for tracking processed packages during streaming install
 #[derive(Clone)]
 struct ProcessedPackage {
@@ -87,6 +100,8 @@ impl Installer {
         db: Database,
         tap_manager: TapManager,
         taps_dir: PathBuf,
+        prefix: PathBuf,
+        cellar_path: PathBuf,
         download_concurrency: usize,
     ) -> Self {
         Self {
@@ -99,6 +114,8 @@ impl Installer {
             db,
             tap_manager,
             taps_dir,
+            prefix,
+            cellar_path,
         }
     }
 
@@ -755,6 +772,171 @@ impl Installer {
         Ok(dependents)
     }
 
+    /// Get dependencies for a formula.
+    /// Returns a flat list of dependencies in topological order.
+    ///
+    /// # Arguments
+    /// * `name` - The formula name to get dependencies for
+    /// * `installed_only` - If true, only return installed dependencies
+    /// * `recursive` - If true, return all transitive dependencies; if false, only direct deps
+    pub async fn get_deps(&self, name: &str, installed_only: bool, recursive: bool) -> Result<Vec<String>, Error> {
+        let formula = self.fetch_formula(name).await?;
+
+        if recursive {
+            // Get all transitive dependencies
+            let formulas = self.fetch_all_formulas(name).await?;
+            let mut deps = zb_core::resolve_closure(name, &formulas)?;
+            // Remove the package itself
+            deps.retain(|n| n != name);
+
+            if installed_only {
+                deps.retain(|n| self.is_installed(n));
+            }
+
+            Ok(deps)
+        } else {
+            // Just direct dependencies
+            let mut deps = formula.effective_dependencies();
+
+            if installed_only {
+                deps.retain(|n| self.is_installed(n));
+            }
+
+            Ok(deps)
+        }
+    }
+
+    /// Get a dependency tree for a formula.
+    /// Returns a tree structure showing hierarchical dependencies.
+    pub async fn get_deps_tree(&self, name: &str, installed_only: bool) -> Result<DepsTree, Error> {
+        // Fetch all formulas for the dependency closure
+        let formulas = self.fetch_all_formulas(name).await?;
+
+        // Build the tree iteratively to avoid async recursion issues
+        fn build_tree_from_formula(
+            name: &str,
+            formulas: &BTreeMap<String, Formula>,
+            installed_only: bool,
+            is_installed: &dyn Fn(&str) -> bool,
+            visited: &mut std::collections::HashSet<String>,
+        ) -> DepsTree {
+            let installed = is_installed(name);
+
+            // Check for cycles
+            if visited.contains(name) {
+                return DepsTree {
+                    name: name.to_string(),
+                    installed,
+                    children: Vec::new(),
+                };
+            }
+            visited.insert(name.to_string());
+
+            // Get dependencies
+            let children = if let Some(formula) = formulas.get(name) {
+                let deps = formula.effective_dependencies();
+                deps.into_iter()
+                    .filter(|dep| !installed_only || is_installed(dep))
+                    .map(|dep| {
+                        build_tree_from_formula(&dep, formulas, installed_only, is_installed, visited)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            // Remove from visited so we can visit again on different paths (but not cycles)
+            visited.remove(name);
+
+            DepsTree {
+                name: name.to_string(),
+                installed,
+                children,
+            }
+        }
+
+        let is_installed = |n: &str| self.is_installed(n);
+        let mut visited = std::collections::HashSet::new();
+        Ok(build_tree_from_formula(name, &formulas, installed_only, &is_installed, &mut visited))
+    }
+
+    /// Get packages that use (depend on) a given formula.
+    /// For installed packages, this checks which installed packages depend on this formula.
+    /// This is a wrapper around get_dependents with the same logic.
+    ///
+    /// # Arguments
+    /// * `name` - The formula name to check
+    /// * `installed_only` - If true, only check installed packages (default behavior)
+    /// * `recursive` - If true, also include packages that transitively depend on this formula
+    pub async fn get_uses(&self, name: &str, installed_only: bool, recursive: bool) -> Result<Vec<String>, Error> {
+        // For uses, we only support checking installed packages
+        // (checking all formulas would require fetching the entire formula index)
+        if !installed_only {
+            // For now, installed_only=false behaves the same as installed_only=true
+            // A full implementation would need to scan all formulas in the API
+        }
+
+        let direct_dependents = self.get_dependents(name).await?;
+
+        if !recursive {
+            return Ok(direct_dependents);
+        }
+
+        // For recursive, also find packages that transitively depend on this formula
+        let mut all_dependents = std::collections::HashSet::new();
+        let mut to_check = direct_dependents.clone();
+
+        while let Some(pkg) = to_check.pop() {
+            if all_dependents.insert(pkg.clone()) {
+                // Find packages that depend on this dependent
+                if let Ok(indirect) = self.get_dependents(&pkg).await {
+                    for name in indirect {
+                        if !all_dependents.contains(&name) {
+                            to_check.push(name);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut result: Vec<_> = all_dependents.into_iter().collect();
+        result.sort();
+        Ok(result)
+    }
+
+    /// Get "leaf" packages - installed packages that no other installed package depends on.
+    /// These are typically top-level packages that the user explicitly installed.
+    pub async fn get_leaves(&self) -> Result<Vec<String>, Error> {
+        let installed = self.db.list_installed()?;
+
+        if installed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Collect all dependencies of all installed packages
+        let mut all_deps = std::collections::HashSet::new();
+
+        for keg in &installed {
+            // Fetch formula to get its dependencies
+            if let Ok(formula) = self.api_client.get_formula(&keg.name).await {
+                let deps = formula.effective_dependencies();
+                for dep in deps {
+                    all_deps.insert(dep);
+                }
+            }
+        }
+
+        // Leaves are packages that are not in any dependency list
+        let mut leaves: Vec<_> = installed
+            .iter()
+            .filter(|keg| !all_deps.contains(&keg.name))
+            .map(|keg| keg.name.clone())
+            .collect();
+
+        leaves.sort();
+        Ok(leaves)
+    }
+
     /// Check for outdated packages by comparing installed versions against API.
     /// By default, excludes pinned packages.
     pub async fn get_outdated(&self) -> Result<Vec<OutdatedPackage>, Error> {
@@ -1190,6 +1372,299 @@ impl Installer {
             self.cellar.keg_path(name, &keg.version)
         })
     }
+
+    // ========== Doctor Operations ==========
+
+    /// Run diagnostic checks on the zerobrew installation
+    pub async fn doctor(&self) -> DoctorResult {
+        let mut result = DoctorResult::default();
+
+        // Check 1: Prefix exists and is writable
+        result.checks.push(self.check_prefix_writable());
+
+        // Check 2: Cellar structure is valid
+        result.checks.push(self.check_cellar_structure());
+
+        // Check 3: Database integrity
+        result.checks.push(self.check_database_integrity());
+
+        // Check 4: Broken symlinks in bin/
+        result.checks.push(self.check_broken_symlinks());
+
+        // Check 5: Missing dependencies
+        result.checks.extend(self.check_missing_dependencies().await);
+
+        // Check 6: (Linux) patchelf installed
+        #[cfg(target_os = "linux")]
+        result.checks.push(self.check_patchelf());
+
+        // Check 7: Permissions on key directories
+        result.checks.extend(self.check_directory_permissions());
+
+        // Count errors and warnings
+        for check in &result.checks {
+            match check.status {
+                DoctorStatus::Error => result.errors += 1,
+                DoctorStatus::Warning => result.warnings += 1,
+                DoctorStatus::Ok => {}
+            }
+        }
+
+        result
+    }
+
+    fn check_prefix_writable(&self) -> DoctorCheck {
+        let prefix = &self.prefix;
+        if !prefix.exists() {
+            return DoctorCheck {
+                name: "prefix_exists".to_string(),
+                status: DoctorStatus::Error,
+                message: format!("Prefix directory '{}' does not exist", prefix.display()),
+                fix: Some(format!("Run: sudo mkdir -p {} && sudo chown $USER {}", prefix.display(), prefix.display())),
+            };
+        }
+
+        // Check if writable
+        let test_file = prefix.join(".zb_doctor_test");
+        if let Err(_) = std::fs::write(&test_file, b"test") {
+            return DoctorCheck {
+                name: "prefix_writable".to_string(),
+                status: DoctorStatus::Error,
+                message: format!("Prefix directory '{}' is not writable", prefix.display()),
+                fix: Some(format!("Run: sudo chown -R $USER {}", prefix.display())),
+            };
+        }
+        let _ = std::fs::remove_file(&test_file);
+
+        DoctorCheck {
+            name: "prefix_writable".to_string(),
+            status: DoctorStatus::Ok,
+            message: "Prefix directory exists and is writable".to_string(),
+            fix: None,
+        }
+    }
+
+    fn check_cellar_structure(&self) -> DoctorCheck {
+        let cellar = &self.cellar_path;
+        if !cellar.exists() {
+            return DoctorCheck {
+                name: "cellar_exists".to_string(),
+                status: DoctorStatus::Warning,
+                message: "Cellar directory does not exist (will be created on first install)".to_string(),
+                fix: None,
+            };
+        }
+
+        // Check if any installed packages have corrupted structure
+        if let Ok(installed) = self.db.list_installed() {
+            for keg in &installed {
+                let keg_path = self.cellar.keg_path(&keg.name, &keg.version);
+                if !keg_path.exists() {
+                    return DoctorCheck {
+                        name: "cellar_structure".to_string(),
+                        status: DoctorStatus::Error,
+                        message: format!("Installed package '{}' missing from Cellar at {}", keg.name, keg_path.display()),
+                        fix: Some(format!("Run: zb uninstall {} && zb install {}", keg.name, keg.name)),
+                    };
+                }
+            }
+        }
+
+        DoctorCheck {
+            name: "cellar_structure".to_string(),
+            status: DoctorStatus::Ok,
+            message: "Cellar structure is valid".to_string(),
+            fix: None,
+        }
+    }
+
+    fn check_database_integrity(&self) -> DoctorCheck {
+        // Check if we can list installed packages
+        if let Err(e) = self.db.list_installed() {
+            return DoctorCheck {
+                name: "database_integrity".to_string(),
+                status: DoctorStatus::Error,
+                message: format!("Database error: {}", e),
+                fix: Some("Try: zb reset && zb init".to_string()),
+            };
+        }
+
+        // Check for orphaned database entries (installed but not in Cellar)
+        if let Ok(installed) = self.db.list_installed() {
+            for keg in &installed {
+                let keg_path = self.cellar.keg_path(&keg.name, &keg.version);
+                if !keg_path.exists() {
+                    return DoctorCheck {
+                        name: "database_integrity".to_string(),
+                        status: DoctorStatus::Warning,
+                        message: format!("Database references '{}' but it's not in Cellar", keg.name),
+                        fix: Some(format!("Run: zb uninstall {}", keg.name)),
+                    };
+                }
+            }
+        }
+
+        DoctorCheck {
+            name: "database_integrity".to_string(),
+            status: DoctorStatus::Ok,
+            message: "Database is consistent".to_string(),
+            fix: None,
+        }
+    }
+
+    fn check_broken_symlinks(&self) -> DoctorCheck {
+        let bin_dir = self.prefix.join("bin");
+        if !bin_dir.exists() {
+            return DoctorCheck {
+                name: "broken_symlinks".to_string(),
+                status: DoctorStatus::Ok,
+                message: "No bin directory yet".to_string(),
+                fix: None,
+            };
+        }
+
+        let mut broken = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&bin_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_symlink() {
+                    if let Ok(target) = std::fs::read_link(&path) {
+                        let full_target = if target.is_relative() {
+                            path.parent().unwrap().join(&target)
+                        } else {
+                            target
+                        };
+                        if !full_target.exists() {
+                            broken.push(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        if broken.is_empty() {
+            DoctorCheck {
+                name: "broken_symlinks".to_string(),
+                status: DoctorStatus::Ok,
+                message: "No broken symlinks in bin/".to_string(),
+                fix: None,
+            }
+        } else {
+            DoctorCheck {
+                name: "broken_symlinks".to_string(),
+                status: DoctorStatus::Warning,
+                message: format!("{} broken symlinks in bin/: {}", broken.len(),
+                    broken.iter().take(3).map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>().join(", ")),
+                fix: Some("Run: zb cleanup".to_string()),
+            }
+        }
+    }
+
+    async fn check_missing_dependencies(&self) -> Vec<DoctorCheck> {
+        let mut checks = Vec::new();
+        let installed = match self.db.list_installed() {
+            Ok(i) => i,
+            Err(_) => return checks,
+        };
+
+        for keg in &installed {
+            // Get formula to check dependencies
+            if let Ok(formula) = self.api_client.get_formula(&keg.name).await {
+                let deps = formula.effective_dependencies();
+                let missing: Vec<_> = deps.iter()
+                    .filter(|d| !self.is_installed(d))
+                    .cloned()
+                    .collect();
+
+                if !missing.is_empty() {
+                    checks.push(DoctorCheck {
+                        name: "missing_dependencies".to_string(),
+                        status: DoctorStatus::Warning,
+                        message: format!("'{}' is missing dependencies: {}", keg.name, missing.join(", ")),
+                        fix: Some(format!("Run: zb install {}", missing.join(" "))),
+                    });
+                }
+            }
+        }
+
+        if checks.is_empty() {
+            checks.push(DoctorCheck {
+                name: "missing_dependencies".to_string(),
+                status: DoctorStatus::Ok,
+                message: "All dependencies are installed".to_string(),
+                fix: None,
+            });
+        }
+
+        checks
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_patchelf(&self) -> DoctorCheck {
+        // Check if patchelf is available
+        match std::process::Command::new("patchelf")
+            .arg("--version")
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let version = String::from_utf8_lossy(&output.stdout);
+                DoctorCheck {
+                    name: "patchelf".to_string(),
+                    status: DoctorStatus::Ok,
+                    message: format!("patchelf is installed ({})", version.trim()),
+                    fix: None,
+                }
+            }
+            _ => DoctorCheck {
+                name: "patchelf".to_string(),
+                status: DoctorStatus::Warning,
+                message: "patchelf is not installed - binary patching will be skipped".to_string(),
+                fix: Some("Install with: apt install patchelf, dnf install patchelf, or zb install patchelf".to_string()),
+            },
+        }
+    }
+
+    fn check_directory_permissions(&self) -> Vec<DoctorCheck> {
+        let mut checks = Vec::new();
+        let prefix = &self.prefix;
+
+        let dirs_to_check = [
+            prefix.to_path_buf(),
+            prefix.join("bin"),
+            prefix.join("Cellar"),
+            prefix.join("opt"),
+        ];
+
+        for dir in &dirs_to_check {
+            if !dir.exists() {
+                continue; // Will be created on first use
+            }
+
+            // Check if writable
+            let test_file = dir.join(".zb_doctor_test");
+            if std::fs::write(&test_file, b"test").is_err() {
+                checks.push(DoctorCheck {
+                    name: "directory_permissions".to_string(),
+                    status: DoctorStatus::Error,
+                    message: format!("Directory '{}' is not writable", dir.display()),
+                    fix: Some(format!("Run: sudo chown -R $USER {}", dir.display())),
+                });
+            } else {
+                let _ = std::fs::remove_file(&test_file);
+            }
+        }
+
+        if checks.is_empty() {
+            checks.push(DoctorCheck {
+                name: "directory_permissions".to_string(),
+                status: DoctorStatus::Ok,
+                message: "All directories have correct permissions".to_string(),
+                fix: None,
+            });
+        }
+
+        checks
+    }
 }
 
 /// Result of a link operation
@@ -1201,6 +1676,48 @@ pub struct LinkResult {
     pub already_linked: bool,
     /// True if --force was used to link a keg-only formula
     pub keg_only_forced: bool,
+}
+
+/// Status level for a doctor check
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoctorStatus {
+    /// Everything is fine
+    Ok,
+    /// A warning that may need attention
+    Warning,
+    /// A problem that should be fixed
+    Error,
+}
+
+/// Result of a single doctor check
+#[derive(Debug, Clone)]
+pub struct DoctorCheck {
+    /// Name of the check
+    pub name: String,
+    /// Status of the check
+    pub status: DoctorStatus,
+    /// Human-readable description of the result
+    pub message: String,
+    /// Suggested fix, if applicable
+    pub fix: Option<String>,
+}
+
+/// Result of running all doctor checks
+#[derive(Debug, Clone, Default)]
+pub struct DoctorResult {
+    /// All checks that were run
+    pub checks: Vec<DoctorCheck>,
+    /// Number of errors
+    pub errors: usize,
+    /// Number of warnings
+    pub warnings: usize,
+}
+
+impl DoctorResult {
+    /// Check if all checks passed without errors or warnings
+    pub fn is_healthy(&self) -> bool {
+        self.errors == 0 && self.warnings == 0
+    }
 }
 
 /// Create an Installer with standard paths
@@ -1260,6 +1777,8 @@ pub fn create_installer(
     let db = Database::open(&root.join("db/zb.sqlite3"))?;
     let tap_manager = TapManager::new(&taps_dir);
 
+    let cellar_path = prefix.join("Cellar");
+
     Ok(Installer::new(
         api_client,
         blob_cache,
@@ -1269,6 +1788,8 @@ pub fn create_installer(
         db,
         tap_manager,
         taps_dir,
+        prefix.to_path_buf(),
+        cellar_path,
         download_concurrency,
     ))
 }
@@ -1396,7 +1917,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("testpkg", true).await.unwrap();
@@ -1474,7 +1995,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("uninstallme", true).await.unwrap();
@@ -1554,7 +2075,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install and uninstall
         installer.install("gctest", true).await.unwrap();
@@ -1637,7 +2158,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install but don't uninstall
         installer.install("keepme", true).await.unwrap();
@@ -1751,7 +2272,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install main package (should also install dependency)
         installer.install("mainpkg", true).await.unwrap();
@@ -1847,7 +2368,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install root (should install all 5 packages)
         installer.install("root", true).await.unwrap();
@@ -1933,7 +2454,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install slow package (which depends on fast)
         // With streaming, fast should be extracted while slow is still downloading
@@ -2037,7 +2558,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install - should succeed (first download is valid in this test)
         installer.install("retrypkg", true).await.unwrap();
@@ -2159,7 +2680,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install main package - should succeed despite macos-only-dep not having Linux bottles
         let result = installer.install("mainpkg", true).await;
@@ -2285,7 +2806,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install old version
         installer.install("upgrademe", true).await.unwrap();
@@ -2379,7 +2900,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("current", true).await.unwrap();
@@ -2414,7 +2935,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Try to upgrade a package that's not installed
         let result = installer.upgrade_one("notinstalled", true, None).await;
@@ -2530,7 +3051,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install both packages at v1
         installer.install("pkg1", true).await.unwrap();
@@ -2596,7 +3117,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("uptodate", true).await.unwrap();
@@ -2674,7 +3195,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install with linking
         installer.install("linkedpkg", true).await.unwrap();
@@ -2735,7 +3256,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install
         installer.install("pinnable", true).await.unwrap();
@@ -2788,7 +3309,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Try to pin a package that's not installed
         let result = installer.pin("notinstalled");
@@ -2888,7 +3409,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install both packages at v1
         installer.install("pkg1", true).await.unwrap();
@@ -2971,7 +3492,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install root package (should also install deppkg as dependency)
         installer.install("rootpkg", true).await.unwrap();
@@ -3051,7 +3572,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install mypkg (which installs mydep as dependency)
         installer.install("mypkg", true).await.unwrap();
@@ -3128,7 +3649,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install parent (which installs child as dependency)
         installer.install("parent", true).await.unwrap();
@@ -3209,7 +3730,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install app (which installs lib as dependency)
         installer.install("app", true).await.unwrap();
@@ -3252,7 +3773,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Marking a non-installed package as explicit should fail
         let result = installer.mark_explicit("nonexistent");
@@ -3315,7 +3836,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install and then uninstall
         installer.install("cleanuppkg", true).await.unwrap();
@@ -3396,7 +3917,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install and then uninstall
         installer.install("dryrunpkg", true).await.unwrap();
@@ -3472,7 +3993,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install but DON'T uninstall
         installer.install("keeppkg", true).await.unwrap();
@@ -3553,7 +4074,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install without linking
         installer.install("linkpkg", false).await.unwrap();
@@ -3637,7 +4158,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install with linking
         installer.install("unlinkpkg", true).await.unwrap();
@@ -3724,7 +4245,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install with linking
         installer.install("alreadylinked", true).await.unwrap();
@@ -3752,7 +4273,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Try to link non-existent package
         let result = installer.link("notinstalled", false, false);
@@ -3776,7 +4297,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Try to unlink non-existent package
         let result = installer.unlink("notinstalled");
@@ -3844,7 +4365,7 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let mut installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // Install with linking
         installer.install("relinkpkg", true).await.unwrap();
@@ -3884,9 +4405,223 @@ mod tests {
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
 
-        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), 4);
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
 
         // is_linked should return false for uninstalled package
         assert!(!installer.is_linked("nonexistent"));
+    }
+
+    // ========== Deps/Uses/Leaves Tests ==========
+
+    #[tokio::test]
+    async fn get_deps_returns_direct_dependencies() {
+        let mock_server = MockServer::start().await;
+        let tag = platform_bottle_tag();
+
+        // Set up mock responses for pkgA which depends on pkgB
+        Mock::given(method("GET"))
+            .and(path("/pkgA.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "pkgA",
+                "versions": {"stable": "1.0.0"},
+                "dependencies": ["pkgB"],
+                "bottle": {
+                    "stable": {
+                        "files": {
+                            tag: {
+                                "url": format!("{}/pkgA.tar.gz", mock_server.uri()),
+                                "sha256": "aaaa"
+                            }
+                        }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/pkgB.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "pkgB",
+                "versions": {"stable": "1.0.0"},
+                "dependencies": [],
+                "bottle": {
+                    "stable": {
+                        "files": {
+                            tag: {
+                                "url": format!("{}/pkgB.tar.gz", mock_server.uri()),
+                                "sha256": "bbbb"
+                            }
+                        }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let prefix = root.join("prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        fs::create_dir_all(&root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+
+        // Get direct deps (non-recursive)
+        let deps = installer.get_deps("pkgA", false, false).await.unwrap();
+        assert_eq!(deps, vec!["pkgB"]);
+
+        // Get all deps (recursive) - should still be just pkgB since pkgB has no deps
+        let all_deps = installer.get_deps("pkgA", false, true).await.unwrap();
+        assert_eq!(all_deps, vec!["pkgB"]);
+    }
+
+    #[tokio::test]
+    async fn get_leaves_returns_packages_not_depended_on() {
+        let mock_server = MockServer::start().await;
+        let tag = platform_bottle_tag();
+
+        // Create two packages - one independent and one that depends on the other
+        let pkg_independent = serde_json::json!({
+            "name": "independent",
+            "versions": {"stable": "1.0.0"},
+            "dependencies": [],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        tag: {
+                            "url": format!("{}/independent.tar.gz", mock_server.uri()),
+                            "sha256": "aaaa"
+                        }
+                    }
+                }
+            }
+        });
+
+        let pkg_dependent = serde_json::json!({
+            "name": "dependent",
+            "versions": {"stable": "1.0.0"},
+            "dependencies": ["deplib"],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        tag: {
+                            "url": format!("{}/dependent.tar.gz", mock_server.uri()),
+                            "sha256": "bbbb"
+                        }
+                    }
+                }
+            }
+        });
+
+        let pkg_deplib = serde_json::json!({
+            "name": "deplib",
+            "versions": {"stable": "1.0.0"},
+            "dependencies": [],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        tag: {
+                            "url": format!("{}/deplib.tar.gz", mock_server.uri()),
+                            "sha256": "cccc"
+                        }
+                    }
+                }
+            }
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/independent.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&pkg_independent))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/dependent.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&pkg_dependent))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/deplib.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&pkg_deplib))
+            .mount(&mock_server)
+            .await;
+
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let prefix = root.join("prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        fs::create_dir_all(&root.join("db")).unwrap();
+
+        // Record some installed packages manually for testing BEFORE creating installer
+        // (Avoid full install flow to keep test simpler)
+        {
+            let mut db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+            let tx = db.transaction().unwrap();
+            tx.record_install("independent", "1.0.0", "aaa", true).unwrap();
+            tx.record_install("dependent", "1.0.0", "bbb", true).unwrap();
+            tx.record_install("deplib", "1.0.0", "ccc", false).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+
+        // Get leaves - should be independent and dependent (not deplib which is depended on)
+        let leaves = installer.get_leaves().await.unwrap();
+        assert!(leaves.contains(&"independent".to_string()));
+        assert!(leaves.contains(&"dependent".to_string()));
+        assert!(!leaves.contains(&"deplib".to_string()));
+    }
+
+    #[tokio::test]
+    async fn doctor_checks_run_without_panic() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let prefix = root.join("prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        fs::create_dir_all(&root.join("db")).unwrap();
+
+        let api_client = ApiClient::new();
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let installer = Installer::new(api_client, blob_cache, store, cellar, linker, db, tap_manager, taps_dir.clone(), prefix.to_path_buf(), prefix.join("Cellar"), 4);
+
+        // Doctor should run without panicking
+        let result = installer.doctor().await;
+
+        // Should have at least some checks
+        assert!(!result.checks.is_empty());
+
+        // On a fresh empty install, should be healthy
+        // (prefix exists and is writable, etc.)
+        assert_eq!(result.errors, 0);
     }
 }

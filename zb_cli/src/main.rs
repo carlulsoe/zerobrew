@@ -171,6 +171,44 @@ enum Commands {
         /// Formula name to unlink
         formula: String,
     },
+
+    /// Show dependencies for a formula
+    Deps {
+        /// Formula name to show dependencies for
+        formula: String,
+
+        /// Show dependencies as a tree
+        #[arg(long)]
+        tree: bool,
+
+        /// Only show installed dependencies
+        #[arg(long)]
+        installed: bool,
+
+        /// Include all recursive (transitive) dependencies
+        #[arg(long, short = '1')]
+        all: bool,
+    },
+
+    /// Show which installed formulas use (depend on) a given formula
+    Uses {
+        /// Formula name to check for dependents
+        formula: String,
+
+        /// Only show installed packages that use this formula
+        #[arg(long)]
+        installed: bool,
+
+        /// Include packages that transitively depend on this formula
+        #[arg(long)]
+        recursive: bool,
+    },
+
+    /// List installed formulas that are not dependencies of any other installed formula
+    Leaves,
+
+    /// Diagnose common issues with the zerobrew installation
+    Doctor,
 }
 
 #[tokio::main]
@@ -1732,6 +1770,164 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 );
             }
         }
+
+        Commands::Deps { formula, tree, installed, all } => {
+            if tree {
+                // Tree view
+                println!(
+                    "{} Dependencies for {} (tree view):",
+                    style("==>").cyan().bold(),
+                    style(&formula).bold()
+                );
+                println!();
+
+                let tree = installer.get_deps_tree(&formula, installed).await?;
+                print_deps_tree(&tree, "", true);
+            } else {
+                // Flat list view
+                let deps = installer.get_deps(&formula, installed, all).await?;
+
+                if deps.is_empty() {
+                    println!(
+                        "{} {} has no{}dependencies.",
+                        style("==>").cyan().bold(),
+                        style(&formula).bold(),
+                        if installed { " installed " } else { " " }
+                    );
+                } else {
+                    println!(
+                        "{} Dependencies for {}{}:",
+                        style("==>").cyan().bold(),
+                        style(&formula).bold(),
+                        if all { " (all)" } else { "" }
+                    );
+                    println!();
+
+                    for dep in &deps {
+                        let installed_marker = if installer.is_installed(dep) {
+                            style("✓").green().to_string()
+                        } else {
+                            style("✗").red().to_string()
+                        };
+                        println!("  {} {}", installed_marker, dep);
+                    }
+                }
+            }
+        }
+
+        Commands::Uses { formula, installed, recursive } => {
+            println!(
+                "{} Checking what uses {}...",
+                style("==>").cyan().bold(),
+                style(&formula).bold()
+            );
+
+            // Check if the formula exists (either installed or in API)
+            let formula_exists = installer.is_installed(&formula)
+                || installer.get_formula(&formula).await.is_ok();
+
+            if !formula_exists {
+                println!("Formula '{}' not found.", formula);
+                std::process::exit(1);
+            }
+
+            // uses command defaults to installed-only
+            let uses = installer.get_uses(&formula, installed || true, recursive).await?;
+
+            if uses.is_empty() {
+                println!(
+                    "{} No installed formulas use {}.",
+                    style("==>").cyan().bold(),
+                    style(&formula).bold()
+                );
+            } else {
+                println!(
+                    "{} {} installed formulas use {}{}:",
+                    style("==>").cyan().bold(),
+                    style(uses.len()).green().bold(),
+                    style(&formula).bold(),
+                    if recursive { " (directly or indirectly)" } else { "" }
+                );
+                println!();
+
+                for name in &uses {
+                    println!("  {}", name);
+                }
+            }
+        }
+
+        Commands::Leaves => {
+            println!(
+                "{} Finding leaf packages...",
+                style("==>").cyan().bold()
+            );
+
+            let leaves = installer.get_leaves().await?;
+
+            if leaves.is_empty() {
+                println!("No installed packages, or all packages are dependencies.");
+            } else {
+                println!(
+                    "{} {} leaf packages (not dependencies of other installed packages):",
+                    style("==>").cyan().bold(),
+                    style(leaves.len()).green().bold()
+                );
+                println!();
+
+                for name in &leaves {
+                    println!("  {}", name);
+                }
+            }
+        }
+
+        Commands::Doctor => {
+            println!(
+                "{} Running diagnostics...\n",
+                style("==>").cyan().bold()
+            );
+
+            let result = installer.doctor().await;
+
+            for check in &result.checks {
+                let (marker, color) = match check.status {
+                    zb_io::DoctorStatus::Ok => (style("✓").green(), ""),
+                    zb_io::DoctorStatus::Warning => (style("!").yellow(), ""),
+                    zb_io::DoctorStatus::Error => (style("✗").red(), ""),
+                };
+                let _ = color; // Suppress unused warning
+
+                println!("{} {}", marker, check.message);
+
+                if let Some(ref fix) = check.fix {
+                    println!("    {} {}", style("→").dim(), style(fix).dim());
+                }
+            }
+
+            println!();
+            if result.is_healthy() {
+                println!(
+                    "{} Your system is ready to brew!",
+                    style("==>").cyan().bold()
+                );
+            } else {
+                if result.errors > 0 {
+                    println!(
+                        "{} {} {} found",
+                        style("==>").cyan().bold(),
+                        style(result.errors).red().bold(),
+                        if result.errors == 1 { "error" } else { "errors" }
+                    );
+                }
+                if result.warnings > 0 {
+                    println!(
+                        "{} {} {} found",
+                        style("==>").cyan().bold(),
+                        style(result.warnings).yellow().bold(),
+                        if result.warnings == 1 { "warning" } else { "warnings" }
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
@@ -1841,6 +2037,41 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} bytes", bytes)
+    }
+}
+
+/// Print a dependency tree with ASCII art formatting
+fn print_deps_tree(tree: &zb_io::DepsTree, prefix: &str, is_last: bool) {
+    // Print current node
+    let connector = if prefix.is_empty() {
+        ""
+    } else if is_last {
+        "└── "
+    } else {
+        "├── "
+    };
+
+    let installed_marker = if tree.installed {
+        style("✓").green().to_string()
+    } else {
+        style("✗").red().to_string()
+    };
+
+    println!("{}{}{} {}", prefix, connector, installed_marker, tree.name);
+
+    // Prepare prefix for children
+    let new_prefix = if prefix.is_empty() {
+        "".to_string()
+    } else if is_last {
+        format!("{}    ", prefix)
+    } else {
+        format!("{}│   ", prefix)
+    };
+
+    // Print children
+    for (i, child) in tree.children.iter().enumerate() {
+        let is_last_child = i == tree.children.len() - 1;
+        print_deps_tree(child, &new_prefix, is_last_child);
     }
 }
 

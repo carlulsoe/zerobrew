@@ -796,7 +796,146 @@ git 2.44.0 (not linked)
 
 ---
 
-## Phase 2 Progress
+### 15. Implemented Deps/Uses Commands (Phase 2.5) ✅
+
+**Files modified:**
+- `zb_io/src/install.rs` - Added `get_deps()`, `get_deps_tree()`, `get_uses()` methods and `DepsTree` type
+- `zb_io/src/lib.rs` - Exported `DepsTree` type
+- `zb_cli/src/main.rs` - Added `zb deps` and `zb uses` commands with tree view support
+
+**Features:**
+- Show dependencies: `zb deps <formula>` - Lists all dependencies
+- Tree view: `zb deps --tree <formula>` - Shows hierarchical dependency tree
+- Installed only: `zb deps --installed <formula>` - Only show installed deps
+- All transitive: `zb deps -1 <formula>` or `zb deps --all <formula>` - Show all transitive deps
+- Reverse dependencies: `zb uses <formula>` - Shows packages that depend on this formula
+- Recursive uses: `zb uses --recursive <formula>` - Shows transitive reverse deps
+
+**Deps command options:**
+- `--tree` - Display as ASCII tree with installation status markers (✓/✗)
+- `--installed` - Filter to only installed dependencies
+- `--all` or `-1` - Include all transitive dependencies (not just direct)
+
+**Uses command options:**
+- `--installed` - Only check installed packages (default behavior)
+- `--recursive` - Include packages that transitively depend on this formula
+
+**Example usage:**
+```bash
+# Show direct dependencies
+$ zb deps git
+==> Dependencies for git:
+  ✓ gettext
+  ✓ pcre2
+  ✗ curl
+
+# Show as tree
+$ zb deps --tree openssl@3
+==> Dependencies for openssl@3 (tree view):
+✓ openssl@3
+├── ✓ ca-certificates
+└── ✗ zlib
+
+# Show what uses this formula
+$ zb uses gettext
+==> 3 installed formulas use gettext:
+  git
+  wget
+  glib
+```
+
+**New tests (3 total):**
+- `get_deps_returns_direct_dependencies` - Tests flat dependency listing
+- `get_leaves_returns_packages_not_depended_on` - Tests orphan detection
+- `doctor_checks_run_without_panic` - Tests doctor runs without errors
+
+### 16. Implemented Leaves Command (Phase 2.6) ✅
+
+**Files modified:**
+- `zb_io/src/install.rs` - Added `get_leaves()` method
+- `zb_cli/src/main.rs` - Added `zb leaves` command
+
+**Features:**
+- List leaf packages: `zb leaves` - Shows installed packages not depended on by others
+- Identifies top-level packages the user explicitly installed
+- Useful for finding packages that can be safely removed
+
+**Implementation details:**
+- Fetches formula metadata for all installed packages
+- Collects all dependencies across all installed packages
+- Returns packages that are not in any dependency list
+- Sorted alphabetically for consistent output
+
+**Example usage:**
+```bash
+$ zb leaves
+==> Finding leaf packages...
+==> 5 leaf packages (not dependencies of other installed packages):
+
+  git
+  neovim
+  ripgrep
+  tmux
+  zsh
+```
+
+### 17. Implemented Doctor Command (Phase 2.7) ✅
+
+**Files modified:**
+- `zb_io/src/install.rs` - Added `doctor()` method and `DoctorCheck`, `DoctorResult`, `DoctorStatus` types
+- `zb_io/src/lib.rs` - Exported doctor-related types
+- `zb_cli/src/main.rs` - Added `zb doctor` command
+
+**Features:**
+- Diagnostic checks for common installation issues
+- Status levels: Ok (✓), Warning (!), Error (✗)
+- Suggested fixes for each issue found
+- Summary of errors and warnings at the end
+
+**Diagnostic checks performed:**
+1. **Prefix writable** - Checks if prefix directory exists and is writable
+2. **Cellar structure** - Validates installed packages exist in Cellar
+3. **Database integrity** - Checks for orphaned database entries
+4. **Broken symlinks** - Finds broken symlinks in bin/
+5. **Missing dependencies** - Identifies installed packages with missing deps
+6. **patchelf installed** (Linux only) - Checks for binary patching tool
+7. **Directory permissions** - Validates write permissions on key directories
+
+**Example usage:**
+```bash
+$ zb doctor
+==> Running diagnostics...
+
+✓ Prefix directory exists and is writable
+✓ Cellar structure is valid
+✓ Database is consistent
+✓ No broken symlinks in bin/
+✓ All dependencies are installed
+✓ patchelf is installed (patchelf 0.18.0)
+✓ All directories have correct permissions
+
+==> Your system is ready to brew!
+
+# With issues:
+$ zb doctor
+==> Running diagnostics...
+
+✓ Prefix directory exists and is writable
+✗ Installed package 'foo' missing from Cellar at /opt/zerobrew/prefix/Cellar/foo/1.0.0
+    → Run: zb uninstall foo && zb install foo
+! 'bar' is missing dependencies: libdep
+    → Run: zb install libdep
+
+==> 1 error found
+==> 1 warning found
+```
+
+**New tests (1 total):**
+- `doctor_checks_run_without_panic` - Ensures doctor runs successfully on fresh install
+
+---
+
+## Phase 2 Complete! 🎉
 
 | Task | Status |
 |------|--------|
@@ -804,17 +943,19 @@ git 2.44.0 (not linked)
 | 2.2 Formula Ruby parser | ✅ Complete |
 | 2.3 Cleanup command | ✅ Complete |
 | 2.4 Link/unlink commands | ✅ Complete |
-| 2.5 Deps/uses commands | ⏳ Pending |
-| 2.6 Leaves command | ⏳ Pending |
-| 2.7 Doctor command | ⏳ Pending |
+| 2.5 Deps/uses commands | ✅ Complete |
+| 2.6 Leaves command | ✅ Complete |
+| 2.7 Doctor command | ✅ Complete |
 
 ---
 
-## Next Steps (Remaining Phase 2)
+## Next Steps (Phase 3)
 
-1. Implement deps/uses commands (2.5)
-2. Implement leaves command (2.6)
-3. Implement doctor command (2.7)
+Phase 3 focuses on service management:
+1. Implement `zb services list` - Show running services
+2. Implement `zb services start/stop/restart` - Control services
+3. Add systemd integration for Linux
+4. Add launchd integration for macOS
 
 ---
 
