@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use zb_core::Error;
+use zb_core::{Error, LinkConflictType};
 
 pub struct Linker {
     bin_dir: PathBuf,
@@ -84,11 +84,26 @@ impl Linker {
                         })?;
                         // Fall through to create new symlink below
                     } else {
-                        return Err(Error::LinkConflict { path: link_path });
+                        return Err(Error::LinkConflict {
+                            path: link_path,
+                            existing_type: LinkConflictType::SymlinkToOther {
+                                target: resolved_existing,
+                            },
+                        });
                     }
                 } else {
-                    // Not a symlink - it's a real file, conflict
-                    return Err(Error::LinkConflict { path: link_path });
+                    // Not a symlink - check if it's a file or directory
+                    let existing_type = if link_path.is_dir() {
+                        LinkConflictType::Directory
+                    } else if link_path.is_file() {
+                        LinkConflictType::RegularFile
+                    } else {
+                        LinkConflictType::Unknown
+                    };
+                    return Err(Error::LinkConflict {
+                        path: link_path,
+                        existing_type,
+                    });
                 }
             }
 

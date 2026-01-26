@@ -2079,7 +2079,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         }
                     }
                 }
-                Err(zb_core::Error::LinkConflict { path }) => {
+                Err(zb_core::Error::LinkConflict { path, .. }) => {
                     eprintln!(
                         "{} Could not link {}:",
                         style("error:").red().bold(),

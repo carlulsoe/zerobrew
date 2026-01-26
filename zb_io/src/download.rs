@@ -470,6 +470,7 @@ async fn download_response_internal(
         return Err(Error::ChecksumMismatch {
             expected: expected_sha256.to_string(),
             actual: actual_hash,
+            file_name: name.clone(),
         });
     }
 

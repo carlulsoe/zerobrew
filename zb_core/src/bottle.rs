@@ -106,8 +106,12 @@ pub fn select_bottle(formula: &Formula) -> Result<SelectedBottle, Error> {
         }
     }
 
+    // Collect available platforms for the error message
+    let available_platforms: Vec<String> = formula.bottle.stable.files.keys().cloned().collect();
+
     Err(Error::UnsupportedBottle {
         name: formula.name.clone(),
+        available_platforms,
     })
 }
 
@@ -261,7 +265,7 @@ mod tests {
         let err = select_bottle(&formula).unwrap_err();
         assert!(matches!(
             err,
-            Error::UnsupportedBottle { name } if name == "incompatible"
+            Error::UnsupportedBottle { name, .. } if name == "incompatible"
         ));
     }
 
@@ -436,7 +440,7 @@ mod tests {
         let err = select_bottle(&formula).unwrap_err();
         assert!(matches!(
             err,
-            Error::UnsupportedBottle { name } if name == "empty"
+            Error::UnsupportedBottle { name, .. } if name == "empty"
         ));
     }
 
