@@ -1141,6 +1141,78 @@ $ zb services cleanup
 
 ---
 
+### 20. Services Enhancements (Phase 3.3) ✅
+
+**Files modified:**
+- `zb_cli/src/main.rs` - Added `--json` flag to services list, added `enable`/`disable` subcommands
+
+**New Features:**
+
+**`zb services list --json`** - JSON output for services:
+- Returns array of service objects
+- Each object includes: name, status, pid, file, auto_start, error
+- Suitable for scripting and machine consumption
+
+**`zb services enable <formula>`** - Enable auto-start:
+- Enables a service to start automatically at login
+- On Linux: Uses `systemctl --user enable`
+- On macOS: Uses `launchctl load -w`
+- Shows error if service file doesn't exist yet
+
+**`zb services disable <formula>`** - Disable auto-start:
+- Disables a service from starting automatically
+- On Linux: Uses `systemctl --user disable`
+- On macOS: Uses `launchctl unload -w`
+- Keeps the service file for manual start
+
+**Example usage:**
+```bash
+# JSON output for scripting
+$ zb services list --json
+[
+  {
+    "name": "redis",
+    "status": "running",
+    "pid": 12345,
+    "file": "~/.config/systemd/user/zerobrew.redis.service",
+    "auto_start": true,
+    "error": null
+  }
+]
+
+# Enable auto-start
+$ zb services enable redis
+==> Enabling redis to start automatically...
+==> ✓ Enabled redis - it will start automatically at login
+
+# Disable auto-start
+$ zb services disable redis
+==> Disabling redis from starting automatically...
+==> ✓ Disabled redis - it will no longer start automatically
+```
+
+**New tests (3 total):**
+- `test_services_list_json_flag_parsing` - Tests --json flag parsing
+- `test_services_enable_parsing` - Tests enable subcommand parsing
+- `test_services_disable_parsing` - Tests disable subcommand parsing
+
+---
+
+## Phase 3 Enhancement Complete! 🎉
+
+| Task | Status |
+|------|--------|
+| 3.1 Services list/start/stop/restart | ✅ Complete |
+| 3.2 Systemd integration (Linux) | ✅ Complete |
+| 3.3 Launchd integration (macOS) | ✅ Complete |
+| 3.4 Services info command | ✅ Complete |
+| 3.5 Services log command | ✅ Complete |
+| 3.6 Services cleanup command | ✅ Complete |
+| 3.7 Services list --json | ✅ Complete |
+| 3.8 Services enable/disable | ✅ Complete |
+
+---
+
 ## Next Steps (Phase 4)
 
 Phase 4: Source Builds (v1.0) - marked as high complexity:
@@ -1149,10 +1221,10 @@ Phase 4: Source Builds (v1.0) - marked as high complexity:
 3. Support common build systems (configure/make, cmake, meson)
 4. Build from HEAD (git clone)
 
-Alternative quick wins to consider:
-- Add `--json` flag to `services list`
-- Add `zb services enable/disable` for auto-start control
+Additional improvements to consider:
 - Service dependency ordering
+- `--json` flag for search command
+- Search filters (e.g., `--installed-only`)
 
 ---
 

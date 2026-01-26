@@ -220,11 +220,27 @@ enum Commands {
 #[derive(Subcommand, Clone)]
 enum ServicesAction {
     /// List all managed services and their status
-    List,
+    List {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Start a service
     Start {
         /// Formula name to start
+        formula: String,
+    },
+
+    /// Enable a service to start automatically at login
+    Enable {
+        /// Formula name to enable
+        formula: String,
+    },
+
+    /// Disable a service from starting automatically
+    Disable {
+        /// Formula name to disable
         formula: String,
     },
 
@@ -1996,8 +2012,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             let service_manager = ServiceManager::new(&cli.prefix);
 
             match action {
-                None | Some(ServicesAction::List) => {
-                    // List all services
+                None | Some(ServicesAction::List { json: false }) => {
+                    // List all services (human-readable format)
                     let services = service_manager.list()?;
 
                     if services.is_empty() {
@@ -2047,6 +2063,34 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                             );
                         }
                     }
+                }
+
+                Some(ServicesAction::List { json: true }) => {
+                    // List all services (JSON format)
+                    let services = service_manager.list()?;
+
+                    let json_services: Vec<serde_json::Value> = services
+                        .iter()
+                        .map(|s| {
+                            serde_json::json!({
+                                "name": s.name,
+                                "status": match &s.status {
+                                    ServiceStatus::Running => "running",
+                                    ServiceStatus::Stopped => "stopped",
+                                    ServiceStatus::Unknown => "unknown",
+                                    ServiceStatus::Error(_) => "error",
+                                },
+                                "pid": s.pid,
+                                "file": s.file_path.to_string_lossy(),
+                                "auto_start": s.auto_start,
+                                "error": match &s.status {
+                                    ServiceStatus::Error(msg) => Some(msg.clone()),
+                                    _ => None,
+                                }
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json_services).unwrap());
                 }
 
                 Some(ServicesAction::Start { formula }) => {
@@ -2146,6 +2190,81 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                         style("✓").green(),
                         style(&formula).bold()
                     );
+                }
+
+                Some(ServicesAction::Enable { formula }) => {
+                    // Check if service file exists
+                    let info = service_manager.get_service_info(&formula)?;
+                    if !info.file_path.exists() {
+                        eprintln!(
+                            "{} No service file found for '{}'.",
+                            style("error:").red().bold(),
+                            formula
+                        );
+                        eprintln!();
+                        eprintln!("    Start the service first to create the service file:");
+                        eprintln!("    {} services start {}", style("zb").cyan(), formula);
+                        std::process::exit(1);
+                    }
+
+                    if info.auto_start {
+                        println!(
+                            "{} {} is already set to start automatically.",
+                            style("==>").cyan().bold(),
+                            style(&formula).bold()
+                        );
+                    } else {
+                        println!(
+                            "{} Enabling {} to start automatically...",
+                            style("==>").cyan().bold(),
+                            style(&formula).bold()
+                        );
+
+                        service_manager.enable_auto_start(&formula)?;
+
+                        println!(
+                            "{} {} Enabled {} - it will start automatically at login",
+                            style("==>").cyan().bold(),
+                            style("✓").green(),
+                            style(&formula).bold()
+                        );
+                    }
+                }
+
+                Some(ServicesAction::Disable { formula }) => {
+                    // Check if service file exists
+                    let info = service_manager.get_service_info(&formula)?;
+                    if !info.file_path.exists() {
+                        eprintln!(
+                            "{} No service file found for '{}'.",
+                            style("error:").red().bold(),
+                            formula
+                        );
+                        std::process::exit(1);
+                    }
+
+                    if !info.auto_start {
+                        println!(
+                            "{} {} is not set to start automatically.",
+                            style("==>").cyan().bold(),
+                            style(&formula).bold()
+                        );
+                    } else {
+                        println!(
+                            "{} Disabling {} from starting automatically...",
+                            style("==>").cyan().bold(),
+                            style(&formula).bold()
+                        );
+
+                        service_manager.disable_auto_start(&formula)?;
+
+                        println!(
+                            "{} {} Disabled {} - it will no longer start automatically",
+                            style("==>").cyan().bold(),
+                            style("✓").green(),
+                            style(&formula).bold()
+                        );
+                    }
                 }
 
                 Some(ServicesAction::Run { formula }) => {
@@ -2679,5 +2798,66 @@ mod tests {
     fn test_format_bytes_gigabytes() {
         assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
         assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0 GB");
+    }
+
+    #[test]
+    fn test_services_list_json_flag_parsing() {
+        use clap::Parser;
+
+        // Test that --json flag is parsed correctly for services list
+        let cli = Cli::try_parse_from(["zb", "services", "list", "--json"]);
+        assert!(cli.is_ok());
+        if let Ok(cli) = cli {
+            match cli.command {
+                Commands::Services { action: Some(ServicesAction::List { json }) } => {
+                    assert!(json);
+                }
+                _ => panic!("Expected Services List command"),
+            }
+        }
+
+        // Test services list without --json flag
+        let cli = Cli::try_parse_from(["zb", "services", "list"]);
+        assert!(cli.is_ok());
+        if let Ok(cli) = cli {
+            match cli.command {
+                Commands::Services { action: Some(ServicesAction::List { json }) } => {
+                    assert!(!json);
+                }
+                _ => panic!("Expected Services List command"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_services_enable_parsing() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "services", "enable", "redis"]);
+        assert!(cli.is_ok());
+        if let Ok(cli) = cli {
+            match cli.command {
+                Commands::Services { action: Some(ServicesAction::Enable { formula }) } => {
+                    assert_eq!(formula, "redis");
+                }
+                _ => panic!("Expected Services Enable command"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_services_disable_parsing() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "services", "disable", "postgresql"]);
+        assert!(cli.is_ok());
+        if let Ok(cli) = cli {
+            match cli.command {
+                Commands::Services { action: Some(ServicesAction::Disable { formula }) } => {
+                    assert_eq!(formula, "postgresql");
+                }
+                _ => panic!("Expected Services Disable command"),
+            }
+        }
     }
 }
