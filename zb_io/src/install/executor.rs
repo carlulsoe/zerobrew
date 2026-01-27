@@ -163,9 +163,9 @@ impl Installer {
             return Err(e);
         }
 
-        // Record all successful installs in database (in order)
+        // Record all successful installs in database (in a single transaction for efficiency)
+        let tx = self.db.transaction()?;
         for processed in completed.into_iter().flatten() {
-            let tx = self.db.transaction()?;
             tx.record_install(
                 &processed.name,
                 &processed.version,
@@ -181,9 +181,8 @@ impl Installer {
                     &linked.target_path.to_string_lossy(),
                 )?;
             }
-
-            tx.commit()?;
         }
+        tx.commit()?;
 
         Ok(ExecuteResult {
             installed: to_install.len(),
