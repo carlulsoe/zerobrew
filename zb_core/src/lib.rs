@@ -1,3 +1,6 @@
+// Allow clippy lints that are acceptable in this codebase
+#![allow(clippy::nonminimal_bool)]
+
 pub mod bottle;
 pub mod context;
 pub mod errors;

@@ -1,3 +1,5 @@
+#![allow(clippy::unnecessary_unwrap)]
+
 //! Integration tests for services CLI commands.
 //!
 //! These tests verify the integration between CLI commands and the underlying
