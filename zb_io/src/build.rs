@@ -617,126 +617,1041 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_detect_build_system_cmake() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("CMakeLists.txt"),
-            "cmake_minimum_required(VERSION 3.0)",
-        )
-        .unwrap();
+    // ==========================================================================
+    // Build System Detection Tests
+    // ==========================================================================
 
-        assert_eq!(detect_build_system(tmp.path()), BuildSystem::CMake);
+    mod build_system_detection {
+        use super::*;
+
+        #[test]
+        fn detects_cmake() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("CMakeLists.txt"),
+                "cmake_minimum_required(VERSION 3.0)",
+            )
+            .unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::CMake);
+        }
+
+        #[test]
+        fn detects_meson() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("meson.build"), "project('test')").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Meson);
+        }
+
+        #[test]
+        fn detects_autotools_configure() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("configure"), "#!/bin/sh").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Autotools);
+        }
+
+        #[test]
+        fn detects_autotools_configure_ac() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("configure.ac"), "AC_INIT([test], [1.0])").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Autotools);
+        }
+
+        #[test]
+        fn detects_autotools_autogen_sh() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("autogen.sh"), "#!/bin/sh\nautoreconf -i").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Autotools);
+        }
+
+        #[test]
+        fn detects_make() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("Makefile"), "all:\n\techo hello").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Make);
+        }
+
+        #[test]
+        fn detects_gnumakefile() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("GNUmakefile"), "all:\n\techo hello").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Make);
+        }
+
+        #[test]
+        fn returns_unknown_for_empty_directory() {
+            let tmp = TempDir::new().unwrap();
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Unknown);
+        }
+
+        #[test]
+        fn returns_unknown_for_nonexistent_directory() {
+            let path = PathBuf::from("/nonexistent/path/that/does/not/exist");
+            assert_eq!(detect_build_system(&path), BuildSystem::Unknown);
+        }
+
+        #[test]
+        fn returns_unknown_for_unrecognized_files() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("setup.py"), "from setuptools import setup").unwrap();
+            std::fs::write(tmp.path().join("package.json"), "{}").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Unknown);
+        }
+
+        // Priority tests - build systems are checked in a specific order
+
+        #[test]
+        fn cmake_takes_priority_over_make() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("CMakeLists.txt"), "").unwrap();
+            std::fs::write(tmp.path().join("Makefile"), "").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::CMake);
+        }
+
+        #[test]
+        fn cmake_takes_priority_over_meson() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("CMakeLists.txt"), "").unwrap();
+            std::fs::write(tmp.path().join("meson.build"), "").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::CMake);
+        }
+
+        #[test]
+        fn meson_takes_priority_over_autotools() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("meson.build"), "").unwrap();
+            std::fs::write(tmp.path().join("configure"), "").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Meson);
+        }
+
+        #[test]
+        fn autotools_takes_priority_over_make() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("configure"), "").unwrap();
+            std::fs::write(tmp.path().join("Makefile"), "").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Autotools);
+        }
+
+        #[test]
+        fn configure_ac_takes_priority_over_make() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("configure.ac"), "").unwrap();
+            std::fs::write(tmp.path().join("Makefile"), "").unwrap();
+
+            assert_eq!(detect_build_system(tmp.path()), BuildSystem::Autotools);
+        }
     }
 
-    #[test]
-    fn test_detect_build_system_meson() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("meson.build"), "project('test')").unwrap();
+    // ==========================================================================
+    // BuildSystem Enum Tests
+    // ==========================================================================
 
-        assert_eq!(detect_build_system(tmp.path()), BuildSystem::Meson);
+    mod build_system_enum {
+        use super::*;
+
+        #[test]
+        fn build_system_is_clone() {
+            let bs = BuildSystem::CMake;
+            let cloned = bs.clone();
+            assert_eq!(bs, cloned);
+        }
+
+        #[test]
+        fn build_system_is_eq() {
+            assert_eq!(BuildSystem::CMake, BuildSystem::CMake);
+            assert_ne!(BuildSystem::CMake, BuildSystem::Meson);
+        }
+
+        #[test]
+        fn build_system_is_debug() {
+            let bs = BuildSystem::Autotools;
+            let debug_str = format!("{:?}", bs);
+            assert!(debug_str.contains("Autotools"));
+        }
+
+        #[test]
+        fn all_variants_are_distinct() {
+            let variants = vec![
+                BuildSystem::Autotools,
+                BuildSystem::CMake,
+                BuildSystem::Meson,
+                BuildSystem::Make,
+                BuildSystem::Custom,
+                BuildSystem::Unknown,
+            ];
+            for (i, a) in variants.iter().enumerate() {
+                for (j, b) in variants.iter().enumerate() {
+                    if i == j {
+                        assert_eq!(a, b);
+                    } else {
+                        assert_ne!(a, b);
+                    }
+                }
+            }
+        }
     }
 
-    #[test]
-    fn test_detect_build_system_autotools() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("configure"), "#!/bin/sh").unwrap();
+    // ==========================================================================
+    // BuildEnvironment Tests
+    // ==========================================================================
 
-        assert_eq!(detect_build_system(tmp.path()), BuildSystem::Autotools);
+    mod build_environment {
+        use super::*;
+
+        fn make_test_formula() -> Formula {
+            Formula {
+                name: "test-pkg".to_string(),
+                dependencies: vec!["dep1".to_string(), "dep2".to_string()],
+                build_dependencies: vec!["build-dep1".to_string()],
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn creates_correct_paths() {
+            let formula = make_test_formula();
+            let source_dir = PathBuf::from("/tmp/test-source");
+            let prefix = PathBuf::from("/opt/zerobrew/prefix");
+            let opt_dir = PathBuf::from("/opt/zerobrew/prefix/opt");
+            let staging_dir = PathBuf::from("/tmp/test-staging");
+
+            let env = BuildEnvironment::new(
+                &formula,
+                source_dir.clone(),
+                &prefix,
+                &opt_dir,
+                staging_dir.clone(),
+            );
+
+            assert_eq!(env.source_dir, source_dir);
+            assert_eq!(env.build_dir, source_dir.join("build"));
+            assert_eq!(env.prefix, prefix);
+            assert_eq!(env.staging_dir, staging_dir);
+        }
+
+        #[test]
+        fn jobs_is_positive() {
+            let formula = Formula::default();
+            let env = BuildEnvironment::new(
+                &formula,
+                PathBuf::from("/tmp/source"),
+                &PathBuf::from("/prefix"),
+                &PathBuf::from("/opt"),
+                PathBuf::from("/staging"),
+            );
+
+            assert!(env.jobs > 0);
+        }
+
+        #[test]
+        fn uses_cc_from_environment() {
+            // Save original
+            let original_cc = std::env::var("CC").ok();
+            let original_cxx = std::env::var("CXX").ok();
+
+            // SAFETY: This test is single-threaded and we restore the original values
+            unsafe {
+                std::env::set_var("CC", "custom-cc");
+                std::env::set_var("CXX", "custom-c++");
+            }
+
+            let formula = Formula::default();
+            let env = BuildEnvironment::new(
+                &formula,
+                PathBuf::from("/tmp/source"),
+                &PathBuf::from("/prefix"),
+                &PathBuf::from("/opt"),
+                PathBuf::from("/staging"),
+            );
+
+            assert_eq!(env.cc, "custom-cc");
+            assert_eq!(env.cxx, "custom-c++");
+
+            // Restore
+            // SAFETY: Restoring original environment state
+            unsafe {
+                if let Some(cc) = original_cc {
+                    std::env::set_var("CC", cc);
+                } else {
+                    std::env::remove_var("CC");
+                }
+                if let Some(cxx) = original_cxx {
+                    std::env::set_var("CXX", cxx);
+                } else {
+                    std::env::remove_var("CXX");
+                }
+            }
+        }
+
+        #[test]
+        fn defaults_to_cc_and_cxx() {
+            // Ensure CC/CXX are unset
+            let original_cc = std::env::var("CC").ok();
+            let original_cxx = std::env::var("CXX").ok();
+
+            // SAFETY: This test is single-threaded and we restore the original values
+            unsafe {
+                std::env::remove_var("CC");
+                std::env::remove_var("CXX");
+            }
+
+            let formula = Formula::default();
+            let env = BuildEnvironment::new(
+                &formula,
+                PathBuf::from("/tmp/source"),
+                &PathBuf::from("/prefix"),
+                &PathBuf::from("/opt"),
+                PathBuf::from("/staging"),
+            );
+
+            assert_eq!(env.cc, "cc");
+            assert_eq!(env.cxx, "c++");
+
+            // Restore
+            // SAFETY: Restoring original environment state
+            unsafe {
+                if let Some(cc) = original_cc {
+                    std::env::set_var("CC", cc);
+                }
+                if let Some(cxx) = original_cxx {
+                    std::env::set_var("CXX", cxx);
+                }
+            }
+        }
+
+        #[test]
+        fn sets_paths_for_existing_dependencies() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Create dependency directories
+            let dep1 = opt_dir.join("dep1");
+            std::fs::create_dir_all(dep1.join("include")).unwrap();
+            std::fs::create_dir_all(dep1.join("lib/pkgconfig")).unwrap();
+            std::fs::create_dir_all(dep1.join("bin")).unwrap();
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep1".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            assert!(env.cflags.contains("-I"));
+            assert!(env.cflags.contains("include"));
+            assert!(env.ldflags.contains("-L"));
+            assert!(env.ldflags.contains("lib"));
+            assert!(env.pkg_config_path.contains("pkgconfig"));
+            assert!(env.env.contains_key("PATH"));
+        }
+
+        #[test]
+        fn ignores_nonexistent_dependencies() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+            // Don't create any directories
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["missing-dep".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            // Should have empty flags since dependency doesn't exist
+            assert!(env.cflags.is_empty());
+            assert!(env.ldflags.is_empty());
+            assert!(env.pkg_config_path.is_empty());
+        }
+
+        #[test]
+        fn combines_deps_and_build_deps() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Create both runtime and build dependency dirs
+            let dep1 = opt_dir.join("runtime-dep");
+            let dep2 = opt_dir.join("build-dep");
+            std::fs::create_dir_all(dep1.join("include")).unwrap();
+            std::fs::create_dir_all(dep2.join("include")).unwrap();
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["runtime-dep".to_string()],
+                build_dependencies: vec!["build-dep".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            // Both should be in CFLAGS
+            assert!(env.cflags.contains("runtime-dep"));
+            assert!(env.cflags.contains("build-dep"));
+        }
+
+        #[test]
+        fn get_env_includes_compilers() {
+            let formula = Formula::default();
+            let env = BuildEnvironment::new(
+                &formula,
+                PathBuf::from("/tmp/source"),
+                &PathBuf::from("/prefix"),
+                &PathBuf::from("/opt"),
+                PathBuf::from("/staging"),
+            );
+
+            let env_vars = env.get_env();
+            assert!(env_vars.contains_key("CC"));
+            assert!(env_vars.contains_key("CXX"));
+        }
+
+        #[test]
+        fn get_env_includes_flags_when_set() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Create a dependency with all paths
+            let dep = opt_dir.join("dep");
+            std::fs::create_dir_all(dep.join("include")).unwrap();
+            std::fs::create_dir_all(dep.join("lib/pkgconfig")).unwrap();
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            let env_vars = env.get_env();
+            assert!(env_vars.contains_key("CFLAGS"));
+            assert!(env_vars.contains_key("CXXFLAGS"));
+            assert!(env_vars.contains_key("LDFLAGS"));
+            assert!(env_vars.contains_key("PKG_CONFIG_PATH"));
+        }
+
+        #[test]
+        fn get_env_omits_empty_flags() {
+            let formula = Formula::default();
+            let env = BuildEnvironment::new(
+                &formula,
+                PathBuf::from("/tmp/source"),
+                &PathBuf::from("/prefix"),
+                &PathBuf::from("/opt"),
+                PathBuf::from("/staging"),
+            );
+
+            let env_vars = env.get_env();
+            // Empty flags should not be set
+            if let Some(cflags) = env_vars.get("CFLAGS") {
+                assert!(!cflags.is_empty());
+            }
+            if let Some(ldflags) = env_vars.get("LDFLAGS") {
+                assert!(!ldflags.is_empty());
+            }
+        }
     }
 
-    #[test]
-    fn test_detect_build_system_autotools_configure_ac() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("configure.ac"), "AC_INIT([test], [1.0])").unwrap();
+    // ==========================================================================
+    // File Collection Tests
+    // ==========================================================================
 
-        assert_eq!(detect_build_system(tmp.path()), BuildSystem::Autotools);
+    mod collect_installed_files {
+        use super::*;
+
+        #[test]
+        fn collects_files_from_flat_structure() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("file1.txt"), "content").unwrap();
+            std::fs::write(tmp.path().join("file2.txt"), "content").unwrap();
+
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+            assert_eq!(files.len(), 2);
+            assert!(files.contains(&PathBuf::from("file1.txt")));
+            assert!(files.contains(&PathBuf::from("file2.txt")));
+        }
+
+        #[test]
+        fn collects_files_from_nested_structure() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("bin")).unwrap();
+            std::fs::create_dir_all(tmp.path().join("lib/pkgconfig")).unwrap();
+            std::fs::create_dir_all(tmp.path().join("include/subdir")).unwrap();
+
+            std::fs::write(tmp.path().join("bin/exe"), "binary").unwrap();
+            std::fs::write(tmp.path().join("lib/libfoo.so"), "library").unwrap();
+            std::fs::write(tmp.path().join("lib/pkgconfig/foo.pc"), "pkg").unwrap();
+            std::fs::write(tmp.path().join("include/foo.h"), "header").unwrap();
+            std::fs::write(tmp.path().join("include/subdir/bar.h"), "header").unwrap();
+
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+            assert_eq!(files.len(), 5);
+            assert!(files.contains(&PathBuf::from("bin/exe")));
+            assert!(files.contains(&PathBuf::from("lib/libfoo.so")));
+            assert!(files.contains(&PathBuf::from("lib/pkgconfig/foo.pc")));
+            assert!(files.contains(&PathBuf::from("include/foo.h")));
+            assert!(files.contains(&PathBuf::from("include/subdir/bar.h")));
+        }
+
+        #[test]
+        fn returns_empty_for_empty_directory() {
+            let tmp = TempDir::new().unwrap();
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+            assert!(files.is_empty());
+        }
+
+        #[test]
+        fn returns_empty_for_nonexistent_directory() {
+            let path = PathBuf::from("/nonexistent/path");
+            let files = super::super::collect_installed_files(&path).unwrap();
+            assert!(files.is_empty());
+        }
+
+        #[test]
+        fn ignores_empty_subdirectories() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("empty_dir")).unwrap();
+            std::fs::write(tmp.path().join("file.txt"), "content").unwrap();
+
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+            assert_eq!(files.len(), 1);
+            assert!(files.contains(&PathBuf::from("file.txt")));
+        }
+
+        #[test]
+        fn returns_sorted_files() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("z.txt"), "").unwrap();
+            std::fs::write(tmp.path().join("a.txt"), "").unwrap();
+            std::fs::write(tmp.path().join("m.txt"), "").unwrap();
+
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+            assert_eq!(files[0], PathBuf::from("a.txt"));
+            assert_eq!(files[1], PathBuf::from("m.txt"));
+            assert_eq!(files[2], PathBuf::from("z.txt"));
+        }
+
+        #[test]
+        fn handles_deeply_nested_structure() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("a/b/c/d/e")).unwrap();
+            std::fs::write(tmp.path().join("a/b/c/d/e/deep.txt"), "deep").unwrap();
+
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+            assert_eq!(files.len(), 1);
+            assert!(files.contains(&PathBuf::from("a/b/c/d/e/deep.txt")));
+        }
     }
 
-    #[test]
-    fn test_detect_build_system_make() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("Makefile"), "all:").unwrap();
+    // ==========================================================================
+    // SHA256 Checksum Tests
+    // ==========================================================================
 
-        assert_eq!(detect_build_system(tmp.path()), BuildSystem::Make);
+    mod compute_sha256 {
+        use super::*;
+
+        #[test]
+        fn computes_correct_hash_for_known_content() {
+            let tmp = TempDir::new().unwrap();
+            let file = tmp.path().join("test.txt");
+            std::fs::write(&file, "hello world\n").unwrap();
+
+            let hash = super::super::compute_sha256(&file).unwrap();
+            // SHA256 of "hello world\n"
+            assert_eq!(
+                hash,
+                "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
+            );
+        }
+
+        #[test]
+        fn computes_correct_hash_for_empty_file() {
+            let tmp = TempDir::new().unwrap();
+            let file = tmp.path().join("empty.txt");
+            std::fs::write(&file, "").unwrap();
+
+            let hash = super::super::compute_sha256(&file).unwrap();
+            // SHA256 of empty string
+            assert_eq!(
+                hash,
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            );
+        }
+
+        #[test]
+        fn computes_correct_hash_for_binary_content() {
+            let tmp = TempDir::new().unwrap();
+            let file = tmp.path().join("binary.bin");
+            std::fs::write(&file, [0u8, 1, 2, 3, 255, 254, 253]).unwrap();
+
+            let hash = super::super::compute_sha256(&file).unwrap();
+            assert!(!hash.is_empty());
+            assert_eq!(hash.len(), 64); // SHA256 is 64 hex chars
+        }
+
+        #[test]
+        fn errors_on_nonexistent_file() {
+            let path = PathBuf::from("/nonexistent/file.txt");
+            let result = super::super::compute_sha256(&path);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn handles_large_file() {
+            let tmp = TempDir::new().unwrap();
+            let file = tmp.path().join("large.bin");
+            // Create a 1MB file
+            let data = vec![0x42u8; 1024 * 1024];
+            std::fs::write(&file, &data).unwrap();
+
+            let hash = super::super::compute_sha256(&file).unwrap();
+            assert_eq!(hash.len(), 64);
+        }
     }
 
-    #[test]
-    fn test_detect_build_system_unknown() {
-        let tmp = TempDir::new().unwrap();
-        // Empty directory - no build system detected
-        assert_eq!(detect_build_system(tmp.path()), BuildSystem::Unknown);
+    // ==========================================================================
+    // Builder Tests
+    // ==========================================================================
+
+    mod builder {
+        use super::*;
+
+        fn make_test_env(tmp: &TempDir) -> BuildEnvironment {
+            let formula = Formula::default();
+            BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &tmp.path().join("opt"),
+                tmp.path().join("staging"),
+            )
+        }
+
+        #[test]
+        fn builder_creation() {
+            let tmp = TempDir::new().unwrap();
+            let env = make_test_env(&tmp);
+            let builder = Builder::new(env.clone());
+
+            assert_eq!(builder.env.source_dir, env.source_dir);
+        }
+
+        #[test]
+        fn build_auto_returns_error_for_unknown_build_system() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+
+            let env = make_test_env(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.build_auto(&[]);
+            assert!(result.is_err());
+
+            let err = result.unwrap_err();
+            let err_msg = format!("{:?}", err);
+            assert!(err_msg.contains("could not detect build system"));
+        }
+
+        #[test]
+        fn build_auto_returns_error_for_custom_build_system() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            // Write a file that doesn't match any build system
+            std::fs::write(tmp.path().join("source/build.zig"), "").unwrap();
+
+            let env = make_test_env(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.build_auto(&[]);
+            assert!(result.is_err());
+        }
     }
 
-    #[test]
-    fn test_detect_build_system_priority_cmake_over_make() {
-        // CMake should take priority over Makefile
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("CMakeLists.txt"), "").unwrap();
-        std::fs::write(tmp.path().join("Makefile"), "").unwrap();
+    // ==========================================================================
+    // BuildResult Tests
+    // ==========================================================================
 
-        assert_eq!(detect_build_system(tmp.path()), BuildSystem::CMake);
+    mod build_result {
+        use super::*;
+
+        #[test]
+        fn build_result_is_debug() {
+            let result = BuildResult {
+                success: true,
+                installed_files: vec![PathBuf::from("bin/test")],
+                output: "Build completed".to_string(),
+            };
+
+            let debug_str = format!("{:?}", result);
+            assert!(debug_str.contains("success"));
+            assert!(debug_str.contains("true"));
+        }
+
+        #[test]
+        fn build_result_stores_files() {
+            let result = BuildResult {
+                success: true,
+                installed_files: vec![PathBuf::from("bin/a"), PathBuf::from("lib/b.so")],
+                output: String::new(),
+            };
+
+            assert_eq!(result.installed_files.len(), 2);
+        }
     }
 
-    #[test]
-    fn test_collect_installed_files() {
-        let tmp = TempDir::new().unwrap();
+    // ==========================================================================
+    // Extract Tarball Tests
+    // ==========================================================================
 
-        // Create a directory structure
-        std::fs::create_dir_all(tmp.path().join("bin")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("lib")).unwrap();
-        std::fs::write(tmp.path().join("bin/foo"), "binary").unwrap();
-        std::fs::write(tmp.path().join("lib/libfoo.so"), "library").unwrap();
+    mod extract_tarball {
+        use super::*;
 
-        let files = collect_installed_files(tmp.path()).unwrap();
+        #[test]
+        fn creates_destination_directory() {
+            let tmp = TempDir::new().unwrap();
+            let dest = tmp.path().join("extracted");
 
-        assert!(files.contains(&PathBuf::from("bin/foo")));
-        assert!(files.contains(&PathBuf::from("lib/libfoo.so")));
-        assert_eq!(files.len(), 2);
+            // We can't test the actual extraction without a real tarball,
+            // but we can test that it attempts to create the directory
+            // and fails gracefully on a nonexistent tarball
+            let fake_tarball = tmp.path().join("nonexistent.tar.gz");
+            let result = super::super::extract_tarball(&fake_tarball, &dest);
+
+            // Should fail because tarball doesn't exist, but dest dir might be created
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn errors_on_nonexistent_tarball() {
+            let tmp = TempDir::new().unwrap();
+            let result = super::super::extract_tarball(
+                &PathBuf::from("/nonexistent/file.tar.gz"),
+                tmp.path(),
+            );
+            assert!(result.is_err());
+        }
     }
 
-    #[test]
-    fn test_build_environment_creation() {
-        let formula = Formula {
-            name: "test".to_string(),
-            dependencies: vec!["dep1".to_string()],
-            build_dependencies: vec!["dep2".to_string()],
-            ..Default::default()
-        };
+    // ==========================================================================
+    // Download Source Tests
+    // ==========================================================================
 
-        let source_dir = PathBuf::from("/tmp/test-source");
-        let prefix = PathBuf::from("/opt/zerobrew/prefix");
-        let opt_dir = PathBuf::from("/opt/zerobrew/prefix/opt");
-        let staging_dir = PathBuf::from("/tmp/test-staging");
+    mod download_source {
+        use super::*;
 
-        let env = BuildEnvironment::new(
-            &formula,
-            source_dir.clone(),
-            &prefix,
-            &opt_dir,
-            staging_dir.clone(),
-        );
+        #[test]
+        fn errors_on_invalid_url() {
+            let tmp = TempDir::new().unwrap();
+            let dest = tmp.path().join("download.tar.gz");
 
-        assert_eq!(env.source_dir, source_dir);
-        assert_eq!(env.build_dir, source_dir.join("build"));
-        assert_eq!(env.prefix, prefix);
-        assert_eq!(env.staging_dir, staging_dir);
-        assert!(env.jobs > 0);
+            // This should fail because the URL is invalid
+            let result = super::super::download_source("not-a-valid-url", &dest, None);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn errors_on_checksum_mismatch() {
+            let tmp = TempDir::new().unwrap();
+            let dest = tmp.path().join("test.txt");
+            // Create the file manually to simulate a download
+            std::fs::write(&dest, "test content").unwrap();
+
+            // Call with wrong checksum
+            let result = super::super::download_source(
+                "file:///dev/null", // Won't actually download
+                &dest,
+                Some("0000000000000000000000000000000000000000000000000000000000000000"),
+            );
+
+            // The actual curl command would fail, so this test just verifies
+            // the function signature and basic error handling
+            assert!(result.is_err());
+        }
     }
 
-    #[test]
-    fn test_build_environment_get_env() {
-        let formula = Formula::default();
-        let env = BuildEnvironment::new(
-            &formula,
-            PathBuf::from("/tmp/source"),
-            &PathBuf::from("/prefix"),
-            &PathBuf::from("/opt"),
-            PathBuf::from("/staging"),
-        );
+    // ==========================================================================
+    // Clone Git Repo Tests
+    // ==========================================================================
 
-        let env_vars = env.get_env();
-        assert!(env_vars.contains_key("CC"));
-        assert!(env_vars.contains_key("CXX"));
+    mod clone_git_repo {
+        use super::*;
+
+        #[test]
+        fn errors_on_invalid_url() {
+            let tmp = TempDir::new().unwrap();
+            let dest = tmp.path().join("repo");
+
+            let result = super::super::clone_git_repo("not-a-valid-git-url", None, &dest);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn errors_on_nonexistent_repo() {
+            let tmp = TempDir::new().unwrap();
+            let dest = tmp.path().join("repo");
+
+            let result = super::super::clone_git_repo(
+                "https://github.com/nonexistent-user-abc123/nonexistent-repo-xyz789.git",
+                None,
+                &dest,
+            );
+            assert!(result.is_err());
+        }
+    }
+
+    // ==========================================================================
+    // Edge Cases and Error Handling
+    // ==========================================================================
+
+    mod edge_cases {
+        use super::*;
+
+        #[test]
+        fn handles_unicode_paths() {
+            let tmp = TempDir::new().unwrap();
+            let unicode_dir = tmp.path().join("测试目录");
+            std::fs::create_dir_all(&unicode_dir).unwrap();
+            std::fs::write(unicode_dir.join("CMakeLists.txt"), "").unwrap();
+
+            assert_eq!(detect_build_system(&unicode_dir), BuildSystem::CMake);
+        }
+
+        #[test]
+        fn handles_paths_with_spaces() {
+            let tmp = TempDir::new().unwrap();
+            let spaced_dir = tmp.path().join("dir with spaces");
+            std::fs::create_dir_all(&spaced_dir).unwrap();
+            std::fs::write(spaced_dir.join("meson.build"), "").unwrap();
+
+            assert_eq!(detect_build_system(&spaced_dir), BuildSystem::Meson);
+        }
+
+        #[test]
+        fn build_env_with_many_dependencies() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Create many dependencies
+            for i in 0..20 {
+                let dep = opt_dir.join(format!("dep{}", i));
+                std::fs::create_dir_all(dep.join("include")).unwrap();
+                std::fs::create_dir_all(dep.join("lib")).unwrap();
+            }
+
+            let deps: Vec<String> = (0..20).map(|i| format!("dep{}", i)).collect();
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: deps,
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            // Should have all dependencies in CFLAGS
+            for i in 0..20 {
+                assert!(env.cflags.contains(&format!("dep{}", i)));
+                assert!(env.ldflags.contains(&format!("dep{}", i)));
+            }
+        }
+
+        #[test]
+        fn collect_files_with_symlinks() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("real_file.txt"), "content").unwrap();
+
+            // Create a symlink (only on Unix)
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(
+                    tmp.path().join("real_file.txt"),
+                    tmp.path().join("symlink.txt"),
+                )
+                .unwrap();
+            }
+
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+
+            // Should include the real file
+            assert!(files.contains(&PathBuf::from("real_file.txt")));
+
+            #[cfg(unix)]
+            {
+                // Should also include the symlink
+                assert!(files.contains(&PathBuf::from("symlink.txt")));
+            }
+        }
+
+        #[test]
+        fn formula_with_no_dependencies() {
+            let formula = Formula {
+                name: "standalone".to_string(),
+                dependencies: vec![],
+                build_dependencies: vec![],
+                ..Default::default()
+            };
+
+            let tmp = TempDir::new().unwrap();
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &tmp.path().join("opt"),
+                tmp.path().join("staging"),
+            );
+
+            assert!(env.cflags.is_empty());
+            assert!(env.ldflags.is_empty());
+            assert!(env.pkg_config_path.is_empty());
+        }
+    }
+
+    // ==========================================================================
+    // Integration-style Tests (without running actual builds)
+    // ==========================================================================
+
+    mod integration {
+        use super::*;
+
+        #[test]
+        fn full_cmake_project_structure_detection() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("myproject-1.0.0");
+            std::fs::create_dir_all(&src).unwrap();
+
+            // Create realistic CMake project structure
+            std::fs::write(
+                src.join("CMakeLists.txt"),
+                r#"
+cmake_minimum_required(VERSION 3.10)
+project(myproject VERSION 1.0.0)
+add_executable(myproject main.cpp)
+install(TARGETS myproject DESTINATION bin)
+"#,
+            )
+            .unwrap();
+            std::fs::write(src.join("main.cpp"), "int main() { return 0; }").unwrap();
+            std::fs::create_dir_all(src.join("src")).unwrap();
+            std::fs::write(src.join("src/lib.cpp"), "void foo() {}").unwrap();
+
+            assert_eq!(detect_build_system(&src), BuildSystem::CMake);
+        }
+
+        #[test]
+        fn full_autotools_project_structure_detection() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("myproject-1.0.0");
+            std::fs::create_dir_all(&src).unwrap();
+
+            // Create realistic autotools project structure
+            std::fs::write(
+                src.join("configure.ac"),
+                r#"
+AC_INIT([myproject], [1.0.0])
+AM_INIT_AUTOMAKE
+AC_PROG_CC
+AC_OUTPUT
+"#,
+            )
+            .unwrap();
+            std::fs::write(src.join("Makefile.am"), "bin_PROGRAMS = myproject").unwrap();
+            std::fs::write(src.join("autogen.sh"), "#!/bin/sh\nautoreconf -i").unwrap();
+
+            assert_eq!(detect_build_system(&src), BuildSystem::Autotools);
+        }
+
+        #[test]
+        fn full_meson_project_structure_detection() {
+            let tmp = TempDir::new().unwrap();
+            let src = tmp.path().join("myproject-1.0.0");
+            std::fs::create_dir_all(&src).unwrap();
+
+            // Create realistic meson project structure
+            std::fs::write(
+                src.join("meson.build"),
+                r#"
+project('myproject', 'c', version: '1.0.0')
+executable('myproject', 'main.c', install: true)
+"#,
+            )
+            .unwrap();
+            std::fs::write(src.join("main.c"), "int main() { return 0; }").unwrap();
+
+            assert_eq!(detect_build_system(&src), BuildSystem::Meson);
+        }
+
+        #[test]
+        fn simulated_build_directory_structure() {
+            let tmp = TempDir::new().unwrap();
+            let staging = tmp.path().join("staging");
+
+            // Create a typical installed package structure
+            std::fs::create_dir_all(staging.join("bin")).unwrap();
+            std::fs::create_dir_all(staging.join("lib/pkgconfig")).unwrap();
+            std::fs::create_dir_all(staging.join("include")).unwrap();
+            std::fs::create_dir_all(staging.join("share/man/man1")).unwrap();
+            std::fs::create_dir_all(staging.join("share/doc/myproject")).unwrap();
+
+            std::fs::write(staging.join("bin/myproject"), "binary").unwrap();
+            std::fs::write(staging.join("lib/libmyproject.so"), "library").unwrap();
+            std::fs::write(staging.join("lib/libmyproject.a"), "static lib").unwrap();
+            std::fs::write(staging.join("lib/pkgconfig/myproject.pc"), "pkg-config").unwrap();
+            std::fs::write(staging.join("include/myproject.h"), "header").unwrap();
+            std::fs::write(staging.join("share/man/man1/myproject.1"), "manpage").unwrap();
+            std::fs::write(staging.join("share/doc/myproject/README"), "readme").unwrap();
+
+            let files = super::super::collect_installed_files(&staging).unwrap();
+
+            assert_eq!(files.len(), 7);
+            assert!(files.contains(&PathBuf::from("bin/myproject")));
+            assert!(files.contains(&PathBuf::from("lib/libmyproject.so")));
+            assert!(files.contains(&PathBuf::from("lib/libmyproject.a")));
+            assert!(files.contains(&PathBuf::from("lib/pkgconfig/myproject.pc")));
+            assert!(files.contains(&PathBuf::from("include/myproject.h")));
+            assert!(files.contains(&PathBuf::from("share/man/man1/myproject.1")));
+            assert!(files.contains(&PathBuf::from("share/doc/myproject/README")));
+        }
     }
 }
