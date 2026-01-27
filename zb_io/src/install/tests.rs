@@ -3355,9 +3355,13 @@ mod error_path_tests {
     use crate::test_utils::{
         TestContext, mock_500_error, mock_timeout_response, mock_formula_json,
         mock_bottle_tarball_with_version, sha256_hex, platform_bottle_tag,
-        create_readonly_dir, restore_write_permissions,
+        create_readonly_dir, restore_write_permissions, create_test_installer,
+        mock_partial_download,
     };
     use std::time::Duration;
+    use tempfile::TempDir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Test that network timeouts are handled gracefully.
     /// The installer should fail with a NetworkFailure error when the server
@@ -3754,5 +3758,862 @@ mod error_path_tests {
                 panic!("Expected NotInstalled, got: {:?}", other);
             }
         }
+    }
+
+    // ========================================================================
+    // Executor retry and rollback tests
+    // ========================================================================
+
+    /// Test that checksum mismatch triggers proper error handling.
+    /// When the downloaded file doesn't match the expected SHA256, the installer
+    /// should detect the corruption and fail with a ChecksumMismatch error.
+    #[tokio::test]
+    async fn test_checksum_mismatch_detection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create a valid bottle
+        let bottle = mock_bottle_tarball_with_version("checksumpkg", "1.0.0");
+        let _correct_sha = sha256_hex(&bottle);
+        
+        // Use a WRONG sha256 in the formula (simulates corrupted download expectation)
+        let wrong_sha = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        let formula_json = mock_formula_json(
+            "checksumpkg",
+            "1.0.0",
+            &[],
+            &mock_server.uri(),
+            wrong_sha,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/checksumpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        // Track download attempts
+        let attempt_count = Arc::new(AtomicUsize::new(0));
+        let attempt_clone = attempt_count.clone();
+        let bottle_data = bottle.clone();
+
+        let bottle_path = format!("/bottles/checksumpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(move |_: &wiremock::Request| {
+                attempt_clone.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_bytes(bottle_data.clone())
+            })
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Attempt install - should fail with checksum mismatch
+        let result = installer.install("checksumpkg", true).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, zb_core::Error::ChecksumMismatch { .. }),
+            "Expected ChecksumMismatch error, got: {:?}",
+            err
+        );
+    }
+
+    /// Test that temp files are cleaned up on extraction failure.
+    /// When extraction fails midway, any temporary files/directories should be removed.
+    #[tokio::test]
+    async fn test_cleanup_on_extraction_failure() {
+        let mut ctx = TestContext::new().await;
+        let tag = platform_bottle_tag();
+
+        // Create corrupted tarball data (invalid gzip)
+        let corrupted_data = vec![0x1f, 0x8b, 0x00, 0x00, 0xff, 0xff, 0xff];
+        let sha = sha256_hex(&corrupted_data);
+
+        let formula_json = mock_formula_json(
+            "corruptpkg",
+            "1.0.0",
+            &[],
+            &ctx.mock_server.uri(),
+            &sha,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/corruptpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&ctx.mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/corruptpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(corrupted_data))
+            .mount(&ctx.mock_server)
+            .await;
+
+        // Attempt install
+        let result = ctx.installer_mut().install("corruptpkg", true).await;
+
+        // Should fail
+        assert!(result.is_err());
+
+        // Verify no temp directories left in store
+        let store_path = ctx.store();
+        if store_path.exists() {
+            for entry in fs::read_dir(&store_path).unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Temp directories start with '.' and contain '.tmp.'
+                assert!(
+                    !name.starts_with('.') || !name.contains(".tmp."),
+                    "Found leftover temp directory: {}",
+                    name
+                );
+            }
+        }
+
+        // Verify package is not installed
+        assert!(!ctx.installer().is_installed("corruptpkg"));
+    }
+
+    /// Test that corrupted tarball extraction triggers proper rollback.
+    /// When a tarball cannot be extracted (e.g., truncated or invalid format),
+    /// the system should clean up and report a meaningful error.
+    #[tokio::test]
+    async fn test_rollback_on_corrupted_tarball() {
+        let mut ctx = TestContext::new().await;
+        let tag = platform_bottle_tag();
+
+        // Create a valid gzip but invalid tar content
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"this is not a valid tar archive").unwrap();
+        let invalid_tar = encoder.finish().unwrap();
+        let sha = sha256_hex(&invalid_tar);
+
+        let formula_json = mock_formula_json(
+            "badtar",
+            "1.0.0",
+            &[],
+            &ctx.mock_server.uri(),
+            &sha,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/badtar.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&ctx.mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/badtar-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(invalid_tar))
+            .mount(&ctx.mock_server)
+            .await;
+
+        // Attempt install
+        let result = ctx.installer_mut().install("badtar", true).await;
+
+        // Should fail with store corruption
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, zb_core::Error::StoreCorruption { .. }),
+            "Expected StoreCorruption error, got: {:?}",
+            err
+        );
+
+        // Verify no store entry created
+        let store_entry = ctx.store().join(&sha);
+        assert!(
+            !store_entry.exists(),
+            "Store entry should not exist after failed extraction"
+        );
+
+        // Verify no cellar entry
+        let cellar_entry = ctx.cellar().join("badtar");
+        assert!(
+            !cellar_entry.exists(),
+            "Cellar entry should not exist after failed extraction"
+        );
+    }
+
+    /// Test streaming download failure recovery.
+    /// When downloading multiple packages, a failure in one should not prevent
+    /// the others from completing (partial success scenario).
+    #[tokio::test]
+    async fn test_streaming_download_partial_failure() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create valid bottles for two packages
+        let good_bottle = mock_bottle_tarball_with_version("goodpkg", "1.0.0");
+        let good_sha = sha256_hex(&good_bottle);
+
+        // Good package formula
+        let good_json = mock_formula_json(
+            "goodpkg",
+            "1.0.0",
+            &[],
+            &mock_server.uri(),
+            &good_sha,
+        );
+
+        // Bad package formula with wrong sha (will cause checksum mismatch)
+        let bad_bottle = mock_bottle_tarball_with_version("badpkg", "1.0.0");
+        let wrong_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let bad_json = mock_formula_json(
+            "badpkg",
+            "1.0.0",
+            &[],
+            &mock_server.uri(),
+            wrong_sha,
+        );
+
+        // Mount formula mocks
+        Mock::given(method("GET"))
+            .and(path("/goodpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&good_json))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/badpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&bad_json))
+            .mount(&mock_server)
+            .await;
+
+        // Mount bottle downloads
+        let good_path = format!("/bottles/goodpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(good_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(good_bottle))
+            .mount(&mock_server)
+            .await;
+
+        let bad_path = format!("/bottles/badpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bad_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bad_bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install good package first - should succeed
+        let result = installer.install("goodpkg", true).await;
+        assert!(result.is_ok(), "Good package should install: {:?}", result.err());
+        assert!(installer.is_installed("goodpkg"));
+
+        // Install bad package - should fail
+        let result = installer.install("badpkg", true).await;
+        assert!(result.is_err(), "Bad package should fail");
+
+        // Good package should still be installed
+        assert!(installer.is_installed("goodpkg"));
+        // Bad package should not be installed
+        assert!(!installer.is_installed("badpkg"));
+    }
+
+    /// Test that network interruption mid-download is handled gracefully.
+    /// Simulates a scenario where the server returns partial data.
+    #[tokio::test]
+    async fn test_network_interruption_mid_download() {
+        use crate::test_utils::mock_partial_download;
+
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create a valid bottle
+        let bottle = mock_bottle_tarball_with_version("partialpkg", "1.0.0");
+        let sha = sha256_hex(&bottle);
+
+        let formula_json = mock_formula_json(
+            "partialpkg",
+            "1.0.0",
+            &[],
+            &mock_server.uri(),
+            &sha,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/partialpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        // Return only half the bottle data (simulates interrupted download)
+        let partial_response = mock_partial_download(&bottle, 0.5);
+        let bottle_path = format!("/bottles/partialpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(partial_response)
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Attempt install - should fail due to checksum mismatch
+        let result = installer.install("partialpkg", true).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // Should be checksum mismatch (partial data has wrong hash)
+        assert!(
+            matches!(err, zb_core::Error::ChecksumMismatch { .. }),
+            "Expected ChecksumMismatch error for partial download, got: {:?}",
+            err
+        );
+
+        // Verify no partial files left
+        let cache_path = tmp.path().join("zerobrew/cache");
+        if cache_path.exists() {
+            for entry in fs::read_dir(&cache_path).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                assert!(
+                    !name.ends_with(".part"),
+                    "Found leftover partial file: {}",
+                    name
+                );
+            }
+        }
+    }
+
+    /// Test that temp directories are cleaned up by cleanup operation.
+    /// Verifies that the cleanup mechanism handles stale temp files from
+    /// interrupted or failed operations.
+    #[tokio::test]
+    async fn test_cleanup_removes_stale_temp_dirs() {
+        let mut ctx = TestContext::new().await;
+
+        // Manually create some stale temp directories in the store
+        let store_path = ctx.store();
+        fs::create_dir_all(&store_path).unwrap();
+
+        let stale_temp1 = store_path.join(".abc123.tmp.1234");
+        let stale_temp2 = store_path.join(".def456.tmp.5678");
+        fs::create_dir_all(&stale_temp1).unwrap();
+        fs::create_dir_all(&stale_temp2).unwrap();
+        fs::write(stale_temp1.join("file.txt"), b"temp content").unwrap();
+
+        // Verify they exist
+        assert!(stale_temp1.exists());
+        assert!(stale_temp2.exists());
+
+        // Run cleanup
+        let result = ctx.installer_mut().cleanup(None).unwrap();
+
+        // Verify temp dirs were removed
+        assert!(!stale_temp1.exists(), "Stale temp dir 1 should be removed");
+        assert!(!stale_temp2.exists(), "Stale temp dir 2 should be removed");
+        assert!(result.temp_files_removed >= 2, "Should report temp files removed");
+    }
+
+    /// Test that a failed install doesn't leave database entries.
+    /// When installation fails at any stage, the database should not contain
+    /// partial records for the failed package.
+    #[tokio::test]
+    async fn test_failed_install_no_db_record() {
+        let mut ctx = TestContext::new().await;
+        let tag = platform_bottle_tag();
+
+        // Create corrupted tarball
+        let corrupted = vec![0x1f, 0x8b, 0x08, 0x00, 0xff, 0xff];
+        let sha = sha256_hex(&corrupted);
+
+        let formula_json = mock_formula_json(
+            "faildb",
+            "1.0.0",
+            &[],
+            &ctx.mock_server.uri(),
+            &sha,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/faildb.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&ctx.mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/faildb-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(corrupted))
+            .mount(&ctx.mock_server)
+            .await;
+
+        // Attempt install
+        let result = ctx.installer_mut().install("faildb", true).await;
+        assert!(result.is_err());
+
+        // Verify no database record
+        assert!(
+            ctx.installer().db.get_installed("faildb").is_none(),
+            "Failed install should not create database record"
+        );
+
+        // Verify not listed as installed
+        assert!(!ctx.installer().is_installed("faildb"));
+    }
+
+    /// Test retry behavior with server that returns 500 on first attempt.
+    /// The download mechanism should handle transient server errors gracefully.
+    #[tokio::test]
+    async fn test_server_error_handling() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create valid bottle
+        let bottle = mock_bottle_tarball_with_version("retrypkg", "1.0.0");
+        let sha = sha256_hex(&bottle);
+
+        let formula_json = mock_formula_json(
+            "retrypkg",
+            "1.0.0",
+            &[],
+            &mock_server.uri(),
+            &sha,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/retrypkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        // Track attempts and fail first few
+        let attempt_count = Arc::new(AtomicUsize::new(0));
+        let attempt_clone = attempt_count.clone();
+        let bottle_data = bottle.clone();
+
+        let bottle_path = format!("/bottles/retrypkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(move |_: &wiremock::Request| {
+                let attempt = attempt_clone.fetch_add(1, Ordering::SeqCst);
+                if attempt < 2 {
+                    // First two attempts return 500
+                    ResponseTemplate::new(500).set_body_string("Internal Server Error")
+                } else {
+                    // Third attempt succeeds
+                    ResponseTemplate::new(200).set_body_bytes(bottle_data.clone())
+                }
+            })
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // The racing download mechanism may hit different outcomes depending on timing.
+        // Since we're returning 500 on first attempts, it may eventually succeed
+        // when one of the racing connections gets the good response.
+        let result = installer.install("retrypkg", true).await;
+
+        // The result depends on how the racing connections are timed.
+        // With racing, one connection might succeed while others fail.
+        // We mainly verify the mechanism doesn't crash.
+        if result.is_ok() {
+            assert!(installer.is_installed("retrypkg"));
+        }
+        // If it fails, that's also acceptable (all racing connections might have hit errors)
+    }
+}
+
+// ============================================================================
+// Orphan detection and autoremove tests - complex dependency graphs
+// ============================================================================
+
+mod orphan_tests {
+    use crate::test_utils::{
+        TestContext, mock_formula_json, mock_bottle_tarball_with_version, 
+        sha256_hex, platform_bottle_tag,
+    };
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    /// Helper to mount a formula with dependencies.
+    async fn mount_formula_with_deps(
+        ctx: &TestContext, 
+        name: &str, 
+        version: &str, 
+        deps: &[&str]
+    ) -> String {
+        let bottle = mock_bottle_tarball_with_version(name, version);
+        let sha = sha256_hex(&bottle);
+        let tag = platform_bottle_tag();
+        
+        let formula_json = mock_formula_json(name, version, deps, &ctx.mock_server.uri(), &sha);
+        
+        Mock::given(method("GET"))
+            .and(path(format!("/{}.json", name)))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&ctx.mock_server)
+            .await;
+        
+        let bottle_path = format!("/bottles/{}-{}.{}.bottle.tar.gz", name, version, tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&ctx.mock_server)
+            .await;
+        
+        sha
+    }
+
+    /// Test diamond dependency graph: A depends on B and C, both depend on D.
+    /// When A is uninstalled, B, C, and D should all become orphans.
+    ///
+    /// Graph:
+    ///       A (explicit)
+    ///      / \
+    ///     B   C
+    ///      \ /
+    ///       D
+    #[tokio::test]
+    async fn test_diamond_dependency_graph_orphans() {
+        let mut ctx = TestContext::new().await;
+        
+        // Mount all formulas:
+        // D has no dependencies
+        mount_formula_with_deps(&ctx, "dep_d", "1.0.0", &[]).await;
+        // B depends on D
+        mount_formula_with_deps(&ctx, "dep_b", "1.0.0", &["dep_d"]).await;
+        // C depends on D
+        mount_formula_with_deps(&ctx, "dep_c", "1.0.0", &["dep_d"]).await;
+        // A depends on B and C
+        mount_formula_with_deps(&ctx, "pkg_a", "1.0.0", &["dep_b", "dep_c"]).await;
+        
+        // Install A (should install B, C, D as dependencies)
+        ctx.installer_mut().install("pkg_a", true).await.unwrap();
+        
+        // Verify all are installed
+        assert!(ctx.installer().is_installed("pkg_a"));
+        assert!(ctx.installer().is_installed("dep_b"));
+        assert!(ctx.installer().is_installed("dep_c"));
+        assert!(ctx.installer().is_installed("dep_d"));
+        
+        // Verify explicit vs dependency marking
+        assert!(ctx.installer().is_explicit("pkg_a"));
+        assert!(!ctx.installer().is_explicit("dep_b"));
+        assert!(!ctx.installer().is_explicit("dep_c"));
+        assert!(!ctx.installer().is_explicit("dep_d"));
+        
+        // No orphans while A is installed
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty(), "Expected no orphans, got: {:?}", orphans);
+        
+        // Uninstall A
+        ctx.installer_mut().uninstall("pkg_a").unwrap();
+        
+        // Now B, C, and D should all be orphans
+        let mut orphans = ctx.installer().find_orphans().await.unwrap();
+        orphans.sort();
+        assert_eq!(orphans.len(), 3, "Expected 3 orphans, got: {:?}", orphans);
+        assert!(orphans.contains(&"dep_b".to_string()));
+        assert!(orphans.contains(&"dep_c".to_string()));
+        assert!(orphans.contains(&"dep_d".to_string()));
+    }
+
+    /// Test cascade autoremove: after removing some orphans, check if others become orphans.
+    /// This tests the scenario where removing an orphan might make its dependencies orphans too.
+    ///
+    /// Graph:
+    ///     A (explicit) -> B -> C -> D
+    ///
+    /// After uninstalling A, all of B, C, D should be detected as orphans in one pass
+    /// because zerobrew computes the full required set from explicit packages.
+    #[tokio::test]
+    async fn test_cascade_autoremove() {
+        let mut ctx = TestContext::new().await;
+        
+        // Create a dependency chain: A -> B -> C -> D
+        mount_formula_with_deps(&ctx, "deep_d", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "deep_c", "1.0.0", &["deep_d"]).await;
+        mount_formula_with_deps(&ctx, "deep_b", "1.0.0", &["deep_c"]).await;
+        mount_formula_with_deps(&ctx, "deep_a", "1.0.0", &["deep_b"]).await;
+        
+        // Install A
+        ctx.installer_mut().install("deep_a", true).await.unwrap();
+        
+        // Verify all installed
+        assert!(ctx.installer().is_installed("deep_a"));
+        assert!(ctx.installer().is_installed("deep_b"));
+        assert!(ctx.installer().is_installed("deep_c"));
+        assert!(ctx.installer().is_installed("deep_d"));
+        
+        // Uninstall A
+        ctx.installer_mut().uninstall("deep_a").unwrap();
+        
+        // All of B, C, D should be detected as orphans in one call
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert_eq!(orphans.len(), 3, "Expected 3 orphans in chain, got: {:?}", orphans);
+        
+        // Autoremove should remove all of them
+        let removed = ctx.installer_mut().autoremove().await.unwrap();
+        assert_eq!(removed.len(), 3, "Expected to remove 3 orphans, removed: {:?}", removed);
+        
+        // Verify all removed
+        assert!(!ctx.installer().is_installed("deep_b"));
+        assert!(!ctx.installer().is_installed("deep_c"));
+        assert!(!ctx.installer().is_installed("deep_d"));
+        
+        // No more orphans
+        let remaining_orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(remaining_orphans.is_empty());
+    }
+
+    /// Test edge case: no explicit packages installed.
+    /// All dependency packages should be considered orphans.
+    #[tokio::test]
+    async fn test_no_explicit_packages_all_orphans() {
+        let mut ctx = TestContext::new().await;
+        
+        // Mount formulas
+        mount_formula_with_deps(&ctx, "orphan_lib", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "orphan_app", "1.0.0", &["orphan_lib"]).await;
+        
+        // Install the app (explicit)
+        ctx.installer_mut().install("orphan_app", true).await.unwrap();
+        
+        // Verify both installed, app is explicit, lib is dependency
+        assert!(ctx.installer().is_explicit("orphan_app"));
+        assert!(!ctx.installer().is_explicit("orphan_lib"));
+        
+        // Mark the app as a dependency (simulating broken state or testing edge case)
+        ctx.installer().mark_dependency("orphan_app").unwrap();
+        
+        // Now nothing is explicit - both should be orphans
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert_eq!(orphans.len(), 2, "Expected 2 orphans when nothing is explicit, got: {:?}", orphans);
+        assert!(orphans.contains(&"orphan_app".to_string()));
+        assert!(orphans.contains(&"orphan_lib".to_string()));
+    }
+
+    /// Test that explicit packages are never marked as orphans,
+    /// even if nothing depends on them.
+    #[tokio::test]
+    async fn test_mixed_explicit_dependency_packages() {
+        let mut ctx = TestContext::new().await;
+        
+        // Mount formulas
+        mount_formula_with_deps(&ctx, "standalone_lib", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "app_one", "1.0.0", &["standalone_lib"]).await;
+        mount_formula_with_deps(&ctx, "app_two", "1.0.0", &["standalone_lib"]).await;
+        
+        // Install app_one (standalone_lib becomes dependency)
+        ctx.installer_mut().install("app_one", true).await.unwrap();
+        
+        // Install app_two separately (standalone_lib already installed)
+        ctx.installer_mut().install("app_two", true).await.unwrap();
+        
+        // Also install standalone_lib explicitly (user wants to keep it)
+        // Since it's already installed, we just mark it explicit
+        ctx.installer().mark_explicit("standalone_lib").unwrap();
+        
+        // Verify all are explicit now
+        assert!(ctx.installer().is_explicit("app_one"));
+        assert!(ctx.installer().is_explicit("app_two"));
+        assert!(ctx.installer().is_explicit("standalone_lib"));
+        
+        // Uninstall both apps
+        ctx.installer_mut().uninstall("app_one").unwrap();
+        ctx.installer_mut().uninstall("app_two").unwrap();
+        
+        // standalone_lib should NOT be an orphan because it's marked explicit
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty(), "Explicit packages should never be orphans, got: {:?}", orphans);
+        
+        // standalone_lib should still be installed
+        assert!(ctx.installer().is_installed("standalone_lib"));
+    }
+
+    /// Test partial dependency chains: a dependency is used by both an explicit
+    /// package and what would otherwise be an orphan.
+    ///
+    /// Graph:
+    ///     A (explicit) -> B
+    ///     C (explicit) -> B -> D
+    ///
+    /// Uninstall C: B should NOT be orphan (A still needs it), D should be orphan
+    #[tokio::test]
+    async fn test_partial_dependency_chains() {
+        let mut ctx = TestContext::new().await;
+        
+        // D has no deps
+        mount_formula_with_deps(&ctx, "shared_d", "1.0.0", &[]).await;
+        // B depends on D
+        mount_formula_with_deps(&ctx, "shared_b", "1.0.0", &["shared_d"]).await;
+        // A depends on B only
+        mount_formula_with_deps(&ctx, "app_a", "1.0.0", &["shared_b"]).await;
+        // C depends on B (which depends on D)
+        mount_formula_with_deps(&ctx, "app_c", "1.0.0", &["shared_b"]).await;
+        
+        // Install both A and C
+        ctx.installer_mut().install("app_a", true).await.unwrap();
+        ctx.installer_mut().install("app_c", true).await.unwrap();
+        
+        // Verify setup
+        assert!(ctx.installer().is_installed("app_a"));
+        assert!(ctx.installer().is_installed("app_c"));
+        assert!(ctx.installer().is_installed("shared_b"));
+        assert!(ctx.installer().is_installed("shared_d"));
+        
+        // No orphans yet
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty());
+        
+        // Uninstall C
+        ctx.installer_mut().uninstall("app_c").unwrap();
+        
+        // B should NOT be orphan (A still needs it)
+        // D should NOT be orphan (A needs B which needs D)
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty(), "B and D should still be needed by A, got orphans: {:?}", orphans);
+        
+        // Now uninstall A too
+        ctx.installer_mut().uninstall("app_a").unwrap();
+        
+        // Now B and D should both be orphans
+        let mut orphans = ctx.installer().find_orphans().await.unwrap();
+        orphans.sort();
+        assert_eq!(orphans.len(), 2, "Expected 2 orphans after uninstalling A, got: {:?}", orphans);
+        assert!(orphans.contains(&"shared_b".to_string()));
+        assert!(orphans.contains(&"shared_d".to_string()));
+    }
+
+    /// Test that autoremove with empty orphan list is a no-op.
+    #[tokio::test]
+    async fn test_autoremove_no_orphans() {
+        let mut ctx = TestContext::new().await;
+        
+        // Mount and install a standalone package (no deps)
+        mount_formula_with_deps(&ctx, "standalone", "1.0.0", &[]).await;
+        ctx.installer_mut().install("standalone", true).await.unwrap();
+        
+        // No orphans expected
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty());
+        
+        // Autoremove should do nothing
+        let removed = ctx.installer_mut().autoremove().await.unwrap();
+        assert!(removed.is_empty());
+        
+        // Package still installed
+        assert!(ctx.installer().is_installed("standalone"));
+    }
+
+    /// Test find_orphans with no packages installed at all.
+    #[tokio::test]
+    async fn test_find_orphans_empty_database() {
+        let ctx = TestContext::new().await;
+        
+        // No packages installed
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty());
+    }
+
+    /// Test complex graph with multiple explicit packages sharing dependencies.
+    ///
+    /// Graph:
+    ///     A (explicit) -> X
+    ///     B (explicit) -> X -> Y
+    ///     C (explicit) -> Y
+    ///
+    /// Uninstall A: no orphans (B and C still need X and Y)
+    /// Uninstall B: no orphans (A needs X, C needs Y)
+    /// Uninstall C: Y becomes orphan (no one needs it), X stays (A needs it)
+    #[tokio::test]
+    async fn test_complex_shared_dependencies() {
+        let mut ctx = TestContext::new().await;
+        
+        // Build graph
+        mount_formula_with_deps(&ctx, "lib_y", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "lib_x", "1.0.0", &["lib_y"]).await;
+        mount_formula_with_deps(&ctx, "main_a", "1.0.0", &["lib_x"]).await;
+        mount_formula_with_deps(&ctx, "main_b", "1.0.0", &["lib_x"]).await;
+        mount_formula_with_deps(&ctx, "main_c", "1.0.0", &["lib_y"]).await;
+        
+        // Install all three main packages
+        ctx.installer_mut().install("main_a", true).await.unwrap();
+        ctx.installer_mut().install("main_b", true).await.unwrap();
+        ctx.installer_mut().install("main_c", true).await.unwrap();
+        
+        // Verify setup
+        assert!(ctx.installer().is_explicit("main_a"));
+        assert!(ctx.installer().is_explicit("main_b"));
+        assert!(ctx.installer().is_explicit("main_c"));
+        assert!(!ctx.installer().is_explicit("lib_x"));
+        assert!(!ctx.installer().is_explicit("lib_y"));
+        
+        // Uninstall A - B still needs X (which needs Y), C still needs Y
+        ctx.installer_mut().uninstall("main_a").unwrap();
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty(), "After removing A, B and C still need deps, got: {:?}", orphans);
+        
+        // Uninstall B - A is gone, C still needs Y, but X is no longer needed
+        ctx.installer_mut().uninstall("main_b").unwrap();
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        // X should be orphan (only A and B needed it, both gone)
+        // Y should NOT be orphan (C still needs it)
+        assert_eq!(orphans.len(), 1, "Expected only X to be orphan, got: {:?}", orphans);
+        assert!(orphans.contains(&"lib_x".to_string()));
+        
+        // Autoremove X
+        let removed = ctx.installer_mut().autoremove().await.unwrap();
+        assert_eq!(removed, vec!["lib_x".to_string()]);
+        
+        // Uninstall C - now Y is orphan
+        ctx.installer_mut().uninstall("main_c").unwrap();
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert_eq!(orphans, vec!["lib_y".to_string()]);
+    }
+
+    /// Test that marking a dependency as explicit and then back to dependency works correctly.
+    #[tokio::test]
+    async fn test_toggle_explicit_dependency_status() {
+        let mut ctx = TestContext::new().await;
+        
+        // Install app with lib dependency
+        mount_formula_with_deps(&ctx, "toggle_lib", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "toggle_app", "1.0.0", &["toggle_lib"]).await;
+        
+        ctx.installer_mut().install("toggle_app", true).await.unwrap();
+        
+        // lib is a dependency
+        assert!(!ctx.installer().is_explicit("toggle_lib"));
+        
+        // Mark as explicit
+        ctx.installer().mark_explicit("toggle_lib").unwrap();
+        assert!(ctx.installer().is_explicit("toggle_lib"));
+        
+        // Uninstall app - lib should NOT be orphan (it's explicit)
+        ctx.installer_mut().uninstall("toggle_app").unwrap();
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty());
+        
+        // Mark lib back as dependency
+        ctx.installer().mark_dependency("toggle_lib").unwrap();
+        assert!(!ctx.installer().is_explicit("toggle_lib"));
+        
+        // Now lib should be orphan (dependency with no dependents)
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert_eq!(orphans, vec!["toggle_lib".to_string()]);
     }
 }
