@@ -32,7 +32,7 @@ pub mod store;
 pub mod tap;
 pub mod traits;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
 pub use api::{ApiClient, FormulaInfo};

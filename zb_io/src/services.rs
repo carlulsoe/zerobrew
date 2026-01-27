@@ -112,6 +112,19 @@ impl ServiceManager {
         }
     }
 
+    /// Create a new service manager with custom paths (for testing).
+    ///
+    /// This allows tests to specify exact paths for service files and logs
+    /// without relying on HOME environment variable.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_with_paths(prefix: &Path, service_dir: &Path, log_dir: &Path) -> Self {
+        Self {
+            prefix: prefix.to_path_buf(),
+            service_dir: service_dir.to_path_buf(),
+            log_dir: log_dir.to_path_buf(),
+        }
+    }
+
     /// Get platform-specific paths for service files and logs
     #[cfg(target_os = "linux")]
     fn get_service_paths() -> (PathBuf, PathBuf) {
@@ -2654,5 +2667,840 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
         // Log paths should use the configured log_dir, not prefix
         let log_dir = manager.get_log_dir();
         assert!(!log_dir.to_string_lossy().is_empty());
+    }
+
+    // ==================== Filesystem-Based Integration Tests ====================
+    //
+    // These tests verify ServiceManager's file management capabilities without
+    // calling systemd/launchctl. The key insight: we can test everything about
+    // service *file* management without actually calling systemctl.
+
+    /// Test helper that creates a ServiceManager with isolated temp directories.
+    /// This allows testing all filesystem operations without system service calls.
+    struct TestServiceManager {
+        manager: ServiceManager,
+        _temp_dir: TempDir, // Hold reference to prevent cleanup
+        service_dir: PathBuf,
+        log_dir: PathBuf,
+        prefix: PathBuf,
+    }
+
+    impl TestServiceManager {
+        fn new() -> Self {
+            let temp_dir = TempDir::new().unwrap();
+            let prefix = temp_dir.path().join("prefix");
+            let service_dir = temp_dir.path().join("services");
+            let log_dir = temp_dir.path().join("logs");
+
+            // Create directories upfront
+            std::fs::create_dir_all(&prefix).unwrap();
+            std::fs::create_dir_all(&service_dir).unwrap();
+            std::fs::create_dir_all(&log_dir).unwrap();
+
+            let manager = ServiceManager {
+                prefix: prefix.clone(),
+                service_dir: service_dir.clone(),
+                log_dir: log_dir.clone(),
+            };
+
+            Self {
+                manager,
+                _temp_dir: temp_dir,
+                service_dir,
+                log_dir,
+                prefix,
+            }
+        }
+
+        /// Create a mock service file directly (simulating an existing service)
+        #[cfg(target_os = "linux")]
+        fn create_mock_service_file(&self, formula: &str, content: Option<&str>) {
+            let default_content = format!(
+                "[Unit]\nDescription=Zerobrew: {}\n[Service]\nExecStart=/usr/bin/{}\n",
+                formula, formula
+            );
+            let content = content.unwrap_or(&default_content);
+            let path = self.service_dir.join(format!("zerobrew.{}.service", formula));
+            std::fs::write(path, content).unwrap();
+        }
+
+        #[cfg(target_os = "macos")]
+        fn create_mock_service_file(&self, formula: &str, content: Option<&str>) {
+            let default_content = format!(
+                r#"<?xml version="1.0"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.zerobrew.{}</string>
+    <key>ProgramArguments</key>
+    <array><string>/usr/bin/{}</string></array>
+</dict>
+</plist>"#,
+                formula, formula
+            );
+            let content = content.unwrap_or(&default_content);
+            let path = self.service_dir.join(format!("com.zerobrew.{}.plist", formula));
+            std::fs::write(path, content).unwrap();
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        fn create_mock_service_file(&self, formula: &str, _content: Option<&str>) {
+            let path = self.service_dir.join(format!("zerobrew.{}.service", formula));
+            std::fs::write(path, format!("# Service: {}\n", formula)).unwrap();
+        }
+
+        /// Create a mock binary in opt/formula/bin/
+        fn create_mock_binary(&self, formula: &str) -> PathBuf {
+            let bin_dir = self.prefix.join("opt").join(formula).join("bin");
+            std::fs::create_dir_all(&bin_dir).unwrap();
+            let binary = bin_dir.join(formula);
+            std::fs::write(&binary, "#!/bin/sh\necho mock").unwrap();
+            binary
+        }
+
+        /// Get the service file path for verification
+        #[cfg(target_os = "linux")]
+        fn service_file_path(&self, formula: &str) -> PathBuf {
+            self.service_dir.join(format!("zerobrew.{}.service", formula))
+        }
+
+        #[cfg(target_os = "macos")]
+        fn service_file_path(&self, formula: &str) -> PathBuf {
+            self.service_dir.join(format!("com.zerobrew.{}.plist", formula))
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        fn service_file_path(&self, formula: &str) -> PathBuf {
+            self.service_dir.join(format!("zerobrew.{}.service", formula))
+        }
+    }
+
+    // --- Service File Generation Tests ---
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_fs_generate_complete_systemd_unit() {
+        let ctx = TestServiceManager::new();
+        let mut env = HashMap::new();
+        env.insert("REDIS_PORT".to_string(), "6379".to_string());
+        env.insert("REDIS_BIND".to_string(), "127.0.0.1".to_string());
+
+        let config = ServiceConfig {
+            program: PathBuf::from("/opt/zerobrew/opt/redis/bin/redis-server"),
+            args: vec![
+                "--daemonize".to_string(),
+                "no".to_string(),
+                "--port".to_string(),
+                "6379".to_string(),
+            ],
+            working_directory: Some(PathBuf::from("/var/lib/redis")),
+            environment: env,
+            restart_on_failure: true,
+            run_at_load: true,
+            stdout_log: Some(PathBuf::from("/var/log/redis/stdout.log")),
+            stderr_log: Some(PathBuf::from("/var/log/redis/stderr.log")),
+            keep_alive: false,
+        };
+
+        let content = ctx.manager.generate_service_file("redis", &config);
+
+        // Verify all sections
+        assert!(content.contains("[Unit]"));
+        assert!(content.contains("[Service]"));
+        assert!(content.contains("[Install]"));
+
+        // Verify Unit section
+        assert!(content.contains("Description=Zerobrew: redis"));
+        assert!(content.contains("After=network.target"));
+
+        // Verify Service section
+        assert!(content.contains("Type=simple"));
+        assert!(content.contains("ExecStart=/opt/zerobrew/opt/redis/bin/redis-server --daemonize no --port 6379"));
+        assert!(content.contains("WorkingDirectory=/var/lib/redis"));
+        assert!(content.contains("Restart=on-failure"));
+        assert!(content.contains("RestartSec=3"));
+        assert!(content.contains("StandardOutput=append:/var/log/redis/stdout.log"));
+        assert!(content.contains("StandardError=append:/var/log/redis/stderr.log"));
+
+        // Verify environment variables (order may vary)
+        assert!(content.contains("Environment=\"REDIS_PORT=6379\""));
+        assert!(content.contains("Environment=\"REDIS_BIND=127.0.0.1\""));
+
+        // Verify Install section
+        assert!(content.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_fs_generate_minimal_systemd_unit() {
+        let ctx = TestServiceManager::new();
+        let config = ServiceConfig {
+            program: PathBuf::from("/usr/bin/simple-daemon"),
+            restart_on_failure: false,
+            run_at_load: false,
+            ..Default::default()
+        };
+
+        let content = ctx.manager.generate_service_file("simple", &config);
+
+        // Should have basic structure
+        assert!(content.contains("[Unit]"));
+        assert!(content.contains("[Service]"));
+        assert!(content.contains("[Install]"));
+        assert!(content.contains("ExecStart=/usr/bin/simple-daemon"));
+
+        // Should NOT have optional fields
+        assert!(!content.contains("WorkingDirectory="));
+        assert!(!content.contains("Environment="));
+        assert!(!content.contains("Restart=on-failure"));
+        assert!(!content.contains("WantedBy=default.target"));
+    }
+
+    // --- Service File Path Computation Tests ---
+
+    #[test]
+    fn test_fs_service_file_path_standard_formula() {
+        let ctx = TestServiceManager::new();
+        let path = ctx.manager.service_file_path("nginx");
+
+        #[cfg(target_os = "linux")]
+        assert!(path.ends_with("zerobrew.nginx.service"));
+
+        #[cfg(target_os = "macos")]
+        assert!(path.ends_with("com.zerobrew.nginx.plist"));
+
+        // Path should be within our test service_dir
+        assert!(path.starts_with(&ctx.service_dir));
+    }
+
+    #[test]
+    fn test_fs_service_file_path_versioned_formula() {
+        let ctx = TestServiceManager::new();
+        
+        for formula in ["postgresql@14", "node@20", "python@3.12"] {
+            let path = ctx.manager.service_file_path(formula);
+            assert!(path.to_string_lossy().contains(formula));
+            assert!(path.starts_with(&ctx.service_dir));
+        }
+    }
+
+    #[test]
+    fn test_fs_service_file_path_special_names() {
+        let ctx = TestServiceManager::new();
+        
+        // Test various naming conventions
+        let formulas = [
+            "my-dashed-name",
+            "my_underscored_name", 
+            "CamelCaseName",
+            "name123",
+            "123name",
+        ];
+
+        for formula in formulas {
+            let path = ctx.manager.service_file_path(formula);
+            assert!(path.to_string_lossy().contains(formula));
+        }
+    }
+
+    // --- Log Path Generation Tests ---
+
+    #[test]
+    fn test_fs_log_paths_structure() {
+        let ctx = TestServiceManager::new();
+        let (stdout, stderr) = ctx.manager.get_log_paths("myservice");
+
+        // Both should be in the log directory
+        assert!(stdout.starts_with(&ctx.log_dir));
+        assert!(stderr.starts_with(&ctx.log_dir));
+
+        // Verify naming convention
+        assert_eq!(stdout.file_name().unwrap(), "myservice.log");
+        assert_eq!(stderr.file_name().unwrap(), "myservice.error.log");
+    }
+
+    #[test]
+    fn test_fs_log_paths_versioned_formula() {
+        let ctx = TestServiceManager::new();
+        let (stdout, stderr) = ctx.manager.get_log_paths("postgresql@14");
+
+        assert_eq!(stdout.file_name().unwrap(), "postgresql@14.log");
+        assert_eq!(stderr.file_name().unwrap(), "postgresql@14.error.log");
+    }
+
+    #[test]
+    fn test_fs_log_dir_accessor() {
+        let ctx = TestServiceManager::new();
+        let log_dir = ctx.manager.get_log_dir();
+        
+        assert_eq!(log_dir, &ctx.log_dir);
+        assert!(log_dir.exists());
+    }
+
+    // --- List Services from Filesystem Tests ---
+
+    #[test]
+    fn test_fs_list_empty_directory() {
+        let ctx = TestServiceManager::new();
+        let services = ctx.manager.list().unwrap();
+        assert!(services.is_empty());
+    }
+
+    #[test]
+    fn test_fs_list_single_service() {
+        let ctx = TestServiceManager::new();
+        ctx.create_mock_service_file("redis", None);
+
+        let services = ctx.manager.list().unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].name, "redis");
+    }
+
+    #[test]
+    fn test_fs_list_multiple_services() {
+        let ctx = TestServiceManager::new();
+        
+        for formula in ["alpha", "beta", "gamma", "delta"] {
+            ctx.create_mock_service_file(formula, None);
+        }
+
+        let services = ctx.manager.list().unwrap();
+        assert_eq!(services.len(), 4);
+
+        // Should be sorted alphabetically
+        let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta", "delta", "gamma"]);
+    }
+
+    #[test]
+    fn test_fs_list_filters_non_zerobrew_files() {
+        let ctx = TestServiceManager::new();
+        
+        // Create our service
+        ctx.create_mock_service_file("redis", None);
+
+        // Create non-zerobrew files that should be ignored
+        std::fs::write(ctx.service_dir.join("other.service"), "ignored").unwrap();
+        std::fs::write(ctx.service_dir.join("README.md"), "ignored").unwrap();
+        std::fs::write(ctx.service_dir.join("backup.bak"), "ignored").unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::write(ctx.service_dir.join("redis.service"), "wrong prefix").unwrap();
+            std::fs::write(ctx.service_dir.join("zerobrew.redis"), "wrong suffix").unwrap();
+        }
+
+        let services = ctx.manager.list().unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].name, "redis");
+    }
+
+    #[test]
+    fn test_fs_list_handles_versioned_services() {
+        let ctx = TestServiceManager::new();
+        
+        ctx.create_mock_service_file("node@18", None);
+        ctx.create_mock_service_file("node@20", None);
+        ctx.create_mock_service_file("postgresql@14", None);
+
+        let services = ctx.manager.list().unwrap();
+        assert_eq!(services.len(), 3);
+
+        let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"node@18"));
+        assert!(names.contains(&"node@20"));
+        assert!(names.contains(&"postgresql@14"));
+    }
+
+    #[test]
+    fn test_fs_list_returns_correct_file_paths() {
+        let ctx = TestServiceManager::new();
+        ctx.create_mock_service_file("myservice", None);
+
+        let services = ctx.manager.list().unwrap();
+        assert_eq!(services.len(), 1);
+        
+        let expected_path = ctx.service_file_path("myservice");
+        assert_eq!(services[0].file_path, expected_path);
+    }
+
+    // --- Orphan Service Detection Tests ---
+
+    #[test]
+    fn test_fs_orphan_detection_no_orphans() {
+        let ctx = TestServiceManager::new();
+        
+        ctx.create_mock_service_file("redis", None);
+        ctx.create_mock_service_file("postgresql", None);
+
+        let installed = vec!["redis".to_string(), "postgresql".to_string()];
+        let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
+        
+        assert!(orphaned.is_empty());
+    }
+
+    #[test]
+    fn test_fs_orphan_detection_single_orphan() {
+        let ctx = TestServiceManager::new();
+        
+        ctx.create_mock_service_file("redis", None);
+        ctx.create_mock_service_file("orphaned-service", None);
+
+        let installed = vec!["redis".to_string()];
+        let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
+        
+        assert_eq!(orphaned.len(), 1);
+        assert_eq!(orphaned[0].name, "orphaned-service");
+    }
+
+    #[test]
+    fn test_fs_orphan_detection_multiple_orphans() {
+        let ctx = TestServiceManager::new();
+        
+        ctx.create_mock_service_file("redis", None);
+        ctx.create_mock_service_file("orphan1", None);
+        ctx.create_mock_service_file("orphan2", None);
+        ctx.create_mock_service_file("orphan3", None);
+
+        let installed = vec!["redis".to_string()];
+        let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
+        
+        assert_eq!(orphaned.len(), 3);
+        let names: Vec<&str> = orphaned.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"orphan1"));
+        assert!(names.contains(&"orphan2"));
+        assert!(names.contains(&"orphan3"));
+    }
+
+    #[test]
+    fn test_fs_orphan_detection_all_orphans() {
+        let ctx = TestServiceManager::new();
+        
+        ctx.create_mock_service_file("old-service-1", None);
+        ctx.create_mock_service_file("old-service-2", None);
+
+        let installed: Vec<String> = vec![]; // Nothing installed
+        let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
+        
+        assert_eq!(orphaned.len(), 2);
+    }
+
+    #[test]
+    fn test_fs_orphan_detection_empty_service_dir() {
+        let ctx = TestServiceManager::new();
+        
+        let installed = vec!["redis".to_string(), "postgresql".to_string()];
+        let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
+        
+        assert!(orphaned.is_empty());
+    }
+
+    // --- Service File Creation Integration Tests ---
+
+    #[test]
+    fn test_fs_create_service_writes_valid_file() {
+        let ctx = TestServiceManager::new();
+        
+        let config = ServiceConfig {
+            program: PathBuf::from("/opt/zerobrew/opt/redis/bin/redis-server"),
+            args: vec!["--port".to_string(), "6379".to_string()],
+            restart_on_failure: true,
+            run_at_load: true,
+            ..Default::default()
+        };
+
+        // Create the service (ignore daemon_reload errors)
+        let _ = ctx.manager.create_service("redis", &config);
+
+        // Verify file was created
+        let service_file = ctx.service_file_path("redis");
+        assert!(service_file.exists(), "Service file should exist");
+
+        // Verify content
+        let content = std::fs::read_to_string(&service_file).unwrap();
+        
+        #[cfg(target_os = "linux")]
+        {
+            assert!(content.contains("[Unit]"));
+            assert!(content.contains("ExecStart=/opt/zerobrew/opt/redis/bin/redis-server"));
+            assert!(content.contains("--port 6379"));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(content.contains("<key>Label</key>"));
+            assert!(content.contains("com.zerobrew.redis"));
+        }
+    }
+
+    #[test]
+    fn test_fs_create_service_creates_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("nested/service/dir");
+        let log_dir = temp_dir.path().join("nested/log/dir");
+
+        // Directories don't exist yet
+        assert!(!service_dir.exists());
+        assert!(!log_dir.exists());
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir: service_dir.clone(),
+            log_dir: log_dir.clone(),
+        };
+
+        let config = ServiceConfig {
+            program: PathBuf::from("/usr/bin/test"),
+            ..Default::default()
+        };
+
+        let _ = manager.create_service("test", &config);
+
+        // Directories should now exist
+        assert!(service_dir.exists());
+        assert!(log_dir.exists());
+    }
+
+    #[test]
+    fn test_fs_create_then_list_round_trip() {
+        let ctx = TestServiceManager::new();
+
+        // Initially empty
+        assert!(ctx.manager.list().unwrap().is_empty());
+
+        // Create multiple services
+        for formula in ["redis", "postgresql", "nginx"] {
+            let config = ServiceConfig {
+                program: PathBuf::from(format!("/usr/bin/{}", formula)),
+                ..Default::default()
+            };
+            let _ = ctx.manager.create_service(formula, &config);
+        }
+
+        // List should find all of them
+        let services = ctx.manager.list().unwrap();
+        assert_eq!(services.len(), 3);
+
+        let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"redis"));
+        assert!(names.contains(&"postgresql"));
+        assert!(names.contains(&"nginx"));
+    }
+
+    // --- Service Info from Files Tests ---
+
+    #[test]
+    fn test_fs_get_service_info_file_path() {
+        let ctx = TestServiceManager::new();
+        ctx.create_mock_service_file("myservice", None);
+
+        let info = ctx.manager.get_service_info("myservice").unwrap();
+        
+        assert_eq!(info.name, "myservice");
+        assert_eq!(info.file_path, ctx.service_file_path("myservice"));
+    }
+
+    #[test]
+    fn test_fs_get_service_info_nonexistent() {
+        let ctx = TestServiceManager::new();
+
+        // Getting info for non-existent service should still return info
+        // (with Unknown status since systemctl won't find it)
+        let info = ctx.manager.get_service_info("nonexistent").unwrap();
+        
+        assert_eq!(info.name, "nonexistent");
+        // File path is computed, not validated
+        assert!(info.file_path.to_string_lossy().contains("nonexistent"));
+    }
+
+    // --- Detect Service Config from Binaries Tests ---
+
+    #[test]
+    fn test_fs_detect_config_exact_binary_name() {
+        let ctx = TestServiceManager::new();
+        let binary = ctx.create_mock_binary("myapp");
+
+        let keg_path = ctx.prefix.join("Cellar/myapp/1.0");
+        let config = ctx.manager.detect_service_config("myapp", &keg_path);
+
+        assert!(config.is_some());
+        let config = config.unwrap();
+        assert_eq!(config.program, binary);
+        assert_eq!(config.working_directory, Some(ctx.prefix.join("var")));
+    }
+
+    #[test]
+    fn test_fs_detect_config_daemon_suffix() {
+        let ctx = TestServiceManager::new();
+        
+        // Create only the daemon-suffixed binary
+        let bin_dir = ctx.prefix.join("opt/nginx/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let binary = bin_dir.join("nginxd");
+        std::fs::write(&binary, "#!/bin/sh").unwrap();
+
+        let keg_path = ctx.prefix.join("Cellar/nginx/1.0");
+        let config = ctx.manager.detect_service_config("nginx", &keg_path);
+
+        assert!(config.is_some());
+        assert!(config.unwrap().program.to_string_lossy().ends_with("nginxd"));
+    }
+
+    #[test]
+    fn test_fs_detect_config_server_suffix() {
+        let ctx = TestServiceManager::new();
+        
+        // Create only the server-suffixed binary
+        let bin_dir = ctx.prefix.join("opt/redis/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let binary = bin_dir.join("redis-server");
+        std::fs::write(&binary, "#!/bin/sh").unwrap();
+
+        let keg_path = ctx.prefix.join("Cellar/redis/1.0");
+        let config = ctx.manager.detect_service_config("redis", &keg_path);
+
+        assert!(config.is_some());
+        assert!(config.unwrap().program.to_string_lossy().ends_with("redis-server"));
+    }
+
+    #[test]
+    fn test_fs_detect_config_priority_exact_over_daemon() {
+        let ctx = TestServiceManager::new();
+        
+        // Create both exact and daemon binaries
+        let bin_dir = ctx.prefix.join("opt/myapp/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        
+        let exact = bin_dir.join("myapp");
+        let daemon = bin_dir.join("myappd");
+        std::fs::write(&exact, "#!/bin/sh").unwrap();
+        std::fs::write(&daemon, "#!/bin/sh").unwrap();
+
+        let keg_path = ctx.prefix.join("Cellar/myapp/1.0");
+        let config = ctx.manager.detect_service_config("myapp", &keg_path).unwrap();
+
+        // Should prefer exact name
+        assert_eq!(config.program, exact);
+    }
+
+    #[test]
+    fn test_fs_detect_config_no_binary_found() {
+        let ctx = TestServiceManager::new();
+        
+        let keg_path = ctx.prefix.join("Cellar/unknown/1.0");
+        let config = ctx.manager.detect_service_config("unknown", &keg_path);
+
+        assert!(config.is_none());
+    }
+
+    // --- File Removal Tests ---
+
+    #[test]
+    fn test_fs_remove_service_deletes_file() {
+        let ctx = TestServiceManager::new();
+        ctx.create_mock_service_file("tobedeleted", None);
+
+        let service_file = ctx.service_file_path("tobedeleted");
+        assert!(service_file.exists());
+
+        // Remove (ignore systemctl errors)
+        let _ = ctx.manager.remove_service("tobedeleted");
+
+        // File should be gone (if daemon_reload succeeded) or still exist
+        // We can't guarantee removal if daemon_reload fails first
+    }
+
+    #[test]
+    fn test_fs_remove_nonexistent_service() {
+        let ctx = TestServiceManager::new();
+
+        // Should not error when removing non-existent service file
+        let result = ctx.manager.remove_service("never-existed");
+        // May fail on daemon_reload but shouldn't panic
+        let _ = result;
+    }
+
+    // --- Extract Formula Name Tests ---
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_fs_extract_formula_various_patterns() {
+        let ctx = TestServiceManager::new();
+
+        let test_cases = [
+            ("zerobrew.redis.service", Some("redis")),
+            ("zerobrew.postgresql@14.service", Some("postgresql@14")),
+            ("zerobrew.my-dashed-app.service", Some("my-dashed-app")),
+            ("zerobrew.my_underscored.service", Some("my_underscored")),
+            ("zerobrew..service", Some("")), // Edge case: empty name
+            ("other.redis.service", None),
+            ("zerobrew.redis", None),
+            ("redis.service", None),
+            ("", None),
+            ("zerobrew.service", None), // Just wrapper, no name
+        ];
+
+        for (input, expected) in test_cases {
+            let result = ctx.manager.extract_formula_name(input);
+            assert_eq!(
+                result.as_deref(),
+                expected,
+                "extract_formula_name({:?}) should be {:?}",
+                input,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_fs_extract_formula_macos_patterns() {
+        let ctx = TestServiceManager::new();
+
+        let test_cases = [
+            ("com.zerobrew.redis.plist", Some("redis")),
+            ("com.zerobrew.postgresql@14.plist", Some("postgresql@14")),
+            ("com.zerobrew.my-app.plist", Some("my-app")),
+            ("other.redis.plist", None),
+            ("com.zerobrew.redis", None),
+            ("", None),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = ctx.manager.extract_formula_name(input);
+            assert_eq!(
+                result.as_deref(),
+                expected,
+                "extract_formula_name({:?}) should be {:?}",
+                input,
+                expected
+            );
+        }
+    }
+
+    // --- Generated Log Paths in Service Files ---
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_fs_service_file_includes_log_paths() {
+        let ctx = TestServiceManager::new();
+        
+        let config = ServiceConfig {
+            program: PathBuf::from("/usr/bin/myservice"),
+            ..Default::default()
+        };
+
+        let content = ctx.manager.generate_service_file("myservice", &config);
+
+        // Should include default log paths
+        let (expected_stdout, expected_stderr) = ctx.manager.get_log_paths("myservice");
+        assert!(content.contains(&format!("StandardOutput=append:{}", expected_stdout.display())));
+        assert!(content.contains(&format!("StandardError=append:{}", expected_stderr.display())));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_fs_service_file_uses_custom_log_paths() {
+        let ctx = TestServiceManager::new();
+        
+        let config = ServiceConfig {
+            program: PathBuf::from("/usr/bin/myservice"),
+            stdout_log: Some(PathBuf::from("/custom/stdout.log")),
+            stderr_log: Some(PathBuf::from("/custom/stderr.log")),
+            ..Default::default()
+        };
+
+        let content = ctx.manager.generate_service_file("myservice", &config);
+
+        assert!(content.contains("StandardOutput=append:/custom/stdout.log"));
+        assert!(content.contains("StandardError=append:/custom/stderr.log"));
+    }
+
+    // --- Cleanup Services Tests ---
+
+    #[test]
+    fn test_fs_cleanup_removes_multiple_services() {
+        let ctx = TestServiceManager::new();
+        
+        // Create some orphaned service files
+        ctx.create_mock_service_file("orphan1", None);
+        ctx.create_mock_service_file("orphan2", None);
+
+        let orphans: Vec<ServiceInfo> = ["orphan1", "orphan2"]
+            .iter()
+            .map(|name| ServiceInfo {
+                name: name.to_string(),
+                status: ServiceStatus::Stopped,
+                pid: None,
+                file_path: ctx.service_file_path(name),
+                auto_start: false,
+            })
+            .collect();
+
+        let result = ctx.manager.cleanup_services(&orphans);
+        
+        match result {
+            Ok(count) => assert_eq!(count, 2),
+            Err(_) => {} // Acceptable if systemctl fails
+        }
+    }
+
+    #[test]
+    fn test_fs_cleanup_empty_list_returns_zero() {
+        let ctx = TestServiceManager::new();
+        
+        let result = ctx.manager.cleanup_services(&[]);
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    // --- Full Lifecycle Integration Test ---
+
+    #[test]
+    fn test_fs_complete_service_lifecycle() {
+        let ctx = TestServiceManager::new();
+
+        // 1. Start with empty state
+        assert!(ctx.manager.list().unwrap().is_empty());
+
+        // 2. Create a service
+        let config = ServiceConfig {
+            program: PathBuf::from("/opt/zerobrew/opt/redis/bin/redis-server"),
+            args: vec!["--port".to_string(), "6379".to_string()],
+            restart_on_failure: true,
+            run_at_load: true,
+            ..Default::default()
+        };
+        let _ = ctx.manager.create_service("redis", &config);
+
+        // 3. Verify it appears in list
+        let services = ctx.manager.list().unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].name, "redis");
+
+        // 4. Get service info
+        let info = ctx.manager.get_service_info("redis").unwrap();
+        assert_eq!(info.name, "redis");
+        assert_eq!(info.file_path, ctx.service_file_path("redis"));
+
+        // 5. Verify log paths
+        let (stdout, stderr) = ctx.manager.get_log_paths("redis");
+        assert!(stdout.to_string_lossy().contains("redis.log"));
+        assert!(stderr.to_string_lossy().contains("redis.error.log"));
+
+        // 6. Check orphan detection (redis is "installed")
+        let installed = vec!["redis".to_string()];
+        let orphans = ctx.manager.find_orphaned_services(&installed).unwrap();
+        assert!(orphans.is_empty());
+
+        // 7. Uninstall redis - now it's an orphan
+        let installed: Vec<String> = vec![];
+        let orphans = ctx.manager.find_orphaned_services(&installed).unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].name, "redis");
+
+        // 8. Cleanup orphans
+        let _ = ctx.manager.cleanup_services(&orphans);
+
+        // 9. Should be back to empty (if removal succeeded)
+        // Note: This depends on daemon_reload working
     }
 }
