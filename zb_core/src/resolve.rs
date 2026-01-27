@@ -164,6 +164,7 @@ fn build_graph(
 mod tests {
     use super::*;
     use crate::formula::{Bottle, BottleFile, BottleStable, Versions};
+    use proptest::prelude::*;
     use std::collections::BTreeMap;
 
     fn formula(name: &str, deps: &[&str]) -> Formula {
@@ -286,5 +287,104 @@ mod tests {
         assert_eq!(order2, order3);
         // Alphabetical order for same-level deps: a, m, z
         assert_eq!(order1, vec!["a", "m", "z", "pkg"]);
+    }
+
+    // =========================================================================
+    // Property-based tests with proptest
+    // =========================================================================
+
+    /// Strategy to generate valid formula names (lowercase, alphanumeric with - and _)
+    fn formula_name_strategy() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9_-]{0,10}".prop_filter("non-empty", |s| !s.is_empty())
+    }
+
+    /// Generate a dependency graph with no cycles (DAG)
+    /// Returns (root_name, formulas_map)
+    fn acyclic_graph_strategy() -> impl Strategy<Value = (String, BTreeMap<String, Formula>)> {
+        // Generate 1-5 package names
+        prop::collection::vec(formula_name_strategy(), 1..=5)
+            .prop_filter_map("unique names", |names| {
+                let unique: BTreeSet<String> = names.into_iter().collect();
+                if unique.is_empty() {
+                    return None;
+                }
+                let names: Vec<_> = unique.into_iter().collect();
+                Some(names)
+            })
+            .prop_flat_map(|names| {
+                let n = names.len();
+                // Generate dependency matrix: deps[i] can only depend on deps[j] where j < i
+                // This guarantees no cycles
+                let dep_bits = prop::collection::vec(
+                    prop::collection::vec(prop::bool::ANY, n),
+                    n,
+                );
+                (Just(names), dep_bits)
+            })
+            .prop_map(|(names, dep_matrix)| {
+                let mut formulas = BTreeMap::new();
+                for (i, name) in names.iter().enumerate() {
+                    let deps: Vec<&str> = names
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j < i && dep_matrix[i][*j])
+                        .map(|(_, n)| n.as_str())
+                        .collect();
+                    formulas.insert(name.clone(), formula(name, &deps));
+                }
+                // Root is the last element (can depend on all others)
+                let root = names.last().unwrap().clone();
+                (root, formulas)
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn resolution_output_has_no_cycles((root, formulas) in acyclic_graph_strategy()) {
+            if let Ok(order) = resolve_closure(&root, &formulas) {
+                // Verify: each package appears only once
+                let unique: BTreeSet<_> = order.iter().collect();
+                prop_assert_eq!(unique.len(), order.len(), "Duplicate packages in output");
+
+                // Verify: dependencies come before dependents
+                let pos: BTreeMap<_, _> = order.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
+                for name in &order {
+                    if let Some(f) = formulas.get(name) {
+                        for dep in &f.dependencies {
+                            if let Some(&dep_pos) = pos.get(dep) {
+                                let pkg_pos = pos[name];
+                                prop_assert!(
+                                    dep_pos < pkg_pos,
+                                    "Dependency {} (pos {}) should come before {} (pos {})",
+                                    dep, dep_pos, name, pkg_pos
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn resolution_is_deterministic((root, formulas) in acyclic_graph_strategy()) {
+            let result1 = resolve_closure(&root, &formulas);
+            let result2 = resolve_closure(&root, &formulas);
+            prop_assert_eq!(result1.is_ok(), result2.is_ok());
+            if let (Ok(order1), Ok(order2)) = (result1, result2) {
+                prop_assert_eq!(order1, order2, "Resolution should be deterministic");
+            }
+        }
+
+        #[test]
+        fn root_is_always_last_in_output((root, formulas) in acyclic_graph_strategy()) {
+            if let Ok(order) = resolve_closure(&root, &formulas) {
+                prop_assert!(!order.is_empty());
+                prop_assert_eq!(
+                    order.last().unwrap(),
+                    &root,
+                    "Root package should be last in install order"
+                );
+            }
+        }
     }
 }

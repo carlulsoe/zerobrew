@@ -223,6 +223,81 @@ pub struct OutdatedPackage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    // Strategy to generate valid semantic version strings
+    fn version_strategy() -> impl Strategy<Value = String> {
+        (1u32..100, 0u32..100, 0u32..100, prop::option::of(1u32..10))
+            .prop_map(|(major, minor, patch, rebuild)| {
+                if let Some(r) = rebuild {
+                    format!("{}.{}.{}_{}", major, minor, patch, r)
+                } else {
+                    format!("{}.{}.{}", major, minor, patch)
+                }
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn version_parse_does_not_panic(s in ".*") {
+            // Version::parse should never panic on any input
+            let _ = Version::parse(&s);
+        }
+
+        #[test]
+        fn version_parse_roundtrip(s in "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}(_[0-9]{1,2})?") {
+            let v = Version::parse(&s);
+            // Parsed version should preserve original string
+            prop_assert_eq!(v.as_str(), s.trim());
+        }
+
+        #[test]
+        fn version_ordering_is_reflexive(v in version_strategy()) {
+            let parsed = Version::parse(&v);
+            prop_assert!(parsed == parsed);
+            prop_assert!(!(parsed < parsed));
+            prop_assert!(!(parsed > parsed));
+        }
+
+        #[test]
+        fn version_ordering_is_antisymmetric(a in version_strategy(), b in version_strategy()) {
+            let va = Version::parse(&a);
+            let vb = Version::parse(&b);
+            // If a <= b and b <= a, then a == b
+            if va <= vb && vb <= va {
+                prop_assert_eq!(va, vb);
+            }
+        }
+
+        #[test]
+        fn version_ordering_is_transitive(
+            a in version_strategy(),
+            b in version_strategy(),
+            c in version_strategy()
+        ) {
+            let va = Version::parse(&a);
+            let vb = Version::parse(&b);
+            let vc = Version::parse(&c);
+            // If a < b and b < c, then a < c
+            if va < vb && vb < vc {
+                prop_assert!(va < vc);
+            }
+        }
+
+        #[test]
+        fn rebuild_suffix_increases_version(
+            major in 1u32..50,
+            minor in 0u32..50,
+            patch in 0u32..50,
+            rebuild in 1u32..10
+        ) {
+            let base = format!("{}.{}.{}", major, minor, patch);
+            let with_rebuild = format!("{}.{}.{}_{}", major, minor, patch, rebuild);
+            let vbase = Version::parse(&base);
+            let vrebuild = Version::parse(&with_rebuild);
+            prop_assert!(vbase < vrebuild, "{} should be < {}", base, with_rebuild);
+        }
+    }
 
     #[test]
     fn parses_simple_version() {

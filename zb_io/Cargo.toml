@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-trait = "0.1"
 chrono = "0.4"
 flate2 = "1.0"
 futures = "0.3"
@@ -26,5 +27,7 @@ zstd = "0.13"
 zb_core = { path = "../zb_core" }
 
 [dev-dependencies]
+mockall = "0.13"
 tempfile = "3"
 wiremock = "0.6"
+proptest = "1.4"

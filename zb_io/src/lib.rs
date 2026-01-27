@@ -12,6 +12,7 @@
 //! - [`ServiceManager`] - Background service lifecycle management
 //! - [`TapManager`] - Third-party tap repository management
 //! - [`Builder`] - Source compilation support
+//! - [`traits`] - Trait abstractions for mockable I/O operations
 
 pub mod api;
 pub mod blob;
@@ -29,6 +30,7 @@ pub mod search;
 pub mod services;
 pub mod store;
 pub mod tap;
+pub mod traits;
 
 #[cfg(test)]
 pub mod test_utils;
@@ -51,3 +53,4 @@ pub use progress::{InstallProgress, ProgressCallback};
 pub use services::{ServiceConfig, ServiceInfo, ServiceManager, ServiceStatus};
 pub use store::Store;
 pub use tap::{TapFormula, TapInfo, TapManager};
+pub use traits::{FileSystem, HttpClient, ReqwestHttpClient, StdFileSystem};

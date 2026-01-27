@@ -1399,4 +1399,137 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert!(links[0].1.contains("replace-new"));
     }
+
+    // =========================================================================
+    // Property-based tests with proptest
+    // =========================================================================
+
+    mod proptest_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Strategy to generate valid package names
+        fn package_name_strategy() -> impl Strategy<Value = String> {
+            "[a-z][a-z0-9_-]{0,15}"
+                .prop_filter("non-empty", |s| !s.is_empty())
+        }
+
+        /// Strategy to generate version strings
+        fn version_strategy() -> impl Strategy<Value = String> {
+            (1u32..20, 0u32..20, 0u32..20)
+                .prop_map(|(major, minor, patch)| format!("{}.{}.{}", major, minor, patch))
+        }
+
+        /// Strategy to generate store keys (hex-like strings)
+        fn store_key_strategy() -> impl Strategy<Value = String> {
+            "[a-f0-9]{16,64}"
+        }
+
+        proptest! {
+            #[test]
+            fn install_delete_roundtrip(
+                name in package_name_strategy(),
+                version in version_strategy(),
+                store_key in store_key_strategy()
+            ) {
+                let mut db = Database::in_memory().unwrap();
+
+                // Install
+                {
+                    let tx = db.transaction().unwrap();
+                    tx.record_install(&name, &version, &store_key, true).unwrap();
+                    tx.commit().unwrap();
+                }
+
+                // Verify installed
+                let installed = db.get_installed(&name);
+                prop_assert!(installed.is_some(), "Package should be installed");
+                let pkg = installed.unwrap();
+                prop_assert_eq!(&pkg.name, &name);
+                prop_assert_eq!(&pkg.version, &version);
+                prop_assert_eq!(&pkg.store_key, &store_key);
+
+                // Uninstall
+                {
+                    let tx = db.transaction().unwrap();
+                    let removed_key = tx.record_uninstall(&name).unwrap();
+                    prop_assert_eq!(removed_key, Some(store_key.clone()));
+                    tx.commit().unwrap();
+                }
+
+                // Verify removed
+                let after = db.get_installed(&name);
+                prop_assert!(after.is_none(), "Package should be removed after uninstall");
+            }
+
+            #[test]
+            fn explicit_flag_persists(
+                name in package_name_strategy(),
+                version in version_strategy(),
+                store_key in store_key_strategy(),
+                explicit in prop::bool::ANY
+            ) {
+                let mut db = Database::in_memory().unwrap();
+
+                {
+                    let tx = db.transaction().unwrap();
+                    tx.record_install(&name, &version, &store_key, explicit).unwrap();
+                    tx.commit().unwrap();
+                }
+
+                let installed = db.get_installed(&name).unwrap();
+                prop_assert_eq!(installed.explicit, explicit);
+            }
+
+            #[test]
+            fn pin_unpin_roundtrip(
+                name in package_name_strategy(),
+                version in version_strategy(),
+                store_key in store_key_strategy()
+            ) {
+                let mut db = Database::in_memory().unwrap();
+
+                {
+                    let tx = db.transaction().unwrap();
+                    tx.record_install(&name, &version, &store_key, true).unwrap();
+                    tx.commit().unwrap();
+                }
+
+                // Initially not pinned
+                prop_assert!(!db.is_pinned(&name));
+
+                // Pin
+                db.pin(&name).unwrap();
+                prop_assert!(db.is_pinned(&name));
+
+                // Unpin
+                db.unpin(&name).unwrap();
+                prop_assert!(!db.is_pinned(&name));
+            }
+
+            #[test]
+            fn store_refcount_increments_on_install(
+                names in prop::collection::vec(package_name_strategy(), 1..5),
+                version in version_strategy(),
+                store_key in store_key_strategy()
+            ) {
+                let mut db = Database::in_memory().unwrap();
+
+                // Deduplicate names
+                let unique_names: std::collections::BTreeSet<_> = names.into_iter().collect();
+                let unique_names: Vec<_> = unique_names.into_iter().collect();
+
+                // Install multiple packages with same store_key
+                for name in &unique_names {
+                    let tx = db.transaction().unwrap();
+                    tx.record_install(name, &version, &store_key, true).unwrap();
+                    tx.commit().unwrap();
+                }
+
+                // Refcount should equal number of unique packages
+                let refcount = db.get_store_refcount(&store_key);
+                prop_assert_eq!(refcount, unique_names.len() as i64);
+            }
+        }
+    }
 }
