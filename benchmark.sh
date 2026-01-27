@@ -246,7 +246,7 @@ for i in "${!PACKAGES[@]}"; do
         echo -e "  ${RED}Homebrew: FAILED${NC}" >&2
         FAILED_NAMES+=("$pkg")
         FAILED_REASONS+=("brew install failed")
-        ((FAILED++))
+        ((FAILED++)) || true
         echo "" >&2
         continue
     fi
@@ -266,7 +266,7 @@ for i in "${!PACKAGES[@]}"; do
         echo -e "  ${RED}Zerobrew cold: FAILED${NC}" >&2
         FAILED_NAMES+=("$pkg")
         FAILED_REASONS+=("zb install failed")
-        ((FAILED++))
+        ((FAILED++)) || true
         echo "" >&2
         continue
     fi
@@ -299,7 +299,7 @@ for i in "${!PACKAGES[@]}"; do
     RESULT_ZB_COLD+=("$ZB_COLD_MS")
     RESULT_ZB_WARM+=("$ZB_WARM_MS")
     RESULT_SPEEDUP+=("$SPEEDUP")
-    ((PASSED++))
+    ((PASSED++)) || true
 
     echo "" >&2
 done
