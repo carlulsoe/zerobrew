@@ -1,3 +1,18 @@
+//! I/O layer for zerobrew - a fast Homebrew-compatible package manager.
+//!
+//! This crate provides the core I/O and orchestration functionality:
+//!
+//! - [`Installer`] - Core installation/uninstallation orchestration
+//! - [`ApiClient`] - Homebrew API access with caching
+//! - [`Database`] - Local SQLite state storage for installed packages
+//! - [`Store`] - Content-addressable blob store for package data
+//! - [`Downloader`] / [`ParallelDownloader`] - HTTP download handling
+//! - [`Linker`] - Symlink management for installed formulas
+//! - [`Cellar`] - Package materialization from the store
+//! - [`ServiceManager`] - Background service lifecycle management
+//! - [`TapManager`] - Third-party tap repository management
+//! - [`Builder`] - Source compilation support
+
 pub mod api;
 pub mod blob;
 pub mod build;

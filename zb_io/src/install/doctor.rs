@@ -369,3 +369,213 @@ impl Installer {
         checks
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use tempfile::TempDir;
+
+    use crate::api::ApiClient;
+    use crate::blob::BlobCache;
+    use crate::db::Database;
+    use crate::link::Linker;
+    use crate::materialize::Cellar;
+    use crate::store::Store;
+    use crate::tap::TapManager;
+
+    /// Create an Installer for testing with minimal setup
+    fn create_test_installer_for_doctor(tmp: &TempDir) -> Installer {
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+        fs::create_dir_all(&prefix).unwrap();
+
+        let api_client = ApiClient::new();
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            tap_manager,
+            prefix.clone(),
+            prefix.join("Cellar"),
+            4,
+        )
+    }
+
+    #[test]
+    fn check_prefix_writable_fails_for_readonly() {
+        let tmp = TempDir::new().unwrap();
+        let installer = create_test_installer_for_doctor(&tmp);
+
+        // Make the prefix read-only
+        let prefix = &installer.prefix;
+        let permissions = fs::Permissions::from_mode(0o555);
+        fs::set_permissions(prefix, permissions).unwrap();
+
+        let check = installer.check_prefix_writable();
+
+        // Restore permissions before assertions (for cleanup)
+        let permissions = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(prefix, permissions).unwrap();
+
+        assert_eq!(check.status, DoctorStatus::Error);
+        assert!(check.message.contains("not writable"));
+        assert!(check.fix.is_some());
+    }
+
+    #[test]
+    fn check_prefix_writable_succeeds_for_writable() {
+        let tmp = TempDir::new().unwrap();
+        let installer = create_test_installer_for_doctor(&tmp);
+
+        let check = installer.check_prefix_writable();
+
+        assert_eq!(check.status, DoctorStatus::Ok);
+        assert!(check.message.contains("writable"));
+    }
+
+    #[test]
+    fn check_broken_symlinks_finds_dangling() {
+        let tmp = TempDir::new().unwrap();
+        let installer = create_test_installer_for_doctor(&tmp);
+
+        // Create bin directory with a broken symlink
+        let bin_dir = installer.prefix.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        // Create a symlink to a non-existent target
+        let broken_link = bin_dir.join("broken-cmd");
+        let nonexistent_target = tmp.path().join("nonexistent-target");
+        symlink(&nonexistent_target, &broken_link).unwrap();
+
+        let check = installer.check_broken_symlinks();
+
+        assert_eq!(check.status, DoctorStatus::Warning);
+        assert!(check.message.contains("broken symlinks"));
+        assert!(check.message.contains("broken-cmd"));
+        assert!(check.fix.is_some());
+    }
+
+    #[test]
+    fn check_broken_symlinks_ok_when_no_broken_links() {
+        let tmp = TempDir::new().unwrap();
+        let installer = create_test_installer_for_doctor(&tmp);
+
+        // Create bin directory with a valid symlink
+        let bin_dir = installer.prefix.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        // Create a valid target and symlink to it
+        let target = bin_dir.join("real-binary");
+        fs::write(&target, b"#!/bin/sh\necho hello").unwrap();
+        let valid_link = bin_dir.join("valid-cmd");
+        symlink(&target, &valid_link).unwrap();
+
+        let check = installer.check_broken_symlinks();
+
+        assert_eq!(check.status, DoctorStatus::Ok);
+        assert!(check.message.contains("No broken symlinks"));
+    }
+
+    #[tokio::test]
+    async fn check_missing_deps_detects_missing() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+        fs::create_dir_all(&prefix).unwrap();
+
+        // Create formula JSON that has a dependency
+        let formula_json = r#"{
+            "name": "testpkg",
+            "versions": { "stable": "1.0.0" },
+            "dependencies": ["missing-dep"],
+            "bottle": {
+                "stable": {
+                    "files": {}
+                }
+            }
+        }"#;
+
+        Mock::given(method("GET"))
+            .and(path("/testpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(formula_json))
+            .mount(&mock_server)
+            .await;
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let mut installer = Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            tap_manager,
+            prefix.clone(),
+            prefix.join("Cellar"),
+            4,
+        );
+
+        // Record testpkg as installed in the database
+        {
+            let tx = installer.db.transaction().unwrap();
+            tx.record_install("testpkg", "1.0.0", "abc123", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let checks = installer.check_missing_dependencies().await;
+
+        // Should find the missing dependency
+        assert!(!checks.is_empty());
+        let missing_check = checks
+            .iter()
+            .find(|c| c.message.contains("missing-dep"))
+            .expect("Should find missing-dep in checks");
+        assert_eq!(missing_check.status, DoctorStatus::Warning);
+        assert!(missing_check.fix.is_some());
+    }
+
+    #[tokio::test]
+    async fn check_missing_deps_ok_when_all_present() {
+        let tmp = TempDir::new().unwrap();
+        let installer = create_test_installer_for_doctor(&tmp);
+
+        // No packages installed, so no missing deps
+        let checks = installer.check_missing_dependencies().await;
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, DoctorStatus::Ok);
+        assert!(checks[0].message.contains("All dependencies are installed"));
+    }
+
+    use std::os::unix::fs::PermissionsExt;
+}

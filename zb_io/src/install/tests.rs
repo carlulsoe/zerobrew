@@ -68,6 +68,48 @@ fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Create a test Installer with a mock server for API calls.
+///
+/// This helper reduces boilerplate in integration tests by setting up:
+/// - API client configured to use the mock server
+/// - Blob cache, store, cellar, linker, database, and tap manager
+/// - All directories created under the temp directory
+///
+/// # Arguments
+/// * `mock_server` - The wiremock MockServer to use for API calls
+/// * `tmp` - The TempDir to use as the root for all directories
+///
+/// # Returns
+/// A fully configured Installer ready for testing
+fn create_test_installer(mock_server: &MockServer, tmp: &TempDir) -> Installer {
+    let root = tmp.path().join("zerobrew");
+    let prefix = tmp.path().join("homebrew");
+    fs::create_dir_all(root.join("db")).unwrap();
+
+    let api_client = ApiClient::with_base_url(mock_server.uri());
+    let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+    let store = Store::new(&root).unwrap();
+    let cellar = Cellar::new(&root).unwrap();
+    let linker = Linker::new(&prefix).unwrap();
+    let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+    let taps_dir = root.join("taps");
+    fs::create_dir_all(&taps_dir).unwrap();
+    let tap_manager = TapManager::new(&taps_dir);
+
+    Installer::new(
+        api_client,
+        blob_cache,
+        store,
+        cellar,
+        linker,
+        db,
+        tap_manager,
+        prefix.clone(),
+        prefix.join("Cellar"),
+        4,
+    )
+}
+
 #[tokio::test]
 async fn install_completes_successfully() {
     let mock_server = MockServer::start().await;
@@ -115,33 +157,10 @@ async fn install_completes_successfully() {
         .mount(&mock_server)
         .await;
 
-    // Create installer with mocked API
+    // Create installer using helper
+    let mut installer = create_test_installer(&mock_server, &tmp);
     let root = tmp.path().join("zerobrew");
     let prefix = tmp.path().join("homebrew");
-    fs::create_dir_all(root.join("db")).unwrap();
-
-    let api_client = ApiClient::with_base_url(mock_server.uri());
-    let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
-    let store = Store::new(&root).unwrap();
-    let cellar = Cellar::new(&root).unwrap();
-    let linker = Linker::new(&prefix).unwrap();
-    let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
-    let taps_dir = root.join("taps");
-    fs::create_dir_all(&taps_dir).unwrap();
-    let tap_manager = TapManager::new(&taps_dir);
-
-    let mut installer = Installer::new(
-        api_client,
-        blob_cache,
-        store,
-        cellar,
-        linker,
-        db,
-        tap_manager,
-        prefix.to_path_buf(),
-        prefix.join("Cellar"),
-        4,
-    );
 
     // Install
     installer.install("testpkg", true).await.unwrap();
@@ -204,33 +223,10 @@ async fn uninstall_cleans_everything() {
         .mount(&mock_server)
         .await;
 
-    // Create installer
+    // Create installer using helper
+    let mut installer = create_test_installer(&mock_server, &tmp);
     let root = tmp.path().join("zerobrew");
     let prefix = tmp.path().join("homebrew");
-    fs::create_dir_all(root.join("db")).unwrap();
-
-    let api_client = ApiClient::with_base_url(mock_server.uri());
-    let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
-    let store = Store::new(&root).unwrap();
-    let cellar = Cellar::new(&root).unwrap();
-    let linker = Linker::new(&prefix).unwrap();
-    let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
-    let taps_dir = root.join("taps");
-    fs::create_dir_all(&taps_dir).unwrap();
-    let tap_manager = TapManager::new(&taps_dir);
-
-    let mut installer = Installer::new(
-        api_client,
-        blob_cache,
-        store,
-        cellar,
-        linker,
-        db,
-        tap_manager,
-        prefix.to_path_buf(),
-        prefix.join("Cellar"),
-        4,
-    );
 
     // Install
     installer.install("uninstallme", true).await.unwrap();
@@ -295,33 +291,9 @@ async fn gc_removes_unreferenced_store_entries() {
         .mount(&mock_server)
         .await;
 
-    // Create installer
+    // Create installer using helper
+    let mut installer = create_test_installer(&mock_server, &tmp);
     let root = tmp.path().join("zerobrew");
-    let prefix = tmp.path().join("homebrew");
-    fs::create_dir_all(root.join("db")).unwrap();
-
-    let api_client = ApiClient::with_base_url(mock_server.uri());
-    let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
-    let store = Store::new(&root).unwrap();
-    let cellar = Cellar::new(&root).unwrap();
-    let linker = Linker::new(&prefix).unwrap();
-    let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
-    let taps_dir = root.join("taps");
-    fs::create_dir_all(&taps_dir).unwrap();
-    let tap_manager = TapManager::new(&taps_dir);
-
-    let mut installer = Installer::new(
-        api_client,
-        blob_cache,
-        store,
-        cellar,
-        linker,
-        db,
-        tap_manager,
-        prefix.to_path_buf(),
-        prefix.join("Cellar"),
-        4,
-    );
 
     // Install and uninstall
     installer.install("gctest", true).await.unwrap();

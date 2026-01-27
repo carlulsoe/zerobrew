@@ -5,7 +5,7 @@ use indicatif::MultiProgress;
 use std::path::Path;
 use std::time::Instant;
 
-use zb_core::Formula;
+use zb_core::formula::KegOnlyReason;
 use zb_io::install::Installer;
 
 use crate::display::{
@@ -85,8 +85,13 @@ async fn run_source_install(
 
     // Display keg-only and caveats info if present
     if let Ok(formula_info) = installer.get_formula(formula).await {
-        print_keg_only_info(&formula_info, prefix, formula);
-        print_caveats(&formula_info, prefix);
+        print_keg_only_info(
+            formula_info.keg_only,
+            formula_info.keg_only_reason.as_ref(),
+            prefix,
+            formula,
+        );
+        print_caveats(formula_info.caveats.as_ref(), prefix);
     }
 
     Ok(())
@@ -163,91 +168,62 @@ async fn run_bottle_install(
         elapsed.as_secs_f64()
     );
 
-    // Display keg-only info if applicable
-    if root_keg_only {
-        println!();
-        println!("{}", style("==> Keg-only").yellow().bold());
-        println!(
-            "{} is keg-only, which means it was not symlinked into {}",
-            style(formula).bold(),
-            prefix.display()
-        );
-        if let Some(ref reason) = root_keg_only_reason
-            && !reason.explanation.is_empty()
-        {
-            println!();
-            println!("{}", reason.explanation);
-        }
-        println!();
-        println!("To use this formula, you can:");
-        println!(
-            "    • Add it to your PATH: {}",
-            style(format!(
-                "export PATH=\"{}/opt/{}/bin:$PATH\"",
-                prefix.display(),
-                formula
-            ))
-            .cyan()
-        );
-        println!(
-            "    • Link it with: {}",
-            style(format!("zb link {} --force", formula)).cyan()
-        );
-    }
-
-    // Display caveats for the root formula if present
-    if let Some(ref caveats) = root_caveats {
-        println!();
-        println!("{}", style("==> Caveats").yellow().bold());
-        let caveats = caveats.replace("$HOMEBREW_PREFIX", &prefix.to_string_lossy());
-        for line in caveats.lines() {
-            println!("{}", line);
-        }
-    }
+    // Display keg-only and caveats info if present
+    print_keg_only_info(root_keg_only, root_keg_only_reason.as_ref(), prefix, formula);
+    print_caveats(root_caveats.as_ref(), prefix);
 
     Ok(())
 }
 
-fn print_keg_only_info(formula_info: &Formula, prefix: &Path, formula: &str) {
-    if formula_info.keg_only {
-        println!();
-        println!("{}", style("==> Keg-only").yellow().bold());
-        println!(
-            "{} is keg-only, which means it was not symlinked into {}",
-            style(formula).bold(),
-            prefix.display()
-        );
-        if let Some(ref reason) = formula_info.keg_only_reason
-            && !reason.explanation.is_empty()
-        {
-            println!();
-            println!("{}", reason.explanation);
-        }
-        println!();
-        println!("To use this formula, you can:");
-        println!(
-            "    • Add it to your PATH: {}",
-            style(format!(
-                "export PATH=\"{}/opt/{}/bin:$PATH\"",
-                prefix.display(),
-                formula
-            ))
-            .cyan()
-        );
-        println!(
-            "    • Link it with: {}",
-            style(format!("zb link {} --force", formula)).cyan()
-        );
+/// Print keg-only information for a formula.
+fn print_keg_only_info(
+    keg_only: bool,
+    keg_only_reason: Option<&KegOnlyReason>,
+    prefix: &Path,
+    formula: &str,
+) {
+    if !keg_only {
+        return;
     }
+
+    println!();
+    println!("{}", style("==> Keg-only").yellow().bold());
+    println!(
+        "{} is keg-only, which means it was not symlinked into {}",
+        style(formula).bold(),
+        prefix.display()
+    );
+    if let Some(reason) = keg_only_reason
+        && !reason.explanation.is_empty()
+    {
+        println!();
+        println!("{}", reason.explanation);
+    }
+    println!();
+    println!("To use this formula, you can:");
+    println!(
+        "    • Add it to your PATH: {}",
+        style(format!(
+            "export PATH=\"{}/opt/{}/bin:$PATH\"",
+            prefix.display(),
+            formula
+        ))
+        .cyan()
+    );
+    println!(
+        "    • Link it with: {}",
+        style(format!("zb link {} --force", formula)).cyan()
+    );
 }
 
-fn print_caveats(formula_info: &Formula, prefix: &Path) {
-    if let Some(ref caveats) = formula_info.caveats {
-        println!();
-        println!("{}", style("==> Caveats").yellow().bold());
-        let caveats = caveats.replace("$HOMEBREW_PREFIX", &prefix.to_string_lossy());
-        for line in caveats.lines() {
-            println!("{}", line);
-        }
+/// Print caveats for a formula.
+fn print_caveats(caveats: Option<&String>, prefix: &Path) {
+    let Some(caveats) = caveats else { return };
+
+    println!();
+    println!("{}", style("==> Caveats").yellow().bold());
+    let caveats = caveats.replace("$HOMEBREW_PREFIX", &prefix.to_string_lossy());
+    for line in caveats.lines() {
+        println!("{}", line);
     }
 }

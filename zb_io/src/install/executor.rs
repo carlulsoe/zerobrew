@@ -395,6 +395,11 @@ impl Installer {
         Ok(result)
     }
 
+    /// Execute an empty install plan (no-op convenience method for testing)
+    pub async fn execute_empty(&mut self) -> Result<ExecuteResult, Error> {
+        Ok(ExecuteResult { installed: 0 })
+    }
+
     /// Preview what would be cleaned up (dry run)
     pub fn cleanup_dry_run(&self, prune_days: Option<u32>) -> Result<CleanupResult, Error> {
         let mut result = CleanupResult::default();
@@ -451,5 +456,269 @@ impl Installer {
         }
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::api::ApiClient;
+    use crate::blob::BlobCache;
+    use crate::db::Database;
+    use crate::link::Linker;
+    use crate::materialize::Cellar;
+    use crate::store::Store;
+    use crate::tap::TapManager;
+
+    /// Get the bottle tag for the current platform
+    fn platform_bottle_tag() -> &'static str {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            "arm64_sonoma"
+        }
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        {
+            "sonoma"
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            "arm64_linux"
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            "x86_64_linux"
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "macos", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+        )))]
+        {
+            "all"
+        }
+    }
+
+    fn create_bottle_tarball(formula_name: &str) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        use tar::Builder;
+
+        let mut builder = Builder::new(Vec::new());
+
+        let mut header = tar::Header::new_gnu();
+        header
+            .set_path(format!("{}/1.0.0/bin/{}", formula_name, formula_name))
+            .unwrap();
+        header.set_size(20);
+        header.set_mode(0o755);
+        header.set_cksum();
+
+        let content = format!("#!/bin/sh\necho {}", formula_name);
+        builder.append(&header, content.as_bytes()).unwrap();
+
+        let tar_data = builder.into_inner().unwrap();
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar_data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn sha256_hex(data: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Create an Installer for testing with a mock server
+    fn create_test_installer_for_executor(
+        mock_server: &MockServer,
+        tmp: &TempDir,
+    ) -> Installer {
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+        fs::create_dir_all(&prefix).unwrap();
+
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let taps_dir = root.join("taps");
+        fs::create_dir_all(&taps_dir).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            tap_manager,
+            prefix.clone(),
+            prefix.join("Cellar"),
+            4,
+        )
+    }
+
+    #[tokio::test]
+    async fn execute_empty_plan_returns_zero_installed() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let mut installer = create_test_installer_for_executor(&mock_server, &tmp);
+
+        // Create an empty plan
+        let plan = InstallPlan {
+            formulas: vec![],
+            bottles: vec![],
+            root_name: "empty".to_string(),
+        };
+
+        let result = installer.execute(plan, true).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().installed, 0);
+    }
+
+    #[tokio::test]
+    async fn execute_empty_helper_returns_zero() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let mut installer = create_test_installer_for_executor(&mock_server, &tmp);
+
+        let result = installer.execute_empty().await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().installed, 0);
+    }
+
+    #[tokio::test]
+    async fn execute_handles_partial_download_failure() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create a valid bottle for pkg1
+        let pkg1_bottle = create_bottle_tarball("pkg1");
+        let pkg1_sha = sha256_hex(&pkg1_bottle);
+
+        // Create formulas
+        let pkg1_json = format!(
+            r#"{{
+                "name": "pkg1",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/pkg1-1.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "{sha}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri(),
+            sha = pkg1_sha
+        );
+
+        let pkg2_json = format!(
+            r#"{{
+                "name": "pkg2",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "{base}/bottles/pkg2-1.0.0.{tag}.bottle.tar.gz",
+                                "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag = tag,
+            base = mock_server.uri()
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/pkg1.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&pkg1_json))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/pkg2.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&pkg2_json))
+            .mount(&mock_server)
+            .await;
+
+        // pkg1 bottle downloads successfully
+        let pkg1_bottle_path = format!("/bottles/pkg1-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(pkg1_bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(pkg1_bottle.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // pkg2 bottle fails to download (returns 500)
+        let pkg2_bottle_path = format!("/bottles/pkg2-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(pkg2_bottle_path))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer_for_executor(&mock_server, &tmp);
+
+        // Try to install pkg2 which should fail
+        let result = installer.install("pkg2", true).await;
+
+        // Should return an error because pkg2 download failed
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn uninstall_not_installed_returns_error() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let mut installer = create_test_installer_for_executor(&mock_server, &tmp);
+
+        let result = installer.uninstall("not-installed-pkg");
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::NotInstalled { name } => assert_eq!(name, "not-installed-pkg"),
+            e => panic!("Expected NotInstalled error, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn gc_on_empty_store_returns_empty() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let mut installer = create_test_installer_for_executor(&mock_server, &tmp);
+
+        let result = installer.gc();
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 }
