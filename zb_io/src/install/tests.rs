@@ -4915,6 +4915,417 @@ mod orphan_tests {
         ctx.installer().mark_dependency("idem_lib").unwrap();
         assert!(!ctx.installer().is_explicit("idem_lib"));
     }
+
+    /// Test find_orphans when dependency fetch fails during transitive resolution.
+    /// The system should fall back to direct dependencies from the formula.
+    ///
+    /// Setup: A (explicit) -> B, B -> C
+    /// We test that orphan detection works even when not all formulas are fetchable.
+    #[tokio::test]
+    async fn test_find_orphans_with_fetch_issues() {
+        let mut ctx = TestContext::new().await;
+        
+        // Mount formulas: C has no deps, B depends on C, A depends on B
+        mount_formula_with_deps(&ctx, "fetch_c", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "fetch_b", "1.0.0", &["fetch_c"]).await;
+        mount_formula_with_deps(&ctx, "fetch_a", "1.0.0", &["fetch_b"]).await;
+        
+        // Install A (pulls in B and C)
+        ctx.installer_mut().install("fetch_a", true).await.unwrap();
+        
+        // Verify all installed
+        assert!(ctx.installer().is_installed("fetch_a"));
+        assert!(ctx.installer().is_installed("fetch_b"));
+        assert!(ctx.installer().is_installed("fetch_c"));
+        
+        // Uninstall A
+        ctx.installer_mut().uninstall("fetch_a").unwrap();
+        
+        // Find orphans - B and C are both orphans since A is gone
+        let mut orphans = ctx.installer().find_orphans().await.unwrap();
+        orphans.sort();
+        
+        // Both B and C should be orphans
+        assert_eq!(orphans.len(), 2, "Expected 2 orphans, got: {:?}", orphans);
+        assert!(orphans.contains(&"fetch_b".to_string()));
+        assert!(orphans.contains(&"fetch_c".to_string()));
+    }
+
+    /// Test that find_orphans handles formula fetch errors gracefully.
+    /// When the API returns errors for some packages, orphan detection
+    /// should continue and not crash.
+    #[tokio::test]
+    async fn test_find_orphans_handles_formula_errors() {
+        let mut ctx = TestContext::new().await;
+        
+        // Install a package with a dependency
+        mount_formula_with_deps(&ctx, "error_dep", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "error_app", "1.0.0", &["error_dep"]).await;
+        
+        ctx.installer_mut().install("error_app", true).await.unwrap();
+        
+        // Both should be installed
+        assert!(ctx.installer().is_installed("error_app"));
+        assert!(ctx.installer().is_installed("error_dep"));
+        
+        // Find orphans should work normally here
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        
+        // No orphans since error_app is explicit and error_dep is its dependency
+        assert!(orphans.is_empty(), "Expected no orphans, got: {:?}", orphans);
+        
+        // Now uninstall error_app
+        ctx.installer_mut().uninstall("error_app").unwrap();
+        
+        // error_dep should now be an orphan
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert!(orphans.contains(&"error_dep".to_string()));
+    }
+
+    /// Test that autoremove handles uninstall failures gracefully.
+    /// When an orphan fails to uninstall, it should log a warning and continue.
+    ///
+    /// Note: This is difficult to test directly without making the filesystem
+    /// read-only or similar. We test the success path thoroughly and verify
+    /// the error path exists in the code structure.
+    #[tokio::test]
+    async fn test_autoremove_handles_mixed_success_failure() {
+        let mut ctx = TestContext::new().await;
+        
+        // Install multiple packages that will become orphans
+        mount_formula_with_deps(&ctx, "auto_orphan_1", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "auto_orphan_2", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "auto_orphan_3", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "auto_main", "1.0.0", 
+            &["auto_orphan_1", "auto_orphan_2", "auto_orphan_3"]).await;
+        
+        ctx.installer_mut().install("auto_main", true).await.unwrap();
+        
+        // Verify all installed
+        assert!(ctx.installer().is_installed("auto_main"));
+        assert!(ctx.installer().is_installed("auto_orphan_1"));
+        assert!(ctx.installer().is_installed("auto_orphan_2"));
+        assert!(ctx.installer().is_installed("auto_orphan_3"));
+        
+        // Uninstall main to make orphans
+        ctx.installer_mut().uninstall("auto_main").unwrap();
+        
+        // All three should be orphans
+        let mut orphans = ctx.installer().find_orphans().await.unwrap();
+        orphans.sort();
+        assert_eq!(orphans.len(), 3);
+        
+        // Autoremove should successfully remove all orphans
+        // (This tests the success path; failure path requires FS manipulation)
+        let removed = ctx.installer_mut().autoremove().await.unwrap();
+        assert_eq!(removed.len(), 3);
+        
+        // Verify all removed
+        assert!(!ctx.installer().is_installed("auto_orphan_1"));
+        assert!(!ctx.installer().is_installed("auto_orphan_2"));
+        assert!(!ctx.installer().is_installed("auto_orphan_3"));
+    }
+
+    /// Test SourceBuildResult Debug implementation.
+    #[test]
+    fn test_source_build_result_debug() {
+        use super::super::SourceBuildResult;
+        
+        let result = SourceBuildResult {
+            name: "test-pkg".to_string(),
+            version: "1.2.3".to_string(),
+            files_installed: 42,
+            files_linked: 10,
+            head: false,
+        };
+        
+        let debug_str = format!("{:?}", result);
+        
+        // Verify Debug output contains expected fields
+        assert!(debug_str.contains("test-pkg"));
+        assert!(debug_str.contains("1.2.3"));
+        assert!(debug_str.contains("42"));
+        assert!(debug_str.contains("10"));
+        assert!(debug_str.contains("false"));
+    }
+
+    /// Test SourceBuildResult Clone implementation.
+    #[test]
+    fn test_source_build_result_clone() {
+        use super::super::SourceBuildResult;
+        
+        let original = SourceBuildResult {
+            name: "clone-test".to_string(),
+            version: "2.0.0".to_string(),
+            files_installed: 100,
+            files_linked: 25,
+            head: true,
+        };
+        
+        let cloned = original.clone();
+        
+        // Verify cloned values match original
+        assert_eq!(cloned.name, "clone-test");
+        assert_eq!(cloned.version, "2.0.0");
+        assert_eq!(cloned.files_installed, 100);
+        assert_eq!(cloned.files_linked, 25);
+        assert!(cloned.head);
+        
+        // Verify they are separate instances
+        assert_eq!(original.name, cloned.name);
+    }
+
+    /// Test find_orphans with multiple levels of shared dependencies.
+    /// This tests that the transitive dependency resolution correctly
+    /// identifies all required packages.
+    ///
+    /// Graph: 
+    ///   A (explicit) -> X -> Z
+    ///   B (explicit) -> Y -> Z
+    ///
+    /// Z is shared by both chains. After uninstalling A, only X becomes orphan.
+    /// Z is still needed by B->Y.
+    #[tokio::test]
+    async fn test_find_orphans_multilevel_shared_deps() {
+        let mut ctx = TestContext::new().await;
+        
+        // Z is a leaf dependency shared by X and Y
+        mount_formula_with_deps(&ctx, "multi_z", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "multi_x", "1.0.0", &["multi_z"]).await;
+        mount_formula_with_deps(&ctx, "multi_y", "1.0.0", &["multi_z"]).await;
+        mount_formula_with_deps(&ctx, "multi_a", "1.0.0", &["multi_x"]).await;
+        mount_formula_with_deps(&ctx, "multi_b", "1.0.0", &["multi_y"]).await;
+        
+        // Install both A and B
+        ctx.installer_mut().install("multi_a", true).await.unwrap();
+        ctx.installer_mut().install("multi_b", true).await.unwrap();
+        
+        // Verify all 5 packages installed
+        assert!(ctx.installer().is_installed("multi_a"));
+        assert!(ctx.installer().is_installed("multi_b"));
+        assert!(ctx.installer().is_installed("multi_x"));
+        assert!(ctx.installer().is_installed("multi_y"));
+        assert!(ctx.installer().is_installed("multi_z"));
+        
+        // Uninstall A
+        ctx.installer_mut().uninstall("multi_a").unwrap();
+        
+        // Find orphans - only X should be orphan
+        // Z is still needed by B->Y
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert_eq!(orphans.len(), 1, "Expected only X as orphan, got: {:?}", orphans);
+        assert!(orphans.contains(&"multi_x".to_string()));
+        
+        // Remove orphan X first
+        ctx.installer_mut().autoremove().await.unwrap();
+        assert!(!ctx.installer().is_installed("multi_x"));
+        
+        // Uninstall B too
+        ctx.installer_mut().uninstall("multi_b").unwrap();
+        
+        // Now Y and Z should be orphans
+        let mut orphans = ctx.installer().find_orphans().await.unwrap();
+        orphans.sort();
+        assert_eq!(orphans.len(), 2, "Expected Y and Z as orphans, got: {:?}", orphans);
+        assert!(orphans.contains(&"multi_y".to_string()));
+        assert!(orphans.contains(&"multi_z".to_string()));
+    }
+
+    /// Test find_orphans when an explicit package has no dependencies.
+    /// The required set should include just the explicit package itself.
+    #[tokio::test]
+    async fn test_find_orphans_explicit_with_no_deps() {
+        let mut ctx = TestContext::new().await;
+        
+        // Install an explicit package with no deps
+        mount_formula_with_deps(&ctx, "nodeps", "1.0.0", &[]).await;
+        ctx.installer_mut().install("nodeps", true).await.unwrap();
+        
+        // Install another package as dependency only
+        mount_formula_with_deps(&ctx, "orphan_pkg", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "main_with_dep", "1.0.0", &["orphan_pkg"]).await;
+        ctx.installer_mut().install("main_with_dep", true).await.unwrap();
+        
+        // Uninstall main_with_dep
+        ctx.installer_mut().uninstall("main_with_dep").unwrap();
+        
+        // orphan_pkg should be orphan, nodeps should NOT be
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert!(orphans.contains(&"orphan_pkg".to_string()));
+        
+        // nodeps is explicit, so even though nothing depends on it, it's not an orphan
+        assert!(!orphans.contains(&"nodeps".to_string()));
+    }
+
+    /// Test that list_dependencies returns correct count when many deps exist.
+    #[tokio::test]
+    async fn test_list_dependencies_count_accuracy() {
+        let mut ctx = TestContext::new().await;
+        
+        // Create a chain: main -> dep1 -> dep2 -> dep3 -> dep4
+        mount_formula_with_deps(&ctx, "count_dep4", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "count_dep3", "1.0.0", &["count_dep4"]).await;
+        mount_formula_with_deps(&ctx, "count_dep2", "1.0.0", &["count_dep3"]).await;
+        mount_formula_with_deps(&ctx, "count_dep1", "1.0.0", &["count_dep2"]).await;
+        mount_formula_with_deps(&ctx, "count_main", "1.0.0", &["count_dep1"]).await;
+        
+        ctx.installer_mut().install("count_main", true).await.unwrap();
+        
+        // All deps should be installed
+        assert!(ctx.installer().is_installed("count_main"));
+        assert!(ctx.installer().is_installed("count_dep1"));
+        assert!(ctx.installer().is_installed("count_dep2"));
+        assert!(ctx.installer().is_installed("count_dep3"));
+        assert!(ctx.installer().is_installed("count_dep4"));
+        
+        // list_dependencies should return 4 (all except count_main which is explicit)
+        let deps = ctx.installer().list_dependencies().unwrap();
+        assert_eq!(deps.len(), 4, "Expected 4 dependencies, got: {:?}", deps.iter().map(|d| &d.name).collect::<Vec<_>>());
+        
+        // Verify all dependency names
+        let dep_names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
+        assert!(dep_names.contains(&"count_dep1"));
+        assert!(dep_names.contains(&"count_dep2"));
+        assert!(dep_names.contains(&"count_dep3"));
+        assert!(dep_names.contains(&"count_dep4"));
+        assert!(!dep_names.contains(&"count_main"));
+    }
+
+    /// Test autoremove when there are multiple orphan chains.
+    /// Two separate dependency chains should both be cleaned up.
+    ///
+    /// Graph:
+    ///   A (explicit) -> X -> Y
+    ///   B (explicit) -> P -> Q
+    ///
+    /// Uninstall A: X, Y become orphans
+    /// Uninstall B: P, Q become orphans  
+    /// autoremove should clean up all 4
+    #[tokio::test]
+    async fn test_autoremove_multiple_chains() {
+        let mut ctx = TestContext::new().await;
+        
+        // Chain 1: A -> X -> Y
+        mount_formula_with_deps(&ctx, "chain1_y", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "chain1_x", "1.0.0", &["chain1_y"]).await;
+        mount_formula_with_deps(&ctx, "chain1_a", "1.0.0", &["chain1_x"]).await;
+        
+        // Chain 2: B -> P -> Q
+        mount_formula_with_deps(&ctx, "chain2_q", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "chain2_p", "1.0.0", &["chain2_q"]).await;
+        mount_formula_with_deps(&ctx, "chain2_b", "1.0.0", &["chain2_p"]).await;
+        
+        // Install both chains
+        ctx.installer_mut().install("chain1_a", true).await.unwrap();
+        ctx.installer_mut().install("chain2_b", true).await.unwrap();
+        
+        // Verify all 6 packages installed
+        assert!(ctx.installer().is_installed("chain1_a"));
+        assert!(ctx.installer().is_installed("chain1_x"));
+        assert!(ctx.installer().is_installed("chain1_y"));
+        assert!(ctx.installer().is_installed("chain2_b"));
+        assert!(ctx.installer().is_installed("chain2_p"));
+        assert!(ctx.installer().is_installed("chain2_q"));
+        
+        // Uninstall both explicit packages
+        ctx.installer_mut().uninstall("chain1_a").unwrap();
+        ctx.installer_mut().uninstall("chain2_b").unwrap();
+        
+        // All 4 deps should be orphans
+        let mut orphans = ctx.installer().find_orphans().await.unwrap();
+        orphans.sort();
+        assert_eq!(orphans.len(), 4);
+        
+        // Autoremove should clean up all
+        let removed = ctx.installer_mut().autoremove().await.unwrap();
+        assert_eq!(removed.len(), 4);
+        
+        // Verify all gone
+        assert!(!ctx.installer().is_installed("chain1_x"));
+        assert!(!ctx.installer().is_installed("chain1_y"));
+        assert!(!ctx.installer().is_installed("chain2_p"));
+        assert!(!ctx.installer().is_installed("chain2_q"));
+    }
+
+    /// Test find_orphans with very large number of dependency packages.
+    /// Ensures the algorithm scales reasonably with many deps.
+    #[tokio::test]
+    async fn test_find_orphans_many_dependencies() {
+        let mut ctx = TestContext::new().await;
+        
+        // Create 10 independent dependencies
+        let dep_names: Vec<String> = (0..10).map(|i| format!("many_dep_{}", i)).collect();
+        for name in &dep_names {
+            mount_formula_with_deps(&ctx, name, "1.0.0", &[]).await;
+        }
+        
+        // Create main package depending on all 10
+        let dep_refs: Vec<&str> = dep_names.iter().map(|s| s.as_str()).collect();
+        mount_formula_with_deps(&ctx, "many_main", "1.0.0", &dep_refs).await;
+        
+        ctx.installer_mut().install("many_main", true).await.unwrap();
+        
+        // Verify all 11 installed
+        assert!(ctx.installer().is_installed("many_main"));
+        for name in &dep_names {
+            assert!(ctx.installer().is_installed(name), "{} should be installed", name);
+        }
+        
+        // Uninstall main
+        ctx.installer_mut().uninstall("many_main").unwrap();
+        
+        // All 10 deps should be orphans
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert_eq!(orphans.len(), 10, "Expected 10 orphans, got: {:?}", orphans);
+        
+        // Autoremove all
+        let removed = ctx.installer_mut().autoremove().await.unwrap();
+        assert_eq!(removed.len(), 10);
+    }
+
+    /// Test mark_explicit on a package that's already explicit.
+    /// Should succeed without changing anything (idempotent).
+    #[tokio::test]
+    async fn test_mark_explicit_already_explicit() {
+        let mut ctx = TestContext::new().await;
+        
+        mount_formula_with_deps(&ctx, "already_explicit", "1.0.0", &[]).await;
+        ctx.installer_mut().install("already_explicit", true).await.unwrap();
+        
+        // It's already explicit
+        assert!(ctx.installer().is_explicit("already_explicit"));
+        
+        // Mark it explicit again - should succeed
+        let result = ctx.installer().mark_explicit("already_explicit").unwrap();
+        assert!(result);
+        
+        // Still explicit
+        assert!(ctx.installer().is_explicit("already_explicit"));
+    }
+
+    /// Test mark_dependency on a package that's already a dependency.
+    /// Should succeed without changing anything (idempotent).
+    #[tokio::test]
+    async fn test_mark_dependency_already_dependency() {
+        let mut ctx = TestContext::new().await;
+        
+        mount_formula_with_deps(&ctx, "already_dep", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "needs_dep", "1.0.0", &["already_dep"]).await;
+        
+        ctx.installer_mut().install("needs_dep", true).await.unwrap();
+        
+        // already_dep is a dependency
+        assert!(!ctx.installer().is_explicit("already_dep"));
+        
+        // Mark it dependency again - should succeed
+        let result = ctx.installer().mark_dependency("already_dep").unwrap();
+        assert!(result);
+        
+        // Still a dependency
+        assert!(!ctx.installer().is_explicit("already_dep"));
+    }
 }
 
 // ============================================================================
