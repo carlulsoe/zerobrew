@@ -1401,6 +1401,567 @@ mod tests {
     }
 
     // =========================================================================
+    // Service Operations Tests
+    // =========================================================================
+
+    #[test]
+    fn record_and_get_service() {
+        let mut db = Database::in_memory().unwrap();
+
+        // First install a formula (services have FK to installed_kegs)
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("redis", "7.0.0", "abc123", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Record a service
+        db.record_service("zerobrew.redis", "redis", Some(r#"{"port": 6379}"#))
+            .unwrap();
+
+        // Get the service
+        let service = db.get_service("zerobrew.redis").unwrap();
+        assert_eq!(service.name, "zerobrew.redis");
+        assert_eq!(service.formula, "redis");
+        assert_eq!(service.status, "stopped"); // Default status
+        assert!(service.pid.is_none());
+        assert!(service.started_at.is_none());
+        assert_eq!(service.config.as_deref(), Some(r#"{"port": 6379}"#));
+    }
+
+    #[test]
+    fn record_service_without_config() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("nginx", "1.25.0", "def456", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        db.record_service("zerobrew.nginx", "nginx", None).unwrap();
+
+        let service = db.get_service("zerobrew.nginx").unwrap();
+        assert!(service.config.is_none());
+    }
+
+    #[test]
+    fn update_service_status_running() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("postgres", "16.0", "ghi789", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        db.record_service("zerobrew.postgres", "postgres", None)
+            .unwrap();
+
+        // Update to running with PID
+        let updated = db
+            .update_service_status("zerobrew.postgres", "running", Some(12345))
+            .unwrap();
+        assert!(updated);
+
+        let service = db.get_service("zerobrew.postgres").unwrap();
+        assert_eq!(service.status, "running");
+        assert_eq!(service.pid, Some(12345));
+        assert!(service.started_at.is_some()); // Should have timestamp
+    }
+
+    #[test]
+    fn update_service_status_stopped_clears_started_at() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("mysql", "8.0", "jkl012", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        db.record_service("zerobrew.mysql", "mysql", None).unwrap();
+
+        // Start then stop
+        db.update_service_status("zerobrew.mysql", "running", Some(9999))
+            .unwrap();
+        db.update_service_status("zerobrew.mysql", "stopped", None)
+            .unwrap();
+
+        let service = db.get_service("zerobrew.mysql").unwrap();
+        assert_eq!(service.status, "stopped");
+        assert!(service.pid.is_none());
+        assert!(service.started_at.is_none());
+    }
+
+    #[test]
+    fn update_nonexistent_service_returns_false() {
+        let db = Database::in_memory().unwrap();
+
+        let updated = db
+            .update_service_status("nonexistent", "running", Some(123))
+            .unwrap();
+        assert!(!updated);
+    }
+
+    #[test]
+    fn get_service_for_formula() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("memcached", "1.6.0", "mno345", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        db.record_service("zerobrew.memcached", "memcached", None)
+            .unwrap();
+
+        // Get by formula name
+        let service = db.get_service_for_formula("memcached").unwrap();
+        assert_eq!(service.name, "zerobrew.memcached");
+        assert_eq!(service.formula, "memcached");
+    }
+
+    #[test]
+    fn get_service_for_formula_not_found() {
+        let db = Database::in_memory().unwrap();
+
+        let service = db.get_service_for_formula("nonexistent");
+        assert!(service.is_none());
+    }
+
+    #[test]
+    fn list_services_empty() {
+        let db = Database::in_memory().unwrap();
+
+        let services = db.list_services().unwrap();
+        assert!(services.is_empty());
+    }
+
+    #[test]
+    fn list_services_multiple() {
+        let mut db = Database::in_memory().unwrap();
+
+        // Install multiple formulas
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("redis", "7.0", "key1", true).unwrap();
+            tx.record_install("nginx", "1.25", "key2", true).unwrap();
+            tx.record_install("postgres", "16.0", "key3", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Record services (in non-alphabetical order to test sorting)
+        db.record_service("zerobrew.redis", "redis", None).unwrap();
+        db.record_service("zerobrew.nginx", "nginx", None).unwrap();
+        db.record_service("zerobrew.postgres", "postgres", None)
+            .unwrap();
+
+        let services = db.list_services().unwrap();
+        assert_eq!(services.len(), 3);
+
+        // Should be sorted by name
+        assert_eq!(services[0].name, "zerobrew.nginx");
+        assert_eq!(services[1].name, "zerobrew.postgres");
+        assert_eq!(services[2].name, "zerobrew.redis");
+    }
+
+    #[test]
+    fn remove_service() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("mongodb", "7.0", "pqr678", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        db.record_service("zerobrew.mongodb", "mongodb", None)
+            .unwrap();
+        assert!(db.get_service("zerobrew.mongodb").is_some());
+
+        let removed = db.remove_service("zerobrew.mongodb").unwrap();
+        assert!(removed);
+        assert!(db.get_service("zerobrew.mongodb").is_none());
+    }
+
+    #[test]
+    fn remove_nonexistent_service_returns_false() {
+        let db = Database::in_memory().unwrap();
+
+        let removed = db.remove_service("nonexistent").unwrap();
+        assert!(!removed);
+    }
+
+    #[test]
+    fn has_service_returns_correct_status() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("elasticsearch", "8.0", "stu901", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        assert!(!db.has_service("elasticsearch"));
+
+        db.record_service("zerobrew.elasticsearch", "elasticsearch", None)
+            .unwrap();
+
+        assert!(db.has_service("elasticsearch"));
+        assert!(!db.has_service("nonexistent"));
+    }
+
+    #[test]
+    fn service_foreign_key_cascade_on_formula_uninstall() {
+        let mut db = Database::in_memory().unwrap();
+
+        // Install formula and create service
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("rabbitmq", "3.12", "vwx234", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        db.record_service("zerobrew.rabbitmq", "rabbitmq", Some(r#"{"vhost": "/"}"#))
+            .unwrap();
+
+        // Verify service exists
+        assert!(db.has_service("rabbitmq"));
+
+        // Uninstall the formula
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_uninstall("rabbitmq").unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Service should be cascade deleted due to FK constraint
+        assert!(!db.has_service("rabbitmq"));
+        assert!(db.get_service("zerobrew.rabbitmq").is_none());
+    }
+
+    #[test]
+    fn record_service_replaces_existing() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("kafka", "3.5", "yza567", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Record service with config
+        db.record_service("zerobrew.kafka", "kafka", Some(r#"{"brokers": 1}"#))
+            .unwrap();
+
+        // Re-record with different config (should replace)
+        db.record_service("zerobrew.kafka", "kafka", Some(r#"{"brokers": 3}"#))
+            .unwrap();
+
+        let service = db.get_service("zerobrew.kafka").unwrap();
+        assert_eq!(service.config.as_deref(), Some(r#"{"brokers": 3}"#));
+        // Status should be reset to stopped
+        assert_eq!(service.status, "stopped");
+    }
+
+    // =========================================================================
+    // File-based Database Tests
+    // =========================================================================
+
+    #[test]
+    fn database_open_creates_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        assert!(!db_path.exists());
+
+        let db = Database::open(&db_path).unwrap();
+        drop(db);
+
+        assert!(db_path.exists());
+    }
+
+    #[test]
+    fn database_open_persists_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("persist.db");
+
+        // Create and populate database
+        {
+            let mut db = Database::open(&db_path).unwrap();
+            let tx = db.transaction().unwrap();
+            tx.record_install("persistent-pkg", "1.0.0", "key123", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Reopen and verify data persisted
+        {
+            let db = Database::open(&db_path).unwrap();
+            let installed = db.get_installed("persistent-pkg");
+            assert!(installed.is_some());
+            assert_eq!(installed.unwrap().version, "1.0.0");
+        }
+    }
+
+    // =========================================================================
+    // Edge Cases and Error Paths
+    // =========================================================================
+
+    #[test]
+    fn get_installed_nonexistent_returns_none() {
+        let db = Database::in_memory().unwrap();
+        assert!(db.get_installed("nonexistent").is_none());
+    }
+
+    #[test]
+    fn list_installed_empty_returns_empty_vec() {
+        let db = Database::in_memory().unwrap();
+        let installed = db.list_installed().unwrap();
+        assert!(installed.is_empty());
+    }
+
+    #[test]
+    fn list_pinned_empty_returns_empty_vec() {
+        let db = Database::in_memory().unwrap();
+        let pinned = db.list_pinned().unwrap();
+        assert!(pinned.is_empty());
+    }
+
+    #[test]
+    fn list_dependencies_empty_returns_empty_vec() {
+        let db = Database::in_memory().unwrap();
+        let deps = db.list_dependencies().unwrap();
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn get_store_refcount_nonexistent_returns_zero() {
+        let db = Database::in_memory().unwrap();
+        assert_eq!(db.get_store_refcount("nonexistent-key"), 0);
+    }
+
+    #[test]
+    fn uninstall_nonexistent_package_returns_none() {
+        let mut db = Database::in_memory().unwrap();
+
+        let tx = db.transaction().unwrap();
+        let store_key = tx.record_uninstall("nonexistent").unwrap();
+        assert!(store_key.is_none());
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn refcount_cannot_go_negative() {
+        let mut db = Database::in_memory().unwrap();
+
+        // Install and uninstall a package
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("refcount-test", "1.0", "refkey", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Uninstall twice (should not cause negative refcount)
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_uninstall("refcount-test").unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Refcount should be 0, not negative
+        assert_eq!(db.get_store_refcount("refkey"), 0);
+
+        // Try to "uninstall" again by directly manipulating (shouldn't go negative)
+        db.conn
+            .execute(
+                "UPDATE store_refs SET refcount = MAX(refcount - 1, 0) WHERE store_key = ?1",
+                params!["refkey"],
+            )
+            .unwrap();
+
+        assert_eq!(db.get_store_refcount("refkey"), 0);
+    }
+
+    #[test]
+    fn multiple_transactions_sequential() {
+        let mut db = Database::in_memory().unwrap();
+
+        // First transaction
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("pkg1", "1.0", "key1", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Second transaction
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("pkg2", "1.0", "key2", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let installed = db.list_installed().unwrap();
+        assert_eq!(installed.len(), 2);
+    }
+
+    #[test]
+    fn install_same_package_twice_updates() {
+        let mut db = Database::in_memory().unwrap();
+
+        // First install
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("upgrade-me", "1.0.0", "oldkey", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        assert_eq!(db.get_installed("upgrade-me").unwrap().version, "1.0.0");
+        assert_eq!(db.get_store_refcount("oldkey"), 1);
+
+        // "Upgrade" by installing again with new version
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("upgrade-me", "2.0.0", "newkey", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Should have new version
+        let pkg = db.get_installed("upgrade-me").unwrap();
+        assert_eq!(pkg.version, "2.0.0");
+        assert_eq!(pkg.store_key, "newkey");
+
+        // New key should have refcount 1
+        assert_eq!(db.get_store_refcount("newkey"), 1);
+        // Old key still has refcount 1 (not decremented by record_install)
+        assert_eq!(db.get_store_refcount("oldkey"), 1);
+    }
+
+    #[test]
+    fn service_status_transitions() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("status-test", "1.0", "bcd890", true)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        db.record_service("zerobrew.status-test", "status-test", None)
+            .unwrap();
+
+        // Initial: stopped
+        assert_eq!(db.get_service("zerobrew.status-test").unwrap().status, "stopped");
+
+        // Transition: stopped -> running
+        db.update_service_status("zerobrew.status-test", "running", Some(1000))
+            .unwrap();
+        let svc = db.get_service("zerobrew.status-test").unwrap();
+        assert_eq!(svc.status, "running");
+        assert!(svc.started_at.is_some());
+
+        // Transition: running -> error
+        db.update_service_status("zerobrew.status-test", "error", None)
+            .unwrap();
+        let svc = db.get_service("zerobrew.status-test").unwrap();
+        assert_eq!(svc.status, "error");
+        assert!(svc.started_at.is_none()); // cleared for non-running
+
+        // Transition: error -> running
+        db.update_service_status("zerobrew.status-test", "running", Some(2000))
+            .unwrap();
+        let svc = db.get_service("zerobrew.status-test").unwrap();
+        assert_eq!(svc.status, "running");
+        assert_eq!(svc.pid, Some(2000));
+    }
+
+    #[test]
+    fn list_installed_sorted_alphabetically() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("zebra", "1.0", "z", true).unwrap();
+            tx.record_install("alpha", "1.0", "a", true).unwrap();
+            tx.record_install("middle", "1.0", "m", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let installed = db.list_installed().unwrap();
+        assert_eq!(installed[0].name, "alpha");
+        assert_eq!(installed[1].name, "middle");
+        assert_eq!(installed[2].name, "zebra");
+    }
+
+    #[test]
+    fn linked_files_with_special_characters_in_paths() {
+        let mut db = Database::in_memory().unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("special-pkg", "1.0", "special123", true)
+                .unwrap();
+            tx.record_linked_file(
+                "special-pkg",
+                "1.0",
+                "/opt/homebrew/bin/special pkg",
+                "/opt/zerobrew/cellar/special-pkg/1.0/bin/special pkg",
+            )
+            .unwrap();
+            tx.record_linked_file(
+                "special-pkg",
+                "1.0",
+                "/opt/homebrew/lib/lib'quoted'.so",
+                "/opt/zerobrew/cellar/special-pkg/1.0/lib/lib'quoted'.so",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let files = db.get_linked_files("special-pkg").unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|(l, _)| l.contains("special pkg")));
+        assert!(files.iter().any(|(l, _)| l.contains("'quoted'")));
+    }
+
+    #[test]
+    fn tap_operations_with_various_formats() {
+        let db = Database::in_memory().unwrap();
+
+        // Standard format
+        db.add_tap("homebrew/core", "https://github.com/homebrew/homebrew-core")
+            .unwrap();
+
+        // With dashes
+        db.add_tap(
+            "user/my-tap",
+            "https://github.com/user/homebrew-my-tap",
+        )
+        .unwrap();
+
+        // Longer path
+        db.add_tap(
+            "org/team/repo",
+            "https://github.com/org/team-homebrew-repo",
+        )
+        .unwrap();
+
+        let taps = db.list_taps().unwrap();
+        assert_eq!(taps.len(), 3);
+    }
+
+    // =========================================================================
     // Property-based tests with proptest
     // =========================================================================
 
@@ -1423,6 +1984,11 @@ mod tests {
         /// Strategy to generate store keys (hex-like strings)
         fn store_key_strategy() -> impl Strategy<Value = String> {
             "[a-f0-9]{16,64}"
+        }
+
+        /// Strategy for tap names
+        fn tap_name_strategy() -> impl Strategy<Value = String> {
+            "[a-z][a-z0-9-]{0,10}/[a-z][a-z0-9-]{0,10}"
         }
 
         proptest! {
@@ -1529,6 +2095,101 @@ mod tests {
                 // Refcount should equal number of unique packages
                 let refcount = db.get_store_refcount(&store_key);
                 prop_assert_eq!(refcount, unique_names.len() as i64);
+            }
+
+            #[test]
+            fn tap_add_remove_roundtrip(
+                tap_name in tap_name_strategy()
+            ) {
+                let db = Database::in_memory().unwrap();
+                let url = format!("https://github.com/{}", tap_name.replace('/', "/homebrew-"));
+
+                // Add tap
+                db.add_tap(&tap_name, &url).unwrap();
+                prop_assert!(db.is_tapped(&tap_name));
+
+                // Get tap
+                let tap = db.get_tap(&tap_name);
+                prop_assert!(tap.is_some());
+                let tap = tap.unwrap();
+                prop_assert_eq!(&tap.name, &tap_name);
+                prop_assert_eq!(&tap.url, &url);
+
+                // Remove tap
+                let removed = db.remove_tap(&tap_name).unwrap();
+                prop_assert!(removed);
+                prop_assert!(!db.is_tapped(&tap_name));
+            }
+
+            #[test]
+            fn linked_files_roundtrip(
+                name in package_name_strategy(),
+                version in version_strategy(),
+                store_key in store_key_strategy(),
+                file_count in 1usize..5
+            ) {
+                let mut db = Database::in_memory().unwrap();
+
+                // Install package
+                {
+                    let tx = db.transaction().unwrap();
+                    tx.record_install(&name, &version, &store_key, true).unwrap();
+
+                    // Record multiple linked files
+                    for i in 0..file_count {
+                        let linked = format!("/opt/homebrew/bin/{}-{}", name, i);
+                        let target = format!("/opt/zerobrew/cellar/{}/{}/bin/{}-{}", name, version, name, i);
+                        tx.record_linked_file(&name, &version, &linked, &target).unwrap();
+                    }
+                    tx.commit().unwrap();
+                }
+
+                // Verify files
+                let files = db.get_linked_files(&name).unwrap();
+                prop_assert_eq!(files.len(), file_count);
+
+                // Clear files
+                let cleared = db.clear_linked_files(&name).unwrap();
+                prop_assert_eq!(cleared, file_count);
+
+                // Verify cleared
+                let files_after = db.get_linked_files(&name).unwrap();
+                prop_assert!(files_after.is_empty());
+            }
+
+            #[test]
+            fn service_lifecycle(
+                formula_name in package_name_strategy(),
+                version in version_strategy(),
+                store_key in store_key_strategy()
+            ) {
+                let mut db = Database::in_memory().unwrap();
+                let service_name = format!("zerobrew.{}", formula_name);
+
+                // Install formula
+                {
+                    let tx = db.transaction().unwrap();
+                    tx.record_install(&formula_name, &version, &store_key, true).unwrap();
+                    tx.commit().unwrap();
+                }
+
+                // Record service
+                db.record_service(&service_name, &formula_name, None).unwrap();
+                prop_assert!(db.has_service(&formula_name));
+
+                // Update status
+                db.update_service_status(&service_name, "running", Some(12345)).unwrap();
+                let svc = db.get_service(&service_name).unwrap();
+                prop_assert_eq!(svc.status, "running");
+
+                // Get by formula
+                let svc_by_formula = db.get_service_for_formula(&formula_name);
+                prop_assert!(svc_by_formula.is_some());
+
+                // Remove service
+                let removed = db.remove_service(&service_name).unwrap();
+                prop_assert!(removed);
+                prop_assert!(!db.has_service(&formula_name));
             }
         }
     }
