@@ -9,4 +9,5 @@ pub mod info;
 pub mod install;
 pub mod services;
 pub mod tap;
+pub mod update;
 pub mod upgrade;

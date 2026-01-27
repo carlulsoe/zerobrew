@@ -239,6 +239,17 @@ enum Commands {
         action: Option<BundleAction>,
     },
 
+    /// Update zb to the latest version
+    Update {
+        /// Show what would be updated without installing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Force update even if already on latest version
+        #[arg(long)]
+        force: bool,
+    },
+
     /// List all available commands (built-in and external)
     #[command(alias = "zb-commands")]
     #[allow(clippy::enum_variant_names)]
@@ -604,6 +615,11 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         return Ok(());
     }
 
+    // Handle update separately - it doesn't need zerobrew directories
+    if let Commands::Update { dry_run, force } = cli.command {
+        return commands::update::run(dry_run, force).await;
+    }
+
     // For reset, handle specially since directories may not be writable
     if matches!(cli.command, Commands::Reset { .. }) {
         // Skip init check for reset
@@ -700,6 +716,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         }
 
         Commands::Bundle { action } => commands::bundle::run(&mut installer, action).await,
+
+        Commands::Update { .. } => unreachable!(), // Handled early
 
         Commands::Commands => run_commands(&cli.root),
 
@@ -1194,6 +1212,7 @@ fn run_commands(root: &Path) -> Result<(), zb_core::Error> {
         ("unlink", "Remove symlinks for a keg"),
         ("unpin", "Unpin a formula"),
         ("untap", "Remove a tap repository"),
+        ("update", "Update zb to the latest version"),
         ("upgrade", "Upgrade outdated formulas"),
         ("uses", "Show which formulas use a given formula"),
         ("commands", "List all available commands"),
@@ -1517,7 +1536,9 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "install", "git", "--no-link"]).unwrap();
         match cli.command {
-            Commands::Install { formula, no_link, .. } => {
+            Commands::Install {
+                formula, no_link, ..
+            } => {
                 assert_eq!(formula, "git");
                 assert!(no_link);
             }
@@ -1531,7 +1552,11 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "install", "git", "-s"]).unwrap();
         match cli.command {
-            Commands::Install { formula, build_from_source, .. } => {
+            Commands::Install {
+                formula,
+                build_from_source,
+                ..
+            } => {
                 assert_eq!(formula, "git");
                 assert!(build_from_source);
             }
@@ -1680,7 +1705,9 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "bundle", "install", "--file", "MyBrewfile"]).unwrap();
         match cli.command {
-            Commands::Bundle { action: Some(BundleAction::Install { file }) } => {
+            Commands::Bundle {
+                action: Some(BundleAction::Install { file }),
+            } => {
                 assert_eq!(file, Some(PathBuf::from("MyBrewfile")));
             }
             _ => panic!("Expected Bundle Install command"),
@@ -1693,7 +1720,14 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "bundle", "dump", "--describe"]).unwrap();
         match cli.command {
-            Commands::Bundle { action: Some(BundleAction::Dump { describe, force, file }) } => {
+            Commands::Bundle {
+                action:
+                    Some(BundleAction::Dump {
+                        describe,
+                        force,
+                        file,
+                    }),
+            } => {
                 assert!(describe);
                 assert!(!force);
                 assert!(file.is_none());
@@ -1706,9 +1740,17 @@ mod tests {
     fn test_bundle_dump_force_file() {
         use clap::Parser;
 
-        let cli = Cli::try_parse_from(["zb", "bundle", "dump", "--force", "--file", "out.txt"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["zb", "bundle", "dump", "--force", "--file", "out.txt"]).unwrap();
         match cli.command {
-            Commands::Bundle { action: Some(BundleAction::Dump { describe, force, file }) } => {
+            Commands::Bundle {
+                action:
+                    Some(BundleAction::Dump {
+                        describe,
+                        force,
+                        file,
+                    }),
+            } => {
                 assert!(!describe);
                 assert!(force);
                 assert_eq!(file, Some(PathBuf::from("out.txt")));
@@ -1724,7 +1766,14 @@ mod tests {
         // -F for force (uppercase to avoid conflict with -f for file)
         let cli = Cli::try_parse_from(["zb", "bundle", "dump", "-F", "-f", "Brewfile"]).unwrap();
         match cli.command {
-            Commands::Bundle { action: Some(BundleAction::Dump { describe, force, file }) } => {
+            Commands::Bundle {
+                action:
+                    Some(BundleAction::Dump {
+                        describe,
+                        force,
+                        file,
+                    }),
+            } => {
                 assert!(!describe);
                 assert!(force);
                 assert_eq!(file, Some(PathBuf::from("Brewfile")));
@@ -1739,7 +1788,9 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "bundle", "check", "--strict"]).unwrap();
         match cli.command {
-            Commands::Bundle { action: Some(BundleAction::Check { strict, file }) } => {
+            Commands::Bundle {
+                action: Some(BundleAction::Check { strict, file }),
+            } => {
                 assert!(strict);
                 assert!(file.is_none());
             }
@@ -1753,7 +1804,9 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "bundle", "list"]).unwrap();
         match cli.command {
-            Commands::Bundle { action: Some(BundleAction::List { file }) } => {
+            Commands::Bundle {
+                action: Some(BundleAction::List { file }),
+            } => {
                 assert!(file.is_none());
             }
             _ => panic!("Expected Bundle List command"),
@@ -1770,7 +1823,11 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "search", "git"]).unwrap();
         match cli.command {
-            Commands::Search { query, json, installed } => {
+            Commands::Search {
+                query,
+                json,
+                installed,
+            } => {
                 assert_eq!(query, "git");
                 assert!(!json);
                 assert!(!installed);
@@ -1785,7 +1842,11 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "search", "python", "--json", "--installed"]).unwrap();
         match cli.command {
-            Commands::Search { query, json, installed } => {
+            Commands::Search {
+                query,
+                json,
+                installed,
+            } => {
                 assert_eq!(query, "python");
                 assert!(json);
                 assert!(installed);
@@ -1804,7 +1865,12 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "deps", "git", "--tree"]).unwrap();
         match cli.command {
-            Commands::Deps { formula, tree, installed, all } => {
+            Commands::Deps {
+                formula,
+                tree,
+                installed,
+                all,
+            } => {
                 assert_eq!(formula, "git");
                 assert!(tree);
                 assert!(!installed);
@@ -1820,7 +1886,12 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "deps", "neovim", "--installed", "-1"]).unwrap();
         match cli.command {
-            Commands::Deps { formula, tree, installed, all } => {
+            Commands::Deps {
+                formula,
+                tree,
+                installed,
+                all,
+            } => {
                 assert_eq!(formula, "neovim");
                 assert!(!tree);
                 assert!(installed);
@@ -1840,7 +1911,11 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "link", "openssl", "--overwrite"]).unwrap();
         match cli.command {
-            Commands::Link { formula, overwrite, force } => {
+            Commands::Link {
+                formula,
+                overwrite,
+                force,
+            } => {
                 assert_eq!(formula, "openssl");
                 assert!(overwrite);
                 assert!(!force);
@@ -1904,10 +1979,13 @@ mod tests {
 
         let cli = Cli::try_parse_from([
             "zb",
-            "--root", "/custom/root",
-            "--prefix", "/custom/prefix",
-            "list"
-        ]).unwrap();
+            "--root",
+            "/custom/root",
+            "--prefix",
+            "/custom/prefix",
+            "list",
+        ])
+        .unwrap();
         assert_eq!(cli.root, PathBuf::from("/custom/root"));
         assert_eq!(cli.prefix, PathBuf::from("/custom/prefix"));
     }
@@ -1941,7 +2019,12 @@ mod tests {
         let cli = Cli::try_parse_from(["zb", "services", "log", "redis", "-n", "50"]).unwrap();
         match cli.command {
             Commands::Services {
-                action: Some(ServicesAction::Log { formula, lines, follow }),
+                action:
+                    Some(ServicesAction::Log {
+                        formula,
+                        lines,
+                        follow,
+                    }),
             } => {
                 assert_eq!(formula, "redis");
                 assert_eq!(lines, 50);
@@ -1958,7 +2041,12 @@ mod tests {
         let cli = Cli::try_parse_from(["zb", "services", "log", "postgresql", "--follow"]).unwrap();
         match cli.command {
             Commands::Services {
-                action: Some(ServicesAction::Log { formula, lines, follow }),
+                action:
+                    Some(ServicesAction::Log {
+                        formula,
+                        lines,
+                        follow,
+                    }),
             } => {
                 assert_eq!(formula, "postgresql");
                 assert_eq!(lines, 20); // default
@@ -2089,7 +2177,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Uses Command Tests  
+    // Uses Command Tests
     // ========================================================================
 
     #[test]
@@ -2098,11 +2186,73 @@ mod tests {
 
         let cli = Cli::try_parse_from(["zb", "uses", "openssl", "--recursive"]).unwrap();
         match cli.command {
-            Commands::Uses { formula, recursive, .. } => {
+            Commands::Uses {
+                formula, recursive, ..
+            } => {
                 assert_eq!(formula, "openssl");
                 assert!(recursive);
             }
             _ => panic!("Expected Uses command"),
+        }
+    }
+
+    // ========================================================================
+    // Update Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_update_default() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "update"]).unwrap();
+        match cli.command {
+            Commands::Update { dry_run, force } => {
+                assert!(!dry_run);
+                assert!(!force);
+            }
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn test_update_dry_run() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "update", "--dry-run"]).unwrap();
+        match cli.command {
+            Commands::Update { dry_run, force } => {
+                assert!(dry_run);
+                assert!(!force);
+            }
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn test_update_force() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "update", "--force"]).unwrap();
+        match cli.command {
+            Commands::Update { dry_run, force } => {
+                assert!(!dry_run);
+                assert!(force);
+            }
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn test_update_both_flags() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "update", "--dry-run", "--force"]).unwrap();
+        match cli.command {
+            Commands::Update { dry_run, force } => {
+                assert!(dry_run);
+                assert!(force);
+            }
+            _ => panic!("Expected Update command"),
         }
     }
 
