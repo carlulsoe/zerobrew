@@ -5,6 +5,10 @@
 #![allow(clippy::unnecessary_map_or)]
 // Allow empty lines in doc comments for formatting purposes
 #![allow(clippy::empty_line_after_doc_comments)]
+// Allow skip().next() pattern for clarity
+#![allow(clippy::iter_skip_next)]
+// Allow unused variables for platform-specific code
+#![allow(unused_variables)]
 
 //! I/O layer for zerobrew - a fast Homebrew-compatible package manager.
 //!
