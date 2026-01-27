@@ -555,7 +555,22 @@ fn patch_homebrew_placeholders_linux(
     // ELF magic bytes: 0x7f 'E' 'L' 'F'
     const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 
-    // Collect all ELF files (skip symlinks to avoid double-processing)
+    // Patterns that indicate a file needs patching (as bytes for fast search)
+    const HOMEBREW_MARKER: &[u8] = b"@@HOMEBREW";
+    const LINUXBREW_PATH: &[u8] = b"/home/linuxbrew";
+
+    /// Check if binary data contains Homebrew-specific paths that need patching
+    fn needs_patching(data: &[u8]) -> bool {
+        // Use memmem-style search for efficiency
+        fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+            haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+        }
+        contains_bytes(data, HOMEBREW_MARKER) || contains_bytes(data, LINUXBREW_PATH)
+    }
+
+    // Collect ELF files that actually need patching (skip symlinks and files without Homebrew paths)
     let elf_files: Vec<PathBuf> = walkdir::WalkDir::new(keg_path)
         .follow_links(false)
         .into_iter()
@@ -564,8 +579,10 @@ fn patch_homebrew_placeholders_linux(
         .filter(|e| {
             if let Ok(data) = fs::read(e.path())
                 && data.len() >= 4
+                && data[0..4] == ELF_MAGIC
             {
-                return data[0..4] == ELF_MAGIC;
+                // Only include files that actually need patching
+                return needs_patching(&data);
             }
             false
         })
@@ -626,31 +643,37 @@ fn patch_homebrew_placeholders_linux(
             }
         }
 
-        // Check and determine new interpreter (for executables)
-        let interp_output = Command::new("patchelf")
-            .args(["--print-interpreter", &path.to_string_lossy()])
-            .output();
+        // Check and determine new interpreter (for executables only)
+        // Shared libraries (.so files) don't have interpreters, so skip them
+        let path_str = path.to_string_lossy();
+        let is_shared_lib = path_str.contains(".so") || path_str.ends_with(".so");
 
-        if let Ok(output) = interp_output
-            && output.status.success()
-        {
-            let current_interp = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !is_shared_lib {
+            let interp_output = Command::new("patchelf")
+                .args(["--print-interpreter", &path_str])
+                .output();
 
-            if !current_interp.is_empty() && current_interp.contains("@@HOMEBREW") {
-                // The interpreter contains a placeholder - patch it
-                // Use zerobrew's ld.so symlink (which should point to system loader)
-                let zerobrew_ld = format!("{}/lib/ld.so", prefix.display());
-                if std::path::Path::new(&zerobrew_ld).exists() {
-                    new_interp = Some(zerobrew_ld);
-                } else {
-                    // Fallback to system dynamic linker
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        new_interp = Some("/lib/ld-linux-aarch64.so.1".to_string());
-                    }
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        new_interp = Some("/lib64/ld-linux-x86-64.so.2".to_string());
+            if let Ok(output) = interp_output
+                && output.status.success()
+            {
+                let current_interp = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+                if !current_interp.is_empty() && current_interp.contains("@@HOMEBREW") {
+                    // The interpreter contains a placeholder - patch it
+                    // Use zerobrew's ld.so symlink (which should point to system loader)
+                    let zerobrew_ld = format!("{}/lib/ld.so", prefix.display());
+                    if std::path::Path::new(&zerobrew_ld).exists() {
+                        new_interp = Some(zerobrew_ld);
+                    } else {
+                        // Fallback to system dynamic linker
+                        #[cfg(target_arch = "aarch64")]
+                        {
+                            new_interp = Some("/lib/ld-linux-aarch64.so.1".to_string());
+                        }
+                        #[cfg(target_arch = "x86_64")]
+                        {
+                            new_interp = Some("/lib64/ld-linux-x86-64.so.2".to_string());
+                        }
                     }
                 }
             }
