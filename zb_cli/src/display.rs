@@ -103,6 +103,11 @@ pub fn create_progress_callback(
             }
             InstallProgress::LinkCompleted { name } => {
                 if let Some(pb) = bars.get(&name) {
+                    pb.set_message("linked");
+                }
+            }
+            InstallProgress::InstallCompleted { name } => {
+                if let Some(pb) = bars.get(&name) {
                     pb.set_style(done_style.clone());
                     pb.set_message(format!("{} {}", style("✓").green(), completion_message));
                     pb.finish();
