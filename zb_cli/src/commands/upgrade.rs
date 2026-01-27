@@ -1116,4 +1116,806 @@ mod tests {
         ];
         assert!(has_upgrades(&outdated));
     }
+
+    // ========================================================================
+    // Outdated Header Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_outdated_header_multiple() {
+        let result = format_outdated_header(5);
+        assert_eq!(result, "5 outdated packages:");
+    }
+
+    #[test]
+    fn test_format_outdated_header_single() {
+        let result = format_outdated_header(1);
+        assert_eq!(result, "1 outdated packages:");
+    }
+
+    #[test]
+    fn test_format_outdated_header_zero() {
+        let result = format_outdated_header(0);
+        assert_eq!(result, "0 outdated packages:");
+    }
+
+    // ========================================================================
+    // All Up To Date Message Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_all_up_to_date_message_no_pinned() {
+        let (main, pinned) = format_all_up_to_date_message(0);
+        assert_eq!(main, "All packages are up to date.");
+        assert!(pinned.is_none());
+    }
+
+    #[test]
+    fn test_format_all_up_to_date_message_with_pinned() {
+        let (main, pinned) = format_all_up_to_date_message(3);
+        assert_eq!(main, "All packages are up to date.");
+        assert_eq!(pinned, Some("3 pinned packages not checked".to_string()));
+    }
+
+    #[test]
+    fn test_format_all_up_to_date_message_single_pinned() {
+        let (main, pinned) = format_all_up_to_date_message(1);
+        assert_eq!(main, "All packages are up to date.");
+        assert!(pinned.is_some());
+        assert!(pinned.unwrap().contains("1 pinned"));
+    }
+
+    // ========================================================================
+    // Upgrade Announcement Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_upgrade_announcement() {
+        let result = format_upgrade_announcement("git", "2.43.0", "2.44.0");
+        assert_eq!(result, "Upgrading git 2.43.0 → 2.44.0...");
+    }
+
+    #[test]
+    fn test_format_upgrade_announcement_versioned() {
+        let result = format_upgrade_announcement("python@3.11", "3.11.8", "3.11.9");
+        assert!(result.contains("python@3.11"));
+        assert!(result.contains("3.11.8"));
+        assert!(result.contains("3.11.9"));
+    }
+
+    // ========================================================================
+    // Upgrade Success/Failure Message Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_upgrade_success() {
+        let result = format_upgrade_success("git");
+        assert_eq!(result, "git is already up to date");
+    }
+
+    #[test]
+    fn test_format_upgrade_failure() {
+        let result = format_upgrade_failure("git", "network timeout");
+        assert_eq!(result, "Failed to upgrade git: network timeout");
+    }
+
+    #[test]
+    fn test_format_upgrade_failure_complex_error() {
+        let result = format_upgrade_failure("openssl@3", "checksum mismatch: expected abc123");
+        assert!(result.contains("openssl@3"));
+        assert!(result.contains("checksum mismatch"));
+    }
+
+    // ========================================================================
+    // No Upgrades Message Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_no_upgrades_message() {
+        let result = format_no_upgrades_message();
+        assert_eq!(result, "No packages were upgraded.");
+    }
+
+    // ========================================================================
+    // Outdated Package Line Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_outdated_package_line() {
+        let result = format_outdated_package_line("git", "2.43.0", "2.44.0");
+        assert_eq!(result, "git 2.43.0 → 2.44.0");
+    }
+
+    #[test]
+    fn test_format_outdated_package_line_versioned() {
+        let result = format_outdated_package_line("python@3.11", "3.11.8", "3.11.9");
+        assert!(result.contains("python@3.11"));
+    }
+
+    // ========================================================================
+    // Pinned Footer Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_pinned_footer() {
+        let result = format_pinned_footer(3);
+        assert!(result.contains("3 pinned packages"));
+        assert!(result.contains("zb list --pinned"));
+    }
+
+    #[test]
+    fn test_format_pinned_footer_single() {
+        let result = format_pinned_footer(1);
+        assert!(result.contains("1 pinned"));
+    }
+
+    // ========================================================================
+    // Outdated Output Kind Tests
+    // ========================================================================
+
+    #[test]
+    fn test_determine_outdated_output_kind_json() {
+        let kind = determine_outdated_output_kind(true, 5, 2);
+        assert_eq!(kind, OutdatedOutputKind::Json);
+    }
+
+    #[test]
+    fn test_determine_outdated_output_kind_all_up_to_date() {
+        let kind = determine_outdated_output_kind(false, 0, 3);
+        assert_eq!(kind, OutdatedOutputKind::AllUpToDate { pinned_count: 3 });
+    }
+
+    #[test]
+    fn test_determine_outdated_output_kind_has_outdated() {
+        let kind = determine_outdated_output_kind(false, 5, 2);
+        assert_eq!(
+            kind,
+            OutdatedOutputKind::HasOutdated {
+                outdated_count: 5,
+                pinned_count: 2
+            }
+        );
+    }
+
+    #[test]
+    fn test_determine_outdated_output_kind_no_pinned() {
+        let kind = determine_outdated_output_kind(false, 0, 0);
+        assert_eq!(kind, OutdatedOutputKind::AllUpToDate { pinned_count: 0 });
+    }
+
+    // ========================================================================
+    // Upgrade Output Kind Tests
+    // ========================================================================
+
+    #[test]
+    fn test_determine_upgrade_output_kind_not_installed() {
+        let kind = determine_upgrade_output_kind(Some("git"), false, 0, false);
+        assert_eq!(
+            kind,
+            UpgradeOutputKind::NotInstalled {
+                formula: "git".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_determine_upgrade_output_kind_already_up_to_date() {
+        let kind = determine_upgrade_output_kind(Some("git"), true, 0, false);
+        assert_eq!(
+            kind,
+            UpgradeOutputKind::AlreadyUpToDate {
+                formula: "git".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_determine_upgrade_output_kind_all_up_to_date() {
+        let kind = determine_upgrade_output_kind(None, true, 0, false);
+        assert_eq!(kind, UpgradeOutputKind::AllUpToDate);
+    }
+
+    #[test]
+    fn test_determine_upgrade_output_kind_dry_run() {
+        let kind = determine_upgrade_output_kind(None, true, 5, true);
+        assert_eq!(kind, UpgradeOutputKind::DryRun { count: 5 });
+    }
+
+    #[test]
+    fn test_determine_upgrade_output_kind_upgrade() {
+        let kind = determine_upgrade_output_kind(None, true, 3, false);
+        assert_eq!(kind, UpgradeOutputKind::Upgrade { count: 3 });
+    }
+
+    #[test]
+    fn test_determine_upgrade_output_kind_dry_run_specific_formula() {
+        let kind = determine_upgrade_output_kind(Some("git"), true, 1, true);
+        assert_eq!(kind, UpgradeOutputKind::DryRun { count: 1 });
+    }
+
+    // ========================================================================
+    // Upgrade Summary Tests
+    // ========================================================================
+
+    #[test]
+    fn test_upgrade_summary_new() {
+        let summary = UpgradeSummary::new();
+        assert!(summary.upgraded.is_empty());
+        assert!(summary.already_up_to_date.is_empty());
+        assert!(summary.failed.is_empty());
+    }
+
+    #[test]
+    fn test_upgrade_summary_record_success() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+
+        assert_eq!(summary.upgraded.len(), 1);
+        assert_eq!(summary.upgraded[0].0, "git");
+        assert_eq!(summary.upgraded[0].1, "2.43.0");
+        assert_eq!(summary.upgraded[0].2, "2.44.0");
+    }
+
+    #[test]
+    fn test_upgrade_summary_record_up_to_date() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_up_to_date("git".to_string());
+
+        assert_eq!(summary.already_up_to_date.len(), 1);
+        assert_eq!(summary.already_up_to_date[0], "git");
+    }
+
+    #[test]
+    fn test_upgrade_summary_record_failure() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_failure("git".to_string(), "network error".to_string());
+
+        assert_eq!(summary.failed.len(), 1);
+        assert_eq!(summary.failed[0].0, "git");
+        assert_eq!(summary.failed[0].1, "network error");
+    }
+
+    #[test]
+    fn test_upgrade_summary_upgraded_count() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_success("ripgrep".to_string(), "14.0.0".to_string(), "14.1.0".to_string());
+
+        assert_eq!(summary.upgraded_count(), 2);
+    }
+
+    #[test]
+    fn test_upgrade_summary_failed_count() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_failure("git".to_string(), "error1".to_string());
+        summary.record_failure("ripgrep".to_string(), "error2".to_string());
+
+        assert_eq!(summary.failed_count(), 2);
+    }
+
+    #[test]
+    fn test_upgrade_summary_has_upgrades() {
+        let mut summary = UpgradeSummary::new();
+        assert!(!summary.has_upgrades());
+
+        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        assert!(summary.has_upgrades());
+    }
+
+    #[test]
+    fn test_upgrade_summary_has_failures() {
+        let mut summary = UpgradeSummary::new();
+        assert!(!summary.has_failures());
+
+        summary.record_failure("git".to_string(), "error".to_string());
+        assert!(summary.has_failures());
+    }
+
+    #[test]
+    fn test_upgrade_summary_total_attempted() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_up_to_date("ripgrep".to_string());
+        summary.record_failure("jq".to_string(), "error".to_string());
+
+        assert_eq!(summary.total_attempted(), 3);
+    }
+
+    #[test]
+    fn test_upgrade_summary_mixed_results() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_success("ripgrep".to_string(), "14.0.0".to_string(), "14.1.0".to_string());
+        summary.record_up_to_date("jq".to_string());
+        summary.record_failure("curl".to_string(), "checksum mismatch".to_string());
+
+        assert_eq!(summary.upgraded_count(), 2);
+        assert_eq!(summary.failed_count(), 1);
+        assert_eq!(summary.already_up_to_date.len(), 1);
+        assert_eq!(summary.total_attempted(), 4);
+        assert!(summary.has_upgrades());
+        assert!(summary.has_failures());
+    }
+
+    // ========================================================================
+    // Upgrade Summary Output Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_upgrade_summary_output_no_upgrades() {
+        let summary = UpgradeSummary::new();
+        let lines = format_upgrade_summary_output(&summary, 1.5);
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("No packages were upgraded"));
+    }
+
+    #[test]
+    fn test_format_upgrade_summary_output_with_upgrades() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_success("ripgrep".to_string(), "14.0.0".to_string(), "14.1.0".to_string());
+
+        let lines = format_upgrade_summary_output(&summary, 5.25);
+
+        assert!(lines[0].contains("Upgraded 2 packages"));
+        assert!(lines[0].contains("5.25s"));
+        assert!(lines.iter().any(|l| l.contains("git")));
+        assert!(lines.iter().any(|l| l.contains("ripgrep")));
+    }
+
+    #[test]
+    fn test_format_upgrade_summary_output_with_failures() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_failure("ripgrep".to_string(), "network error".to_string());
+
+        let lines = format_upgrade_summary_output(&summary, 3.0);
+
+        assert!(lines.iter().any(|l| l.contains("Upgraded 1 packages")));
+        assert!(lines.iter().any(|l| l.contains("Failed to upgrade 1")));
+        assert!(lines.iter().any(|l| l.contains("ripgrep") && l.contains("network error")));
+    }
+
+    #[test]
+    fn test_format_upgrade_summary_output_only_failures() {
+        let mut summary = UpgradeSummary::new();
+        summary.record_failure("git".to_string(), "error1".to_string());
+        summary.record_failure("ripgrep".to_string(), "error2".to_string());
+
+        let lines = format_upgrade_summary_output(&summary, 2.0);
+
+        assert!(lines[0].contains("No packages were upgraded"));
+        assert!(lines.iter().any(|l| l.contains("Failed to upgrade 2")));
+    }
+
+    // ========================================================================
+    // Dry Run Output Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_dry_run_output_single() {
+        let packages = vec![make_outdated_pkg("git", "2.43.0", "2.44.0")];
+        let lines = format_dry_run_output(&packages);
+
+        assert!(lines[0].contains("Would upgrade 1 packages"));
+        assert!(lines.iter().any(|l| l.contains("git")));
+        assert!(lines.iter().any(|l| l.contains("2.43.0")));
+        assert!(lines.iter().any(|l| l.contains("2.44.0")));
+    }
+
+    #[test]
+    fn test_format_dry_run_output_multiple() {
+        let packages = vec![
+            make_outdated_pkg("git", "2.43.0", "2.44.0"),
+            make_outdated_pkg("ripgrep", "14.0.0", "14.1.0"),
+            make_outdated_pkg("jq", "1.6", "1.7"),
+        ];
+        let lines = format_dry_run_output(&packages);
+
+        assert!(lines[0].contains("Would upgrade 3 packages"));
+        assert!(lines.iter().any(|l| l.contains("git")));
+        assert!(lines.iter().any(|l| l.contains("ripgrep")));
+        assert!(lines.iter().any(|l| l.contains("jq")));
+    }
+
+    #[test]
+    fn test_format_dry_run_output_empty() {
+        let packages: Vec<OutdatedPackage> = vec![];
+        let lines = format_dry_run_output(&packages);
+
+        assert!(lines[0].contains("Would upgrade 0 packages"));
+    }
+
+    #[test]
+    fn test_format_dry_run_output_structure() {
+        let packages = vec![make_outdated_pkg("git", "2.43.0", "2.44.0")];
+        let lines = format_dry_run_output(&packages);
+
+        // First line is header
+        assert!(lines[0].contains("Would upgrade"));
+        // Second line is empty (spacing)
+        assert_eq!(lines[1], "");
+        // Third line+ are packages
+        assert!(lines[2].contains("git"));
+    }
+
+    // ========================================================================
+    // Pinned Package Exclusion Tests
+    // ========================================================================
+
+    #[test]
+    fn test_should_exclude_pinned_true() {
+        let pinned = vec!["git".to_string(), "ripgrep".to_string()];
+        assert!(should_exclude_pinned("git", &pinned));
+    }
+
+    #[test]
+    fn test_should_exclude_pinned_false() {
+        let pinned = vec!["git".to_string(), "ripgrep".to_string()];
+        assert!(!should_exclude_pinned("jq", &pinned));
+    }
+
+    #[test]
+    fn test_should_exclude_pinned_empty_list() {
+        let pinned: Vec<String> = vec![];
+        assert!(!should_exclude_pinned("git", &pinned));
+    }
+
+    #[test]
+    fn test_should_exclude_pinned_case_sensitive() {
+        let pinned = vec!["Git".to_string()];
+        assert!(!should_exclude_pinned("git", &pinned));
+    }
+
+    // ========================================================================
+    // Sort Outdated Packages Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sort_outdated_packages() {
+        let packages = vec![
+            make_outdated_pkg("zsh", "5.8", "5.9"),
+            make_outdated_pkg("git", "2.43.0", "2.44.0"),
+            make_outdated_pkg("ripgrep", "14.0.0", "14.1.0"),
+        ];
+
+        let sorted = sort_outdated_packages(packages);
+
+        assert_eq!(sorted[0].name, "git");
+        assert_eq!(sorted[1].name, "ripgrep");
+        assert_eq!(sorted[2].name, "zsh");
+    }
+
+    #[test]
+    fn test_sort_outdated_packages_already_sorted() {
+        let packages = vec![
+            make_outdated_pkg("aaa", "1.0", "2.0"),
+            make_outdated_pkg("bbb", "1.0", "2.0"),
+            make_outdated_pkg("ccc", "1.0", "2.0"),
+        ];
+
+        let sorted = sort_outdated_packages(packages);
+
+        assert_eq!(sorted[0].name, "aaa");
+        assert_eq!(sorted[1].name, "bbb");
+        assert_eq!(sorted[2].name, "ccc");
+    }
+
+    #[test]
+    fn test_sort_outdated_packages_empty() {
+        let packages: Vec<OutdatedPackage> = vec![];
+        let sorted = sort_outdated_packages(packages);
+        assert!(sorted.is_empty());
+    }
+
+    #[test]
+    fn test_sort_outdated_packages_single() {
+        let packages = vec![make_outdated_pkg("git", "2.43.0", "2.44.0")];
+        let sorted = sort_outdated_packages(packages);
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].name, "git");
+    }
+
+    // ========================================================================
+    // Version Change Classification Tests
+    // ========================================================================
+
+    #[test]
+    fn test_classify_version_change_major() {
+        assert_eq!(
+            classify_version_change("1.0.0", "2.0.0"),
+            VersionChangeType::Major
+        );
+        assert_eq!(
+            classify_version_change("1.5.3", "2.0.0"),
+            VersionChangeType::Major
+        );
+    }
+
+    #[test]
+    fn test_classify_version_change_minor() {
+        assert_eq!(
+            classify_version_change("1.0.0", "1.1.0"),
+            VersionChangeType::Minor
+        );
+        assert_eq!(
+            classify_version_change("1.5.3", "1.6.0"),
+            VersionChangeType::Minor
+        );
+    }
+
+    #[test]
+    fn test_classify_version_change_patch() {
+        assert_eq!(
+            classify_version_change("1.0.0", "1.0.1"),
+            VersionChangeType::Patch
+        );
+        assert_eq!(
+            classify_version_change("1.5.3", "1.5.4"),
+            VersionChangeType::Patch
+        );
+    }
+
+    #[test]
+    fn test_classify_version_change_unknown() {
+        // Single component versions
+        assert_eq!(classify_version_change("1", "2"), VersionChangeType::Unknown);
+        // Non-numeric
+        assert_eq!(
+            classify_version_change("abc", "def"),
+            VersionChangeType::Unknown
+        );
+    }
+
+    #[test]
+    fn test_classify_version_change_with_suffix() {
+        assert_eq!(
+            classify_version_change("1.0.0_1", "2.0.0"),
+            VersionChangeType::Major
+        );
+        assert_eq!(
+            classify_version_change("1.0.0-beta", "1.1.0"),
+            VersionChangeType::Minor
+        );
+    }
+
+    #[test]
+    fn test_classify_version_change_same_version() {
+        assert_eq!(
+            classify_version_change("1.0.0", "1.0.0"),
+            VersionChangeType::Unknown
+        );
+    }
+
+    // ========================================================================
+    // Count By Change Type Tests
+    // ========================================================================
+
+    #[test]
+    fn test_count_by_change_type_all_major() {
+        let packages = vec![
+            make_outdated_pkg("git", "1.0.0", "2.0.0"),
+            make_outdated_pkg("ripgrep", "1.0.0", "3.0.0"),
+        ];
+        let (major, minor, patch, unknown) = count_by_change_type(&packages);
+        assert_eq!(major, 2);
+        assert_eq!(minor, 0);
+        assert_eq!(patch, 0);
+        assert_eq!(unknown, 0);
+    }
+
+    #[test]
+    fn test_count_by_change_type_mixed() {
+        let packages = vec![
+            make_outdated_pkg("git", "1.0.0", "2.0.0"),     // major
+            make_outdated_pkg("ripgrep", "1.0.0", "1.1.0"), // minor
+            make_outdated_pkg("jq", "1.0.0", "1.0.1"),      // patch
+            make_outdated_pkg("foo", "abc", "def"),         // unknown
+        ];
+        let (major, minor, patch, unknown) = count_by_change_type(&packages);
+        assert_eq!(major, 1);
+        assert_eq!(minor, 1);
+        assert_eq!(patch, 1);
+        assert_eq!(unknown, 1);
+    }
+
+    #[test]
+    fn test_count_by_change_type_empty() {
+        let packages: Vec<OutdatedPackage> = vec![];
+        let (major, minor, patch, unknown) = count_by_change_type(&packages);
+        assert_eq!(major, 0);
+        assert_eq!(minor, 0);
+        assert_eq!(patch, 0);
+        assert_eq!(unknown, 0);
+    }
+
+    // ========================================================================
+    // Formula Name Validation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_valid_formula_name_simple() {
+        assert!(is_valid_formula_name("git"));
+        assert!(is_valid_formula_name("ripgrep"));
+    }
+
+    #[test]
+    fn test_is_valid_formula_name_with_numbers() {
+        assert!(is_valid_formula_name("python3"));
+        assert!(is_valid_formula_name("go123"));
+    }
+
+    #[test]
+    fn test_is_valid_formula_name_versioned() {
+        assert!(is_valid_formula_name("python@3.11"));
+        assert!(is_valid_formula_name("openssl@3"));
+    }
+
+    #[test]
+    fn test_is_valid_formula_name_with_hyphens() {
+        assert!(is_valid_formula_name("my-package"));
+        assert!(is_valid_formula_name("test-package-name"));
+    }
+
+    #[test]
+    fn test_is_valid_formula_name_with_underscores() {
+        assert!(is_valid_formula_name("my_package"));
+        assert!(is_valid_formula_name("test_package_name"));
+    }
+
+    #[test]
+    fn test_is_valid_formula_name_empty() {
+        assert!(!is_valid_formula_name(""));
+    }
+
+    #[test]
+    fn test_is_valid_formula_name_starts_with_number() {
+        assert!(!is_valid_formula_name("123abc"));
+    }
+
+    #[test]
+    fn test_is_valid_formula_name_starts_with_hyphen() {
+        assert!(!is_valid_formula_name("-package"));
+    }
+
+    #[test]
+    fn test_is_valid_formula_name_invalid_chars() {
+        assert!(!is_valid_formula_name("pkg!name"));
+        assert!(!is_valid_formula_name("pkg name"));
+        assert!(!is_valid_formula_name("pkg/name"));
+    }
+
+    #[test]
+    fn test_is_valid_formula_name_with_dots() {
+        assert!(is_valid_formula_name("pkg.name"));
+        assert!(is_valid_formula_name("python@3.11.8"));
+    }
+
+    // ========================================================================
+    // Not Installed Error Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_not_installed_error() {
+        let result = format_not_installed_error("git");
+        assert_eq!(result, "Formula 'git' is not installed.");
+    }
+
+    #[test]
+    fn test_format_not_installed_error_versioned() {
+        let result = format_not_installed_error("python@3.11");
+        assert!(result.contains("python@3.11"));
+        assert!(result.contains("not installed"));
+    }
+
+    // ========================================================================
+    // Dry Run vs Actual Output Difference Tests
+    // ========================================================================
+
+    #[test]
+    fn test_dry_run_vs_actual_header_difference() {
+        let dry_run_header = format_dry_run_header(5);
+        let actual_header = format_upgrade_header(5);
+
+        assert!(dry_run_header.contains("Would upgrade"));
+        assert!(actual_header.contains("Upgrading"));
+        assert!(!dry_run_header.contains("Upgrading"));
+        assert!(!actual_header.contains("Would"));
+    }
+
+    #[test]
+    fn test_dry_run_shows_packages_without_performing() {
+        let packages = vec![
+            make_outdated_pkg("git", "2.43.0", "2.44.0"),
+            make_outdated_pkg("ripgrep", "14.0.0", "14.1.0"),
+        ];
+
+        // Dry run just lists packages
+        let dry_run_output = format_dry_run_output(&packages);
+        assert!(dry_run_output[0].contains("Would upgrade"));
+
+        // Actual upgrade would show summary after completion
+        let mut summary = UpgradeSummary::new();
+        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        let actual_output = format_upgrade_summary_output(&summary, 1.0);
+        assert!(actual_output[0].contains("Upgraded"));
+    }
+
+    #[test]
+    fn test_dry_run_output_kind_determination() {
+        // Same state, different mode
+        let dry_run_kind = determine_upgrade_output_kind(None, true, 5, true);
+        let actual_kind = determine_upgrade_output_kind(None, true, 5, false);
+
+        assert_eq!(dry_run_kind, UpgradeOutputKind::DryRun { count: 5 });
+        assert_eq!(actual_kind, UpgradeOutputKind::Upgrade { count: 5 });
+    }
+
+    // ========================================================================
+    // Pinned Package Handling Integration Tests
+    // ========================================================================
+
+    #[test]
+    fn test_pinned_packages_shown_in_outdated_output() {
+        // When all packages up to date but some pinned
+        let kind = determine_outdated_output_kind(false, 0, 3);
+        match kind {
+            OutdatedOutputKind::AllUpToDate { pinned_count } => {
+                assert_eq!(pinned_count, 3);
+                let (_, pinned_msg) = format_all_up_to_date_message(pinned_count);
+                assert!(pinned_msg.is_some());
+                assert!(pinned_msg.unwrap().contains("3 pinned"));
+            }
+            _ => panic!("Expected AllUpToDate"),
+        }
+    }
+
+    #[test]
+    fn test_pinned_packages_shown_in_has_outdated_output() {
+        let kind = determine_outdated_output_kind(false, 5, 2);
+        match kind {
+            OutdatedOutputKind::HasOutdated {
+                outdated_count,
+                pinned_count,
+            } => {
+                assert_eq!(outdated_count, 5);
+                assert_eq!(pinned_count, 2);
+                let footer = format_pinned_footer(pinned_count);
+                assert!(footer.contains("2 pinned"));
+            }
+            _ => panic!("Expected HasOutdated"),
+        }
+    }
+
+    #[test]
+    fn test_pinned_exclusion_logic() {
+        let pinned = vec!["git".to_string(), "node".to_string()];
+        let all_outdated = vec![
+            make_outdated_pkg("git", "2.43.0", "2.44.0"),
+            make_outdated_pkg("ripgrep", "14.0.0", "14.1.0"),
+            make_outdated_pkg("node", "20.0.0", "22.0.0"),
+            make_outdated_pkg("jq", "1.6", "1.7"),
+        ];
+
+        // Simulate filtering out pinned packages
+        let upgradable: Vec<_> = all_outdated
+            .iter()
+            .filter(|p| !should_exclude_pinned(&p.name, &pinned))
+            .collect();
+
+        assert_eq!(upgradable.len(), 2);
+        assert!(upgradable.iter().all(|p| p.name != "git" && p.name != "node"));
+    }
+
+    #[test]
+    fn test_pin_status_messages_are_informative() {
+        let pin_msg = format_pin_status_message("git", true);
+        let unpin_msg = format_pin_status_message("git", false);
+
+        // Pin message should indicate no upgrades
+        assert!(pin_msg.contains("will not be upgraded"));
+        // Unpin message should indicate upgrades will happen
+        assert!(unpin_msg.contains("will be upgraded when outdated"));
+    }
 }
