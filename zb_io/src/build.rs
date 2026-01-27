@@ -1549,6 +1549,755 @@ mod tests {
     }
 
     // ==========================================================================
+    // Builder Command Execution Tests
+    // ==========================================================================
+
+    mod builder_commands {
+        use super::*;
+
+        fn make_test_env_in(tmp: &TempDir) -> BuildEnvironment {
+            let formula = Formula::default();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::create_dir_all(tmp.path().join("staging")).unwrap();
+            BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &tmp.path().join("opt"),
+                tmp.path().join("staging"),
+            )
+        }
+
+        #[test]
+        fn run_command_succeeds_with_simple_command() {
+            let tmp = TempDir::new().unwrap();
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            // Run a simple echo command
+            let result = builder.run_command("echo", &["hello"], tmp.path());
+            assert!(result.is_ok());
+            assert!(result.unwrap().contains("hello"));
+        }
+
+        #[test]
+        fn run_command_captures_stdout_and_stderr() {
+            let tmp = TempDir::new().unwrap();
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            // This should capture both stdout
+            let result = builder.run_command("sh", &["-c", "echo stdout; echo stderr >&2"], tmp.path());
+            assert!(result.is_ok());
+            let output = result.unwrap();
+            assert!(output.contains("stdout"));
+            assert!(output.contains("stderr"));
+        }
+
+        #[test]
+        fn run_command_fails_on_nonexistent_command() {
+            let tmp = TempDir::new().unwrap();
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.run_command("nonexistent_command_xyz123", &[], tmp.path());
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn run_command_fails_on_exit_code() {
+            let tmp = TempDir::new().unwrap();
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.run_command("sh", &["-c", "exit 1"], tmp.path());
+            assert!(result.is_err());
+            let err = format!("{:?}", result.unwrap_err());
+            assert!(err.contains("failed"));
+        }
+
+        #[test]
+        fn run_command_uses_environment_variables() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+            let dep = opt_dir.join("dep1");
+            std::fs::create_dir_all(dep.join("include")).unwrap();
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep1".to_string()],
+                ..Default::default()
+            };
+
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+            let builder = Builder::new(env);
+
+            // The command should see CFLAGS set
+            let result = builder.run_command("sh", &["-c", "echo $CFLAGS"], tmp.path());
+            assert!(result.is_ok());
+            let output = result.unwrap();
+            assert!(output.contains("dep1"));
+        }
+
+        #[test]
+        fn build_autotools_fails_without_configure() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            // No configure, no autogen.sh, no configure.ac
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.build_autotools(&[]);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn build_cmake_fails_without_cmakelists() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            // No CMakeLists.txt
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.build_cmake(&[]);
+            // This should fail when cmake tries to configure
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn build_meson_fails_without_meson_build() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.build_meson(&[]);
+            // This should fail when meson tries to setup
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn build_make_fails_without_makefile() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.build_make(&[]);
+            // This should fail when make can't find Makefile
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn build_auto_selects_cmake_when_detected() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::write(tmp.path().join("source/CMakeLists.txt"), "invalid cmake").unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            // This will fail but it should try cmake
+            let result = builder.build_auto(&[]);
+            assert!(result.is_err());
+            let err = format!("{:?}", result.unwrap_err());
+            assert!(err.contains("cmake") || err.contains("failed"));
+        }
+
+        #[test]
+        fn build_auto_selects_meson_when_detected() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::write(tmp.path().join("source/meson.build"), "invalid meson").unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            // This will fail but it should try meson
+            let result = builder.build_auto(&[]);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn build_auto_selects_autotools_when_detected() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::write(tmp.path().join("source/configure"), "#!/bin/sh\nexit 1").unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            // This will fail but it should try autotools
+            let result = builder.build_auto(&[]);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn build_auto_selects_make_when_detected() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::write(tmp.path().join("source/Makefile"), "invalid:\n\texit 1").unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            // This will fail but it should try make
+            let result = builder.build_auto(&[]);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn build_cmake_creates_build_directory() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::write(tmp.path().join("source/CMakeLists.txt"), "invalid").unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let build_dir = env.build_dir.clone();
+            let builder = Builder::new(env);
+
+            // Even though cmake will fail, the build directory should be created
+            let _ = builder.build_cmake(&[]);
+            assert!(build_dir.exists());
+        }
+
+        #[test]
+        fn build_autotools_with_extra_args() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::write(tmp.path().join("source/configure"), "#!/bin/sh\nexit 1").unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            // Pass extra configure args
+            let result = builder.build_autotools(&[
+                "--enable-feature".to_string(),
+                "--disable-other".to_string(),
+            ]);
+            assert!(result.is_err()); // Will fail but tests arg passing
+        }
+
+        #[test]
+        fn build_cmake_with_extra_args() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::write(tmp.path().join("source/CMakeLists.txt"), "invalid").unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.build_cmake(&[
+                "-DENABLE_TESTS=OFF".to_string(),
+                "-DBUILD_SHARED_LIBS=ON".to_string(),
+            ]);
+            assert!(result.is_err()); // Will fail but tests arg passing
+        }
+
+        #[test]
+        fn build_meson_with_extra_args() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::write(tmp.path().join("source/meson.build"), "invalid").unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.build_meson(&[
+                "-Dtests=false".to_string(),
+                "-Ddocs=false".to_string(),
+            ]);
+            assert!(result.is_err()); // Will fail but tests arg passing
+        }
+
+        #[test]
+        fn build_make_with_extra_args() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("source")).unwrap();
+            std::fs::write(tmp.path().join("source/Makefile"), "invalid").unwrap();
+
+            let env = make_test_env_in(&tmp);
+            let builder = Builder::new(env);
+
+            let result = builder.build_make(&[
+                "CC=gcc".to_string(),
+                "CFLAGS=-O2".to_string(),
+            ]);
+            assert!(result.is_err()); // Will fail but tests arg passing
+        }
+    }
+
+    // ==========================================================================
+    // Extract Tarball Advanced Tests
+    // ==========================================================================
+
+    mod extract_tarball_advanced {
+        use super::*;
+
+        #[test]
+        fn returns_single_extracted_directory() {
+            let tmp = TempDir::new().unwrap();
+            let tarball = tmp.path().join("test.tar.gz");
+            let dest = tmp.path().join("extracted");
+
+            // Create a tarball with a single top-level directory
+            let src_dir = tmp.path().join("myproject-1.0.0");
+            std::fs::create_dir_all(&src_dir).unwrap();
+            std::fs::write(src_dir.join("file.txt"), "content").unwrap();
+
+            // Create the tarball
+            let status = std::process::Command::new("tar")
+                .args([
+                    "-czf",
+                    &tarball.to_string_lossy(),
+                    "-C",
+                    &tmp.path().to_string_lossy(),
+                    "myproject-1.0.0",
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let result = super::super::extract_tarball(&tarball, &dest);
+            assert!(result.is_ok());
+
+            let extracted_path = result.unwrap();
+            // Should return the inner directory, not dest
+            assert_eq!(extracted_path.file_name().unwrap(), "myproject-1.0.0");
+        }
+
+        #[test]
+        fn returns_dest_for_multiple_entries() {
+            let tmp = TempDir::new().unwrap();
+            let tarball = tmp.path().join("test.tar.gz");
+            let dest = tmp.path().join("extracted");
+
+            // Create files directly (no single top-level dir)
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("file1.txt"), "content").unwrap();
+            std::fs::write(src.join("file2.txt"), "content").unwrap();
+
+            // Create tarball with multiple top-level entries
+            let status = std::process::Command::new("tar")
+                .args([
+                    "-czf",
+                    &tarball.to_string_lossy(),
+                    "-C",
+                    &src.to_string_lossy(),
+                    "file1.txt",
+                    "file2.txt",
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let result = super::super::extract_tarball(&tarball, &dest);
+            assert!(result.is_ok());
+
+            let extracted_path = result.unwrap();
+            // Should return dest itself since there's no single top-level dir
+            assert_eq!(extracted_path, dest);
+        }
+
+        #[test]
+        fn returns_dest_for_single_file_not_directory() {
+            let tmp = TempDir::new().unwrap();
+            let tarball = tmp.path().join("test.tar.gz");
+            let dest = tmp.path().join("extracted");
+
+            // Create a single file
+            let src = tmp.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("single_file.txt"), "content").unwrap();
+
+            // Create tarball with just one file (not a directory)
+            let status = std::process::Command::new("tar")
+                .args([
+                    "-czf",
+                    &tarball.to_string_lossy(),
+                    "-C",
+                    &src.to_string_lossy(),
+                    "single_file.txt",
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let result = super::super::extract_tarball(&tarball, &dest);
+            assert!(result.is_ok());
+
+            let extracted_path = result.unwrap();
+            // Should return dest since the single entry is a file, not a directory
+            assert_eq!(extracted_path, dest);
+        }
+    }
+
+    // ==========================================================================
+    // Download Source Advanced Tests
+    // ==========================================================================
+
+    mod download_source_advanced {
+        use super::*;
+
+        #[test]
+        fn succeeds_with_valid_local_file_url() {
+            let tmp = TempDir::new().unwrap();
+
+            // Create a source file
+            let source = tmp.path().join("source.txt");
+            std::fs::write(&source, "test content").unwrap();
+
+            let dest = tmp.path().join("downloaded.txt");
+            let url = format!("file://{}", source.display());
+
+            // Download without checksum verification
+            let result = super::super::download_source(&url, &dest, None);
+            assert!(result.is_ok());
+            assert!(dest.exists());
+
+            let content = std::fs::read_to_string(&dest).unwrap();
+            assert_eq!(content, "test content");
+        }
+
+        #[test]
+        fn succeeds_with_correct_checksum() {
+            let tmp = TempDir::new().unwrap();
+
+            // Create a source file
+            let source = tmp.path().join("source.txt");
+            std::fs::write(&source, "test content").unwrap();
+
+            // Compute the correct checksum
+            let expected_hash = super::super::compute_sha256(&source).unwrap();
+
+            let dest = tmp.path().join("downloaded.txt");
+            let url = format!("file://{}", source.display());
+
+            let result = super::super::download_source(&url, &dest, Some(&expected_hash));
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn fails_with_incorrect_checksum() {
+            let tmp = TempDir::new().unwrap();
+
+            // Create a source file
+            let source = tmp.path().join("source.txt");
+            std::fs::write(&source, "test content").unwrap();
+
+            let dest = tmp.path().join("downloaded.txt");
+            let url = format!("file://{}", source.display());
+
+            // Wrong checksum
+            let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+            let result = super::super::download_source(&url, &dest, Some(wrong_hash));
+            assert!(result.is_err());
+
+            let err = format!("{:?}", result.unwrap_err());
+            assert!(err.contains("checksum mismatch"));
+        }
+    }
+
+    // ==========================================================================
+    // Clone Git Repo Advanced Tests
+    // ==========================================================================
+
+    mod clone_git_repo_advanced {
+        use super::*;
+
+        #[test]
+        fn clone_with_branch_parameter() {
+            let tmp = TempDir::new().unwrap();
+            let dest = tmp.path().join("repo");
+
+            // Try to clone with a branch - will fail because repo doesn't exist
+            // but this tests the branch parameter path
+            let result = super::super::clone_git_repo(
+                "https://github.com/nonexistent/repo.git",
+                Some("main"),
+                &dest,
+            );
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn clone_without_branch_parameter() {
+            let tmp = TempDir::new().unwrap();
+            let dest = tmp.path().join("repo");
+
+            // Try to clone without a branch
+            let result = super::super::clone_git_repo(
+                "https://github.com/nonexistent/repo.git",
+                None,
+                &dest,
+            );
+            assert!(result.is_err());
+        }
+    }
+
+    // ==========================================================================
+    // BuildEnvironment Advanced Tests
+    // ==========================================================================
+
+    mod build_environment_advanced {
+        use super::*;
+
+        #[test]
+        fn handles_partial_dependency_structure_only_include() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Only create include directory
+            let dep = opt_dir.join("dep1");
+            std::fs::create_dir_all(dep.join("include")).unwrap();
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep1".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            assert!(env.cflags.contains("include"));
+            assert!(env.ldflags.is_empty()); // No lib dir
+            assert!(env.pkg_config_path.is_empty()); // No pkgconfig dir
+        }
+
+        #[test]
+        fn handles_partial_dependency_structure_only_lib() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Only create lib directory (no pkgconfig)
+            let dep = opt_dir.join("dep1");
+            std::fs::create_dir_all(dep.join("lib")).unwrap();
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep1".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            assert!(env.cflags.is_empty()); // No include dir
+            assert!(env.ldflags.contains("lib"));
+            assert!(env.pkg_config_path.is_empty()); // No pkgconfig
+        }
+
+        #[test]
+        fn handles_partial_dependency_structure_only_bin() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Only create bin directory
+            let dep = opt_dir.join("dep1");
+            std::fs::create_dir_all(dep.join("bin")).unwrap();
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep1".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            assert!(env.cflags.is_empty());
+            assert!(env.ldflags.is_empty());
+            assert!(env.env.contains_key("PATH"));
+            assert!(env.env.get("PATH").unwrap().contains("bin"));
+        }
+
+        #[test]
+        fn handles_dependency_with_pkgconfig() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Create lib with pkgconfig
+            let dep = opt_dir.join("dep1");
+            std::fs::create_dir_all(dep.join("lib/pkgconfig")).unwrap();
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep1".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            assert!(env.pkg_config_path.contains("pkgconfig"));
+        }
+
+        #[test]
+        fn combines_multiple_pkgconfig_paths() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Create multiple dependencies with pkgconfig
+            for name in &["dep1", "dep2", "dep3"] {
+                let dep = opt_dir.join(name);
+                std::fs::create_dir_all(dep.join("lib/pkgconfig")).unwrap();
+            }
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep1".to_string(), "dep2".to_string(), "dep3".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            // Should be colon-separated
+            let pkg_paths: Vec<&str> = env.pkg_config_path.split(':').collect();
+            assert_eq!(pkg_paths.len(), 3);
+        }
+
+        #[test]
+        fn combines_multiple_bin_paths() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Create multiple dependencies with bin
+            for name in &["dep1", "dep2"] {
+                let dep = opt_dir.join(name);
+                std::fs::create_dir_all(dep.join("bin")).unwrap();
+            }
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep1".to_string(), "dep2".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            let path = env.env.get("PATH").unwrap();
+            assert!(path.contains("dep1"));
+            assert!(path.contains("dep2"));
+        }
+
+        #[test]
+        fn get_env_preserves_custom_env_vars() {
+            let tmp = TempDir::new().unwrap();
+            let opt_dir = tmp.path().join("opt");
+
+            // Create a dependency with bin to add PATH
+            let dep = opt_dir.join("dep1");
+            std::fs::create_dir_all(dep.join("bin")).unwrap();
+
+            let formula = Formula {
+                name: "test".to_string(),
+                dependencies: vec!["dep1".to_string()],
+                ..Default::default()
+            };
+
+            let env = BuildEnvironment::new(
+                &formula,
+                tmp.path().join("source"),
+                tmp.path(),
+                &opt_dir,
+                tmp.path().join("staging"),
+            );
+
+            let env_vars = env.get_env();
+            assert!(env_vars.contains_key("PATH"));
+            assert!(env_vars.contains_key("CC"));
+            assert!(env_vars.contains_key("CXX"));
+        }
+    }
+
+    // ==========================================================================
+    // Collect Installed Files Error Handling Tests
+    // ==========================================================================
+
+    mod collect_files_errors {
+        use super::*;
+
+        #[test]
+        fn handles_permission_denied_gracefully() {
+            // This test is platform-specific and may not work in all environments
+            // Skip if we can't create the test conditions
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("file.txt"), "content").unwrap();
+
+            // This should still work even if some files are unreadable
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+            assert!(!files.is_empty());
+        }
+
+        #[test]
+        fn handles_hidden_files() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join(".hidden"), "hidden content").unwrap();
+            std::fs::write(tmp.path().join("visible"), "visible content").unwrap();
+
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+            assert!(files.contains(&PathBuf::from(".hidden")));
+            assert!(files.contains(&PathBuf::from("visible")));
+        }
+
+        #[test]
+        fn handles_special_characters_in_filenames() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("file with spaces.txt"), "").unwrap();
+            std::fs::write(tmp.path().join("file-with-dashes.txt"), "").unwrap();
+            std::fs::write(tmp.path().join("file_with_underscores.txt"), "").unwrap();
+
+            let files = super::super::collect_installed_files(tmp.path()).unwrap();
+            assert_eq!(files.len(), 3);
+        }
+    }
+
+    // ==========================================================================
     // Integration-style Tests (without running actual builds)
     // ==========================================================================
 

@@ -554,6 +554,143 @@ pub(crate) fn calculate_search_display(
     }
 }
 
+/// Format an installed keg for list display.
+/// Extracted for testability.
+pub(crate) fn format_list_entry(name: &str, version: &str, pinned: bool) -> String {
+    let pin_marker = if pinned { " (pinned)" } else { "" };
+    format!("{} {}{}", name, version, pin_marker)
+}
+
+/// Determine what info output type to show based on available data.
+/// Extracted for testability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InfoOutputKind {
+    NotFound,
+    InstalledOnly,
+    ApiOnly,
+    Both,
+}
+
+/// Determine info output kind based on available data.
+pub(crate) fn determine_info_output_kind(
+    has_installed: bool,
+    has_api_formula: bool,
+) -> InfoOutputKind {
+    match (has_installed, has_api_formula) {
+        (false, false) => InfoOutputKind::NotFound,
+        (true, false) => InfoOutputKind::InstalledOnly,
+        (false, true) => InfoOutputKind::ApiOnly,
+        (true, true) => InfoOutputKind::Both,
+    }
+}
+
+/// Format the installed version line with optional markers.
+/// Extracted for testability.
+pub(crate) fn format_installed_version_line(
+    version: &str,
+    pinned: bool,
+    explicit: bool,
+) -> String {
+    let mut line = format!("Installed: {}", version);
+    if pinned {
+        line.push_str(" (pinned)");
+    }
+    if !explicit {
+        line.push_str(" (installed as dependency)");
+    }
+    line
+}
+
+/// Format the available version line with optional update notice.
+/// Extracted for testability.
+pub(crate) fn format_available_version_line(
+    available_version: &str,
+    installed_version: Option<&str>,
+) -> String {
+    match installed_version {
+        Some(inst) if inst != available_version => {
+            format!("Available: {} (update available)", available_version)
+        }
+        Some(_) => String::new(), // Same version, don't show available
+        None => format!("Available: {}", available_version),
+    }
+}
+
+/// Build JSON output for outdated check.
+/// Extracted for testability.
+pub(crate) fn build_outdated_json(
+    name: &str,
+    installed_version: &str,
+    available_version: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "installed_version": installed_version,
+        "available_version": available_version
+    })
+}
+
+/// Determine search output kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SearchOutputKind {
+    Json,
+    Empty { installed_only: bool },
+    Results { count: usize, installed_only: bool },
+}
+
+/// Determine what search output to show.
+pub(crate) fn determine_search_output_kind(
+    json: bool,
+    result_count: usize,
+    installed_only: bool,
+) -> SearchOutputKind {
+    if json {
+        SearchOutputKind::Json
+    } else if result_count == 0 {
+        SearchOutputKind::Empty { installed_only }
+    } else {
+        SearchOutputKind::Results {
+            count: result_count,
+            installed_only,
+        }
+    }
+}
+
+/// Format a single search result entry for display.
+pub(crate) fn format_search_result_entry(
+    name: &str,
+    version: &str,
+    description: &str,
+    is_installed: bool,
+    max_desc_len: usize,
+) -> Vec<String> {
+    let marker = if is_installed { "✓" } else { " " };
+    let mut lines = vec![format!("{} {} {}", marker, name, version)];
+
+    if !description.is_empty() {
+        let desc = truncate_description(description, max_desc_len);
+        lines.push(format!("    {}", desc));
+    }
+
+    lines
+}
+
+/// Determine list output kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ListOutputKind {
+    Empty { pinned: bool },
+    HasItems { count: usize },
+}
+
+/// Determine list output type.
+pub(crate) fn determine_list_output_kind(item_count: usize, pinned_filter: bool) -> ListOutputKind {
+    if item_count == 0 {
+        ListOutputKind::Empty { pinned: pinned_filter }
+    } else {
+        ListOutputKind::HasItems { count: item_count }
+    }
+}
+
 /// Run the search command.
 pub async fn run_search(
     installer: &Installer,
@@ -1409,5 +1546,589 @@ mod tests {
         let long_desc = "x".repeat(1000);
         let json = build_search_result_json("test", "test", "1.0", &long_desc, false);
         assert_eq!(json["description"].as_str().unwrap().len(), 1000);
+    }
+
+    // ========================================================================
+    // List Entry Format Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_list_entry_basic() {
+        let result = format_list_entry("git", "2.44.0", false);
+        assert_eq!(result, "git 2.44.0");
+    }
+
+    #[test]
+    fn test_format_list_entry_pinned() {
+        let result = format_list_entry("node", "22.0.0", true);
+        assert_eq!(result, "node 22.0.0 (pinned)");
+    }
+
+    #[test]
+    fn test_format_list_entry_versioned_formula() {
+        let result = format_list_entry("python@3.11", "3.11.9", false);
+        assert_eq!(result, "python@3.11 3.11.9");
+    }
+
+    #[test]
+    fn test_format_list_entry_with_revision() {
+        let result = format_list_entry("openssl", "3.0.0_1", true);
+        assert_eq!(result, "openssl 3.0.0_1 (pinned)");
+    }
+
+    // ========================================================================
+    // Info Output Kind Tests
+    // ========================================================================
+
+    #[test]
+    fn test_determine_info_output_kind_not_found() {
+        let kind = determine_info_output_kind(false, false);
+        assert_eq!(kind, InfoOutputKind::NotFound);
+    }
+
+    #[test]
+    fn test_determine_info_output_kind_installed_only() {
+        let kind = determine_info_output_kind(true, false);
+        assert_eq!(kind, InfoOutputKind::InstalledOnly);
+    }
+
+    #[test]
+    fn test_determine_info_output_kind_api_only() {
+        let kind = determine_info_output_kind(false, true);
+        assert_eq!(kind, InfoOutputKind::ApiOnly);
+    }
+
+    #[test]
+    fn test_determine_info_output_kind_both() {
+        let kind = determine_info_output_kind(true, true);
+        assert_eq!(kind, InfoOutputKind::Both);
+    }
+
+    #[test]
+    fn test_info_output_kind_debug() {
+        let kind = InfoOutputKind::Both;
+        let debug_str = format!("{:?}", kind);
+        assert_eq!(debug_str, "Both");
+    }
+
+    #[test]
+    fn test_info_output_kind_clone() {
+        let original = InfoOutputKind::InstalledOnly;
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    // ========================================================================
+    // Installed Version Line Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_installed_version_line_basic() {
+        let result = format_installed_version_line("2.44.0", false, true);
+        assert_eq!(result, "Installed: 2.44.0");
+    }
+
+    #[test]
+    fn test_format_installed_version_line_pinned() {
+        let result = format_installed_version_line("1.0.0", true, true);
+        assert_eq!(result, "Installed: 1.0.0 (pinned)");
+    }
+
+    #[test]
+    fn test_format_installed_version_line_dependency() {
+        let result = format_installed_version_line("3.0.0", false, false);
+        assert_eq!(result, "Installed: 3.0.0 (installed as dependency)");
+    }
+
+    #[test]
+    fn test_format_installed_version_line_pinned_dependency() {
+        let result = format_installed_version_line("2.0.0", true, false);
+        assert_eq!(result, "Installed: 2.0.0 (pinned) (installed as dependency)");
+    }
+
+    // ========================================================================
+    // Available Version Line Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_available_version_line_not_installed() {
+        let result = format_available_version_line("3.0.0", None);
+        assert_eq!(result, "Available: 3.0.0");
+    }
+
+    #[test]
+    fn test_format_available_version_line_same_version() {
+        let result = format_available_version_line("2.0.0", Some("2.0.0"));
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_format_available_version_line_update_available() {
+        let result = format_available_version_line("3.0.0", Some("2.0.0"));
+        assert_eq!(result, "Available: 3.0.0 (update available)");
+    }
+
+    #[test]
+    fn test_format_available_version_line_with_revision() {
+        let result = format_available_version_line("1.0.0_2", Some("1.0.0_1"));
+        assert_eq!(result, "Available: 1.0.0_2 (update available)");
+    }
+
+    // ========================================================================
+    // Outdated JSON Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_outdated_json_basic() {
+        let json = build_outdated_json("git", "2.43.0", "2.44.0");
+        assert_eq!(json["name"], "git");
+        assert_eq!(json["installed_version"], "2.43.0");
+        assert_eq!(json["available_version"], "2.44.0");
+    }
+
+    #[test]
+    fn test_build_outdated_json_has_all_fields() {
+        let json = build_outdated_json("test", "1.0", "2.0");
+        assert!(json.as_object().unwrap().contains_key("name"));
+        assert!(json.as_object().unwrap().contains_key("installed_version"));
+        assert!(json.as_object().unwrap().contains_key("available_version"));
+        assert_eq!(json.as_object().unwrap().len(), 3);
+    }
+
+    // ========================================================================
+    // Search Output Kind Tests
+    // ========================================================================
+
+    #[test]
+    fn test_determine_search_output_kind_json() {
+        let kind = determine_search_output_kind(true, 10, false);
+        assert_eq!(kind, SearchOutputKind::Json);
+    }
+
+    #[test]
+    fn test_determine_search_output_kind_json_with_installed_filter() {
+        // JSON mode regardless of filter
+        let kind = determine_search_output_kind(true, 0, true);
+        assert_eq!(kind, SearchOutputKind::Json);
+    }
+
+    #[test]
+    fn test_determine_search_output_kind_empty() {
+        let kind = determine_search_output_kind(false, 0, false);
+        assert_eq!(kind, SearchOutputKind::Empty { installed_only: false });
+    }
+
+    #[test]
+    fn test_determine_search_output_kind_empty_installed_only() {
+        let kind = determine_search_output_kind(false, 0, true);
+        assert_eq!(kind, SearchOutputKind::Empty { installed_only: true });
+    }
+
+    #[test]
+    fn test_determine_search_output_kind_results() {
+        let kind = determine_search_output_kind(false, 15, false);
+        assert_eq!(kind, SearchOutputKind::Results { count: 15, installed_only: false });
+    }
+
+    #[test]
+    fn test_determine_search_output_kind_results_installed() {
+        let kind = determine_search_output_kind(false, 5, true);
+        assert_eq!(kind, SearchOutputKind::Results { count: 5, installed_only: true });
+    }
+
+    #[test]
+    fn test_search_output_kind_debug() {
+        let kind = SearchOutputKind::Results { count: 10, installed_only: false };
+        let debug_str = format!("{:?}", kind);
+        assert!(debug_str.contains("Results"));
+        assert!(debug_str.contains("10"));
+    }
+
+    #[test]
+    fn test_search_output_kind_clone() {
+        let original = SearchOutputKind::Empty { installed_only: true };
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    // ========================================================================
+    // Search Result Entry Format Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_search_result_entry_installed() {
+        let lines = format_search_result_entry("ripgrep", "14.1.0", "Search tool", true, 70);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("✓"));
+        assert!(lines[0].contains("ripgrep"));
+        assert!(lines[0].contains("14.1.0"));
+        assert!(lines[1].contains("Search tool"));
+    }
+
+    #[test]
+    fn test_format_search_result_entry_not_installed() {
+        let lines = format_search_result_entry("jq", "1.7", "JSON processor", false, 70);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with(" ")); // Not installed marker
+        assert!(lines[0].contains("jq"));
+    }
+
+    #[test]
+    fn test_format_search_result_entry_no_description() {
+        let lines = format_search_result_entry("test", "1.0", "", false, 70);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("test"));
+    }
+
+    #[test]
+    fn test_format_search_result_entry_long_description() {
+        let long_desc = "x".repeat(100);
+        let lines = format_search_result_entry("pkg", "1.0", &long_desc, false, 50);
+        assert_eq!(lines.len(), 2);
+        // Description should be truncated
+        assert!(lines[1].len() < 60); // 4 spaces indent + ~50 chars
+    }
+
+    #[test]
+    fn test_format_search_result_entry_exact_length_description() {
+        let desc = "x".repeat(70);
+        let lines = format_search_result_entry("pkg", "1.0", &desc, true, 70);
+        assert_eq!(lines.len(), 2);
+    }
+
+    // ========================================================================
+    // List Output Kind Tests
+    // ========================================================================
+
+    #[test]
+    fn test_determine_list_output_kind_empty_all() {
+        let kind = determine_list_output_kind(0, false);
+        assert_eq!(kind, ListOutputKind::Empty { pinned: false });
+    }
+
+    #[test]
+    fn test_determine_list_output_kind_empty_pinned() {
+        let kind = determine_list_output_kind(0, true);
+        assert_eq!(kind, ListOutputKind::Empty { pinned: true });
+    }
+
+    #[test]
+    fn test_determine_list_output_kind_has_items() {
+        let kind = determine_list_output_kind(10, false);
+        assert_eq!(kind, ListOutputKind::HasItems { count: 10 });
+    }
+
+    #[test]
+    fn test_determine_list_output_kind_one_item() {
+        let kind = determine_list_output_kind(1, true);
+        assert_eq!(kind, ListOutputKind::HasItems { count: 1 });
+    }
+
+    #[test]
+    fn test_list_output_kind_debug() {
+        let kind = ListOutputKind::HasItems { count: 5 };
+        let debug_str = format!("{:?}", kind);
+        assert!(debug_str.contains("HasItems"));
+        assert!(debug_str.contains("5"));
+    }
+
+    #[test]
+    fn test_list_output_kind_clone() {
+        let original = ListOutputKind::Empty { pinned: true };
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    // ========================================================================
+    // Version Display Debug Tests
+    // ========================================================================
+
+    #[test]
+    fn test_version_display_debug_up_to_date() {
+        let display = VersionDisplay::UpToDate("1.0.0".to_string());
+        let debug_str = format!("{:?}", display);
+        assert!(debug_str.contains("UpToDate"));
+        assert!(debug_str.contains("1.0.0"));
+    }
+
+    #[test]
+    fn test_version_display_debug_update_available() {
+        let display = VersionDisplay::UpdateAvailable {
+            installed: "1.0.0".to_string(),
+            available: "2.0.0".to_string(),
+        };
+        let debug_str = format!("{:?}", display);
+        assert!(debug_str.contains("UpdateAvailable"));
+        assert!(debug_str.contains("1.0.0"));
+        assert!(debug_str.contains("2.0.0"));
+    }
+
+    #[test]
+    fn test_version_display_debug_not_installed() {
+        let display = VersionDisplay::NotInstalled("3.0.0".to_string());
+        let debug_str = format!("{:?}", display);
+        assert!(debug_str.contains("NotInstalled"));
+        assert!(debug_str.contains("3.0.0"));
+    }
+
+    // ========================================================================
+    // Additional Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_truncate_description_max_len_one() {
+        let result = truncate_description("testing", 1);
+        // 1 - 3 = 0 (saturating), so we get "..." but sliced to 0 chars
+        assert!(result.is_empty() || result == "...");
+    }
+
+    #[test]
+    fn test_truncate_description_max_len_two() {
+        let result = truncate_description("testing", 2);
+        // 2 - 3 = 0 (saturating), same as above
+        assert!(result.is_empty() || result == "...");
+    }
+
+    #[test]
+    fn test_format_caveats_prefix_at_start() {
+        let caveats = "$HOMEBREW_PREFIX is the root";
+        let result = format_caveats(caveats, "/opt/zb");
+        assert_eq!(result, "/opt/zb is the root");
+    }
+
+    #[test]
+    fn test_format_caveats_prefix_at_end() {
+        let caveats = "Install at $HOMEBREW_PREFIX";
+        let result = format_caveats(caveats, "/usr/local");
+        assert_eq!(result, "Install at /usr/local");
+    }
+
+    #[test]
+    fn test_is_update_available_whitespace_only_versions() {
+        // Edge case with unusual version strings
+        assert!(!is_update_available("  ", "  "));
+        assert!(is_update_available(" ", "  "));
+    }
+
+    #[test]
+    fn test_empty_search_message_query_with_special_chars() {
+        let msg = empty_search_message("c++", false);
+        assert!(msg.contains("c++"));
+    }
+
+    #[test]
+    fn test_format_store_key_one_char() {
+        let result = format_store_key("a");
+        assert_eq!(result, "a");
+    }
+
+    #[test]
+    fn test_build_info_json_base_empty_name() {
+        let info = build_info_json_base("", true);
+        assert_eq!(info.get("name").unwrap(), "");
+    }
+
+    #[test]
+    fn test_build_linked_files_json_empty_paths() {
+        let files = vec![("".to_string(), "".to_string())];
+        let json = build_linked_files_json(&files);
+        assert_eq!(json.len(), 1);
+        assert_eq!(json[0]["link"], "");
+        assert_eq!(json[0]["target"], "");
+    }
+
+    #[test]
+    fn test_build_formula_api_json_empty_arrays() {
+        let json = build_formula_api_json(
+            "1.0",
+            Some("desc"),
+            Some("https://example.com"),
+            Some("MIT"),
+            &[],
+            &[],
+            Some("caveat"),
+            false,
+        );
+        assert_eq!(json.get("dependencies").unwrap(), &serde_json::json!([]));
+        assert_eq!(json.get("build_dependencies").unwrap(), &serde_json::json!([]));
+    }
+
+    #[test]
+    fn test_format_keg_only_reason_whitespace_explanation() {
+        let result = format_keg_only_reason(Some("   "));
+        // Non-empty but whitespace-only should still show the explanation
+        assert_eq!(result, "Yes (   )");
+    }
+
+    #[test]
+    fn test_calculate_linked_files_display_limit_zero() {
+        // Edge case: display limit of 0
+        let (shown, remaining) = calculate_linked_files_display(5, 0);
+        assert_eq!(shown, 0);
+        assert_eq!(remaining, Some(5));
+    }
+
+    #[test]
+    fn test_calculate_search_display_limit_zero() {
+        let (shown, remaining) = calculate_search_display(10, 0);
+        assert_eq!(shown, 0);
+        assert_eq!(remaining, Some(10));
+    }
+
+    #[test]
+    fn test_format_version_comparison_empty_versions() {
+        let result = format_version_comparison(Some(""), "");
+        assert_eq!(result, VersionDisplay::UpToDate("".to_string()));
+    }
+
+    #[test]
+    fn test_version_display_all_variants_ne() {
+        let up_to_date = VersionDisplay::UpToDate("1.0".to_string());
+        let update = VersionDisplay::UpdateAvailable {
+            installed: "1.0".to_string(),
+            available: "2.0".to_string(),
+        };
+        let not_installed = VersionDisplay::NotInstalled("1.0".to_string());
+
+        assert_ne!(up_to_date, update);
+        assert_ne!(up_to_date, not_installed);
+        assert_ne!(update, not_installed);
+    }
+
+    #[test]
+    fn test_info_output_kind_all_variants_ne() {
+        let not_found = InfoOutputKind::NotFound;
+        let installed = InfoOutputKind::InstalledOnly;
+        let api = InfoOutputKind::ApiOnly;
+        let both = InfoOutputKind::Both;
+
+        assert_ne!(not_found, installed);
+        assert_ne!(not_found, api);
+        assert_ne!(not_found, both);
+        assert_ne!(installed, api);
+        assert_ne!(installed, both);
+        assert_ne!(api, both);
+    }
+
+    #[test]
+    fn test_search_output_kind_all_variants_ne() {
+        let json = SearchOutputKind::Json;
+        let empty = SearchOutputKind::Empty { installed_only: false };
+        let results = SearchOutputKind::Results { count: 5, installed_only: false };
+
+        assert_ne!(json, empty);
+        assert_ne!(json, results);
+        assert_ne!(empty, results);
+    }
+
+    #[test]
+    fn test_list_output_kind_all_variants_ne() {
+        let empty = ListOutputKind::Empty { pinned: false };
+        let has_items = ListOutputKind::HasItems { count: 1 };
+
+        assert_ne!(empty, has_items);
+    }
+
+    #[test]
+    fn test_empty_message_consistency() {
+        // Ensure messages are consistent with their filter states
+        let all_msg = empty_list_message(false);
+        let pinned_msg = empty_list_message(true);
+
+        assert!(all_msg.contains("installed"));
+        assert!(pinned_msg.contains("pinned"));
+        assert!(!all_msg.contains("pinned"));
+    }
+
+    #[test]
+    fn test_search_labels_distinct() {
+        let all_label = search_results_label(false);
+        let installed_label = search_results_label(true);
+
+        assert_ne!(all_label, installed_label);
+        assert!(installed_label.contains("installed"));
+    }
+
+    #[test]
+    fn test_format_list_entry_empty_strings() {
+        let result = format_list_entry("", "", false);
+        assert_eq!(result, " ");
+    }
+
+    #[test]
+    fn test_format_installed_version_line_empty_version() {
+        let result = format_installed_version_line("", false, true);
+        assert_eq!(result, "Installed: ");
+    }
+
+    #[test]
+    fn test_format_available_version_line_empty_available() {
+        let result = format_available_version_line("", None);
+        assert_eq!(result, "Available: ");
+    }
+
+    #[test]
+    fn test_build_outdated_json_empty_values() {
+        let json = build_outdated_json("", "", "");
+        assert_eq!(json["name"], "");
+        assert_eq!(json["installed_version"], "");
+        assert_eq!(json["available_version"], "");
+    }
+
+    #[test]
+    fn test_format_search_result_entry_all_empty() {
+        let lines = format_search_result_entry("", "", "", false, 70);
+        assert_eq!(lines.len(), 1);
+        // Should still format with marker and spaces
+        assert!(lines[0].contains(" "));
+    }
+
+    // ========================================================================
+    // JSON Serialization Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_build_search_result_json_special_json_chars() {
+        let json = build_search_result_json(
+            "test\"pkg",
+            "test\\pkg",
+            "1.0",
+            "Desc with \"quotes\" and \\backslash",
+            false,
+        );
+        // Should handle escaping
+        assert!(json["name"].as_str().is_some());
+        assert!(json["description"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_build_formula_api_json_large_dep_list() {
+        let deps: Vec<String> = (0..100).map(|i| format!("dep{}", i)).collect();
+        let json = build_formula_api_json(
+            "1.0",
+            None,
+            None,
+            None,
+            &deps,
+            &[],
+            None,
+            false,
+        );
+        let dep_array = json.get("dependencies").unwrap().as_array().unwrap();
+        assert_eq!(dep_array.len(), 100);
+    }
+
+    #[test]
+    fn test_build_installed_info_json_max_values() {
+        let info = build_installed_info_json(
+            "999.999.999",
+            "ffffffffffffffffffffffffffffffff",
+            u64::MAX,
+            true,
+            true,
+        );
+        assert_eq!(info.get("installed_at").unwrap(), u64::MAX);
+        assert_eq!(info.get("pinned").unwrap(), true);
+        assert_eq!(info.get("explicit").unwrap(), true);
     }
 }

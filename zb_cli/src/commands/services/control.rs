@@ -1,7 +1,7 @@
 //! Service control commands (start/stop/restart/enable/disable).
 
 use console::style;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use zb_io::install::Installer;
@@ -245,6 +245,106 @@ pub(crate) fn validate_log_lines(lines: usize) -> Result<(), String> {
     }
 }
 
+// ============================================================================
+// Logic Extracted from run_* Functions
+// ============================================================================
+
+/// Determine if a service needs setup based on service info.
+/// Returns true if service file doesn't exist or if there was an error getting info.
+pub(crate) fn needs_service_setup(service_info: &Result<zb_io::ServiceInfo, zb_core::Error>) -> bool {
+    match service_info {
+        Ok(info) => !info.file_path.exists(),
+        Err(_) => true,
+    }
+}
+
+/// Compute the keg path for a formula.
+pub(crate) fn compute_keg_path(prefix: &Path, formula: &str, version: &str) -> PathBuf {
+    prefix.join("Cellar").join(formula).join(version)
+}
+
+/// Format a list of orphaned services for display.
+/// Returns a Vec of (name, path_display) tuples.
+pub(crate) fn format_orphaned_service_list(services: &[zb_io::ServiceInfo]) -> Vec<(String, String)> {
+    services
+        .iter()
+        .map(|s| (s.name.clone(), s.file_path.display().to_string()))
+        .collect()
+}
+
+/// Determine which action to take for enable command based on current auto_start status.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EnableAction {
+    /// Service file doesn't exist
+    NoServiceFile,
+    /// Already enabled, nothing to do
+    AlreadyEnabled,
+    /// Need to enable
+    NeedToEnable,
+}
+
+/// Determine the enable action based on service info.
+pub(crate) fn determine_enable_action(info: &zb_io::ServiceInfo) -> EnableAction {
+    if !info.file_path.exists() {
+        EnableAction::NoServiceFile
+    } else if info.auto_start {
+        EnableAction::AlreadyEnabled
+    } else {
+        EnableAction::NeedToEnable
+    }
+}
+
+/// Determine which action to take for disable command based on current auto_start status.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DisableAction {
+    /// Service file doesn't exist
+    NoServiceFile,
+    /// Not enabled, nothing to do
+    NotEnabled,
+    /// Need to disable
+    NeedToDisable,
+}
+
+/// Determine the disable action based on service info.
+pub(crate) fn determine_disable_action(info: &zb_io::ServiceInfo) -> DisableAction {
+    if !info.file_path.exists() {
+        DisableAction::NoServiceFile
+    } else if !info.auto_start {
+        DisableAction::NotEnabled
+    } else {
+        DisableAction::NeedToDisable
+    }
+}
+
+/// Determine which log file to read for the log command.
+/// Returns None if neither file exists.
+pub(crate) fn determine_log_file(stdout_exists: bool, stderr_exists: bool) -> Option<LogFileChoice> {
+    if !stdout_exists && !stderr_exists {
+        None
+    } else if stdout_exists {
+        Some(LogFileChoice::Stdout)
+    } else {
+        Some(LogFileChoice::Stderr)
+    }
+}
+
+/// Which log file was chosen.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LogFileChoice {
+    Stdout,
+    Stderr,
+}
+
+/// Check if stderr should be mentioned as a note (when stdout was shown but stderr also exists).
+pub(crate) fn should_show_stderr_note(choice: &LogFileChoice, stderr_exists: bool) -> bool {
+    *choice == LogFileChoice::Stdout && stderr_exists
+}
+
+/// Parse exit code from Option, defaulting to -1 for unknown.
+pub(crate) fn parse_exit_code(code: Option<i32>) -> i32 {
+    code.unwrap_or(-1)
+}
+
 /// Start a service.
 pub fn run_start(
     installer: &mut Installer,
@@ -262,10 +362,7 @@ pub fn run_start(
     }
 
     let service_info = service_manager.get_service_info(formula);
-    let needs_setup = match &service_info {
-        Ok(info) => !info.file_path.exists(),
-        Err(_) => true,
-    };
+    let needs_setup = needs_service_setup(&service_info);
 
     if needs_setup {
         let keg = installer.get_installed(formula).ok_or_else(|| {
@@ -273,7 +370,7 @@ pub fn run_start(
                 name: formula.to_string(),
             }
         })?;
-        let keg_path = prefix.join("Cellar").join(formula).join(&keg.version);
+        let keg_path = compute_keg_path(prefix, formula, &keg.version);
 
         if let Some(config) = service_manager.detect_service_config(formula, &keg_path) {
             println!(
@@ -457,7 +554,7 @@ pub fn run_foreground(
             name: formula.to_string(),
         }
     })?;
-    let keg_path = prefix.join("Cellar").join(formula).join(&keg.version);
+    let keg_path = compute_keg_path(prefix, formula, &keg.version);
 
     if let Some(config) = service_manager.detect_service_config(formula, &keg_path) {
         println!(
@@ -1326,5 +1423,565 @@ mod tests {
             // Messages should include the formula without escaping
             assert!(format_starting_message(formula).contains(formula));
         }
+    }
+
+    // ============================================================================
+    // needs_service_setup Tests
+    // ============================================================================
+
+    #[test]
+    fn test_needs_service_setup_error() {
+        // When there's an error getting service info, setup is needed
+        let result: Result<zb_io::ServiceInfo, zb_core::Error> = Err(zb_core::Error::NotInstalled {
+            name: "test".to_string(),
+        });
+        assert!(needs_service_setup(&result));
+    }
+
+    #[test]
+    fn test_needs_service_setup_file_doesnt_exist() {
+        // When service file doesn't exist, setup is needed
+        let info = zb_io::ServiceInfo {
+            name: "test".to_string(),
+            status: zb_io::ServiceStatus::Stopped,
+            pid: None,
+            file_path: PathBuf::from("/nonexistent/path/to/service.file"),
+            auto_start: false,
+        };
+        let result: Result<zb_io::ServiceInfo, zb_core::Error> = Ok(info);
+        assert!(needs_service_setup(&result));
+    }
+
+    #[test]
+    fn test_needs_service_setup_file_exists() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join("zb-test-needs-setup");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let service_file = temp_dir.join("test.service");
+        fs::write(&service_file, "test content").unwrap();
+
+        let info = zb_io::ServiceInfo {
+            name: "test".to_string(),
+            status: zb_io::ServiceStatus::Running,
+            pid: Some(1234),
+            file_path: service_file,
+            auto_start: true,
+        };
+        let result: Result<zb_io::ServiceInfo, zb_core::Error> = Ok(info);
+        assert!(!needs_service_setup(&result));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // ============================================================================
+    // compute_keg_path Tests
+    // ============================================================================
+
+    #[test]
+    fn test_compute_keg_path_basic() {
+        let prefix = PathBuf::from("/opt/zerobrew");
+        let path = compute_keg_path(&prefix, "redis", "7.2.4");
+        assert_eq!(path, PathBuf::from("/opt/zerobrew/Cellar/redis/7.2.4"));
+    }
+
+    #[test]
+    fn test_compute_keg_path_versioned_formula() {
+        let prefix = PathBuf::from("/home/user/.zerobrew");
+        let path = compute_keg_path(&prefix, "postgresql@14", "14.10");
+        assert_eq!(path, PathBuf::from("/home/user/.zerobrew/Cellar/postgresql@14/14.10"));
+    }
+
+    #[test]
+    fn test_compute_keg_path_complex_version() {
+        let prefix = PathBuf::from("/usr/local");
+        let path = compute_keg_path(&prefix, "python", "3.11.7_1");
+        assert_eq!(path, PathBuf::from("/usr/local/Cellar/python/3.11.7_1"));
+    }
+
+    #[test]
+    fn test_compute_keg_path_relative_prefix() {
+        let prefix = PathBuf::from("./local");
+        let path = compute_keg_path(&prefix, "node", "20.0.0");
+        assert_eq!(path, PathBuf::from("./local/Cellar/node/20.0.0"));
+    }
+
+    // ============================================================================
+    // format_orphaned_service_list Tests
+    // ============================================================================
+
+    #[test]
+    fn test_format_orphaned_service_list_empty() {
+        let services: Vec<zb_io::ServiceInfo> = vec![];
+        let result = format_orphaned_service_list(&services);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_format_orphaned_service_list_single() {
+        let services = vec![zb_io::ServiceInfo {
+            name: "redis".to_string(),
+            status: zb_io::ServiceStatus::Stopped,
+            pid: None,
+            file_path: PathBuf::from("/etc/systemd/user/zerobrew.redis.service"),
+            auto_start: false,
+        }];
+        let result = format_orphaned_service_list(&services);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "redis");
+        assert!(result[0].1.contains("zerobrew.redis.service"));
+    }
+
+    #[test]
+    fn test_format_orphaned_service_list_multiple() {
+        let services = vec![
+            zb_io::ServiceInfo {
+                name: "redis".to_string(),
+                status: zb_io::ServiceStatus::Stopped,
+                pid: None,
+                file_path: PathBuf::from("/path/redis.service"),
+                auto_start: false,
+            },
+            zb_io::ServiceInfo {
+                name: "mysql".to_string(),
+                status: zb_io::ServiceStatus::Running,
+                pid: Some(1234),
+                file_path: PathBuf::from("/path/mysql.service"),
+                auto_start: true,
+            },
+        ];
+        let result = format_orphaned_service_list(&services);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].0, "redis");
+        assert_eq!(result[1].0, "mysql");
+    }
+
+    // ============================================================================
+    // EnableAction and determine_enable_action Tests
+    // ============================================================================
+
+    #[test]
+    fn test_determine_enable_action_no_service_file() {
+        let info = zb_io::ServiceInfo {
+            name: "test".to_string(),
+            status: zb_io::ServiceStatus::Stopped,
+            pid: None,
+            file_path: PathBuf::from("/nonexistent/path"),
+            auto_start: false,
+        };
+        assert_eq!(determine_enable_action(&info), EnableAction::NoServiceFile);
+    }
+
+    #[test]
+    fn test_determine_enable_action_already_enabled() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join("zb-test-enable-action-enabled");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let service_file = temp_dir.join("test.service");
+        fs::write(&service_file, "test").unwrap();
+
+        let info = zb_io::ServiceInfo {
+            name: "test".to_string(),
+            status: zb_io::ServiceStatus::Running,
+            pid: Some(123),
+            file_path: service_file,
+            auto_start: true,
+        };
+        assert_eq!(determine_enable_action(&info), EnableAction::AlreadyEnabled);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_determine_enable_action_need_to_enable() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join("zb-test-enable-action-need");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let service_file = temp_dir.join("test.service");
+        fs::write(&service_file, "test").unwrap();
+
+        let info = zb_io::ServiceInfo {
+            name: "test".to_string(),
+            status: zb_io::ServiceStatus::Stopped,
+            pid: None,
+            file_path: service_file,
+            auto_start: false,
+        };
+        assert_eq!(determine_enable_action(&info), EnableAction::NeedToEnable);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // ============================================================================
+    // DisableAction and determine_disable_action Tests
+    // ============================================================================
+
+    #[test]
+    fn test_determine_disable_action_no_service_file() {
+        let info = zb_io::ServiceInfo {
+            name: "test".to_string(),
+            status: zb_io::ServiceStatus::Stopped,
+            pid: None,
+            file_path: PathBuf::from("/nonexistent/path"),
+            auto_start: false,
+        };
+        assert_eq!(determine_disable_action(&info), DisableAction::NoServiceFile);
+    }
+
+    #[test]
+    fn test_determine_disable_action_not_enabled() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join("zb-test-disable-action-not");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let service_file = temp_dir.join("test.service");
+        fs::write(&service_file, "test").unwrap();
+
+        let info = zb_io::ServiceInfo {
+            name: "test".to_string(),
+            status: zb_io::ServiceStatus::Stopped,
+            pid: None,
+            file_path: service_file,
+            auto_start: false,
+        };
+        assert_eq!(determine_disable_action(&info), DisableAction::NotEnabled);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_determine_disable_action_need_to_disable() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join("zb-test-disable-action-need");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let service_file = temp_dir.join("test.service");
+        fs::write(&service_file, "test").unwrap();
+
+        let info = zb_io::ServiceInfo {
+            name: "test".to_string(),
+            status: zb_io::ServiceStatus::Running,
+            pid: Some(456),
+            file_path: service_file,
+            auto_start: true,
+        };
+        assert_eq!(determine_disable_action(&info), DisableAction::NeedToDisable);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // ============================================================================
+    // LogFileChoice and determine_log_file Tests
+    // ============================================================================
+
+    #[test]
+    fn test_determine_log_file_neither_exists() {
+        assert_eq!(determine_log_file(false, false), None);
+    }
+
+    #[test]
+    fn test_determine_log_file_only_stdout() {
+        assert_eq!(determine_log_file(true, false), Some(LogFileChoice::Stdout));
+    }
+
+    #[test]
+    fn test_determine_log_file_only_stderr() {
+        assert_eq!(determine_log_file(false, true), Some(LogFileChoice::Stderr));
+    }
+
+    #[test]
+    fn test_determine_log_file_both_exist() {
+        // Stdout takes priority
+        assert_eq!(determine_log_file(true, true), Some(LogFileChoice::Stdout));
+    }
+
+    // ============================================================================
+    // should_show_stderr_note Tests
+    // ============================================================================
+
+    #[test]
+    fn test_should_show_stderr_note_stdout_with_stderr() {
+        assert!(should_show_stderr_note(&LogFileChoice::Stdout, true));
+    }
+
+    #[test]
+    fn test_should_show_stderr_note_stdout_no_stderr() {
+        assert!(!should_show_stderr_note(&LogFileChoice::Stdout, false));
+    }
+
+    #[test]
+    fn test_should_show_stderr_note_stderr_with_stderr() {
+        assert!(!should_show_stderr_note(&LogFileChoice::Stderr, true));
+    }
+
+    #[test]
+    fn test_should_show_stderr_note_stderr_no_stderr() {
+        assert!(!should_show_stderr_note(&LogFileChoice::Stderr, false));
+    }
+
+    // ============================================================================
+    // parse_exit_code Tests
+    // ============================================================================
+
+    #[test]
+    fn test_parse_exit_code_some_zero() {
+        assert_eq!(parse_exit_code(Some(0)), 0);
+    }
+
+    #[test]
+    fn test_parse_exit_code_some_positive() {
+        assert_eq!(parse_exit_code(Some(1)), 1);
+        assert_eq!(parse_exit_code(Some(127)), 127);
+        assert_eq!(parse_exit_code(Some(255)), 255);
+    }
+
+    #[test]
+    fn test_parse_exit_code_some_negative() {
+        assert_eq!(parse_exit_code(Some(-1)), -1);
+        assert_eq!(parse_exit_code(Some(-15)), -15);
+    }
+
+    #[test]
+    fn test_parse_exit_code_none() {
+        assert_eq!(parse_exit_code(None), -1);
+    }
+
+    // ============================================================================
+    // Additional Edge Cases for Existing Functions
+    // ============================================================================
+
+    #[test]
+    fn test_validate_formula_name_with_at_and_slash() {
+        // Valid: version marker with @
+        assert!(validate_formula_name("formula@1.2/something").is_ok());
+    }
+
+    #[test]
+    fn test_validate_formula_name_single_char() {
+        assert!(validate_formula_name("a").is_ok());
+    }
+
+    #[test]
+    fn test_validate_formula_name_numbers_only() {
+        assert!(validate_formula_name("123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_formula_name_dashes_underscores() {
+        assert!(validate_formula_name("my-app_test").is_ok());
+        assert!(validate_formula_name("---").is_ok());
+        assert!(validate_formula_name("___").is_ok());
+    }
+
+    #[test]
+    fn test_get_last_lines_windows_line_endings() {
+        // Windows-style line endings
+        let content = "line 1\r\nline 2\r\nline 3\r\n";
+        let result = get_last_lines(content, 2);
+        // Note: Rust's lines() handles \r\n correctly
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "line 2");
+        assert_eq!(result[1], "line 3");
+    }
+
+    #[test]
+    fn test_get_last_lines_mixed_line_endings() {
+        let content = "line 1\nline 2\r\nline 3\rline 4";
+        let result = get_last_lines(content, 10);
+        // lines() splits on \n, \r\n, and \r
+        assert!(result.len() >= 3);
+    }
+
+    #[test]
+    fn test_get_last_lines_unicode() {
+        let content = "こんにちは\n世界\n🎉\n日本語";
+        let result = get_last_lines(content, 2);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "🎉");
+        assert_eq!(result[1], "日本語");
+    }
+
+    #[test]
+    fn test_format_foreground_command_special_chars() {
+        let program = PathBuf::from("/path/with spaces/program");
+        let args = vec!["--arg=value with spaces".to_string(), "\"quoted\"".to_string()];
+        let msg = format_foreground_command(&program, &args);
+        assert!(msg.contains("/path/with spaces/program"));
+        assert!(msg.contains("--arg=value with spaces"));
+        assert!(msg.contains("\"quoted\""));
+    }
+
+    #[test]
+    fn test_pluralize_large_numbers() {
+        assert_eq!(pluralize(1_000_000, "item", "items"), "items");
+        assert_eq!(pluralize(usize::MAX, "thing", "things"), "things");
+    }
+
+    #[test]
+    fn test_format_orphan_count_message_large_count() {
+        let msg = format_orphan_count_message(1_000_000, true);
+        assert!(msg.contains("1000000"));
+    }
+
+    #[test]
+    fn test_format_cleanup_complete_message_large_count() {
+        let msg = format_cleanup_complete_message(999_999);
+        assert!(msg.contains("999999"));
+    }
+
+    #[test]
+    fn test_validate_log_lines_boundary_at_max() {
+        // Exactly at max should be ok
+        assert!(validate_log_lines(100_000).is_ok());
+    }
+
+    #[test]
+    fn test_validate_log_lines_just_over_max() {
+        // Just over max should fail
+        assert!(validate_log_lines(100_001).is_err());
+    }
+
+    #[test]
+    fn test_enable_action_debug_trait() {
+        // Test Debug trait is implemented
+        let action = EnableAction::NeedToEnable;
+        let debug_str = format!("{:?}", action);
+        assert!(debug_str.contains("NeedToEnable"));
+    }
+
+    #[test]
+    fn test_disable_action_debug_trait() {
+        let action = DisableAction::NeedToDisable;
+        let debug_str = format!("{:?}", action);
+        assert!(debug_str.contains("NeedToDisable"));
+    }
+
+    #[test]
+    fn test_log_file_choice_debug_trait() {
+        let choice = LogFileChoice::Stdout;
+        let debug_str = format!("{:?}", choice);
+        assert!(debug_str.contains("Stdout"));
+    }
+
+    #[test]
+    fn test_enable_action_equality() {
+        assert_eq!(EnableAction::NoServiceFile, EnableAction::NoServiceFile);
+        assert_eq!(EnableAction::AlreadyEnabled, EnableAction::AlreadyEnabled);
+        assert_eq!(EnableAction::NeedToEnable, EnableAction::NeedToEnable);
+        assert_ne!(EnableAction::NoServiceFile, EnableAction::AlreadyEnabled);
+        assert_ne!(EnableAction::AlreadyEnabled, EnableAction::NeedToEnable);
+        assert_ne!(EnableAction::NoServiceFile, EnableAction::NeedToEnable);
+    }
+
+    #[test]
+    fn test_disable_action_equality() {
+        assert_eq!(DisableAction::NoServiceFile, DisableAction::NoServiceFile);
+        assert_eq!(DisableAction::NotEnabled, DisableAction::NotEnabled);
+        assert_eq!(DisableAction::NeedToDisable, DisableAction::NeedToDisable);
+        assert_ne!(DisableAction::NoServiceFile, DisableAction::NotEnabled);
+    }
+
+    #[test]
+    fn test_log_file_choice_equality() {
+        assert_eq!(LogFileChoice::Stdout, LogFileChoice::Stdout);
+        assert_eq!(LogFileChoice::Stderr, LogFileChoice::Stderr);
+        assert_ne!(LogFileChoice::Stdout, LogFileChoice::Stderr);
+    }
+
+    // ============================================================================
+    // ServiceInfo-based Tests (Additional Coverage)
+    // ============================================================================
+
+    #[test]
+    fn test_service_info_with_error_status() {
+        let info = zb_io::ServiceInfo {
+            name: "failed-service".to_string(),
+            status: zb_io::ServiceStatus::Error("exit code 1".to_string()),
+            pid: None,
+            file_path: PathBuf::from("/path/to/service"),
+            auto_start: false,
+        };
+        
+        // Should still be able to determine actions
+        assert_eq!(determine_enable_action(&info), EnableAction::NoServiceFile);
+        assert_eq!(determine_disable_action(&info), DisableAction::NoServiceFile);
+    }
+
+    #[test]
+    fn test_service_info_with_unknown_status() {
+        let info = zb_io::ServiceInfo {
+            name: "unknown-service".to_string(),
+            status: zb_io::ServiceStatus::Unknown,
+            pid: None,
+            file_path: PathBuf::from("/nonexistent"),
+            auto_start: false,
+        };
+        
+        assert_eq!(determine_enable_action(&info), EnableAction::NoServiceFile);
+    }
+
+    #[test]
+    fn test_format_orphaned_service_list_preserves_order() {
+        let services = vec![
+            zb_io::ServiceInfo {
+                name: "zz-last".to_string(),
+                status: zb_io::ServiceStatus::Stopped,
+                pid: None,
+                file_path: PathBuf::from("/z"),
+                auto_start: false,
+            },
+            zb_io::ServiceInfo {
+                name: "aa-first".to_string(),
+                status: zb_io::ServiceStatus::Stopped,
+                pid: None,
+                file_path: PathBuf::from("/a"),
+                auto_start: false,
+            },
+        ];
+        
+        let result = format_orphaned_service_list(&services);
+        // Should preserve input order, not sort
+        assert_eq!(result[0].0, "zz-last");
+        assert_eq!(result[1].0, "aa-first");
+    }
+
+    // ============================================================================
+    // Path Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_compute_keg_path_empty_strings() {
+        let prefix = PathBuf::from("");
+        let path = compute_keg_path(&prefix, "", "");
+        assert_eq!(path, PathBuf::from("Cellar//"));
+    }
+
+    #[test]
+    fn test_compute_keg_path_special_characters_in_version() {
+        let prefix = PathBuf::from("/opt/zb");
+        let path = compute_keg_path(&prefix, "package", "1.0-beta+build.123");
+        assert_eq!(path, PathBuf::from("/opt/zb/Cellar/package/1.0-beta+build.123"));
+    }
+
+    #[test]
+    fn test_format_expected_log_files_hint_long_paths() {
+        let stdout = PathBuf::from("/very/long/path/to/a/deeply/nested/directory/structure/for/testing/purposes/stdout.log");
+        let stderr = PathBuf::from("/very/long/path/to/a/deeply/nested/directory/structure/for/testing/purposes/stderr.log");
+        let msg = format_expected_log_files_hint(&stdout, &stderr);
+        assert!(msg.contains("stdout.log"));
+        assert!(msg.contains("stderr.log"));
     }
 }
