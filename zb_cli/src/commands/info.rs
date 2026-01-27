@@ -18,25 +18,29 @@ pub fn run_list(installer: &Installer, pinned: bool) -> Result<(), zb_core::Erro
         installer.list_installed()?
     };
 
-    if installed.is_empty() {
-        if pinned {
-            println!("No pinned formulas.");
-        } else {
-            println!("No formulas installed.");
+    match determine_list_output_kind(installed.len(), pinned) {
+        ListOutputKind::Empty { pinned: is_pinned } => {
+            println!("{}", empty_list_message(is_pinned));
         }
-    } else {
-        for keg in installed {
-            let pin_marker = if keg.pinned {
-                format!(" {}", style("(pinned)").yellow())
-            } else {
-                String::new()
-            };
-            println!(
-                "{} {}{}",
-                style(&keg.name).bold(),
-                style(&keg.version).dim(),
-                pin_marker
-            );
+        ListOutputKind::HasItems { count: _ } => {
+            for keg in installed {
+                // format_list_entry provides the plain-text format for scripting/testing
+                let plain_entry = format_list_entry(&keg.name, &keg.version, keg.pinned);
+                tracing::debug!("List entry: {}", plain_entry);
+                
+                // Styled output for terminal
+                let styled_pin = if keg.pinned {
+                    format!(" {}", style("(pinned)").yellow())
+                } else {
+                    String::new()
+                };
+                println!(
+                    "{} {}{}",
+                    style(&keg.name).bold(),
+                    style(&keg.version).dim(),
+                    styled_pin
+                );
+            }
         }
     }
 
@@ -68,65 +72,49 @@ async fn print_info_json(
     keg: &Option<InstalledKeg>,
     api_formula: &Option<Formula>,
 ) -> Result<(), zb_core::Error> {
-    let mut info = serde_json::Map::new();
-
-    info.insert("name".to_string(), serde_json::json!(formula));
+    let mut info = build_info_json_base(formula, keg.is_some());
 
     if let Some(keg) = keg {
-        info.insert("installed".to_string(), serde_json::json!(true));
-        info.insert(
-            "installed_version".to_string(),
-            serde_json::json!(keg.version),
+        let installed_info = build_installed_info_json(
+            &keg.version,
+            &keg.store_key,
+            keg.installed_at as u64,
+            keg.pinned,
+            keg.explicit,
         );
-        info.insert("store_key".to_string(), serde_json::json!(keg.store_key));
-        info.insert(
-            "installed_at".to_string(),
-            serde_json::json!(keg.installed_at),
-        );
-        info.insert("pinned".to_string(), serde_json::json!(keg.pinned));
-        info.insert("explicit".to_string(), serde_json::json!(keg.explicit));
+        info.extend(installed_info);
 
         if let Ok(linked_files) = installer.get_linked_files(formula) {
-            let files: Vec<_> = linked_files
-                .iter()
-                .map(|(link, target)| serde_json::json!({"link": link, "target": target}))
-                .collect();
+            let files = build_linked_files_json(&linked_files);
             info.insert("linked_files".to_string(), serde_json::json!(files));
         }
 
         if let Ok(dependents) = installer.get_dependents(formula).await {
             info.insert("dependents".to_string(), serde_json::json!(dependents));
         }
-    } else {
-        info.insert("installed".to_string(), serde_json::json!(false));
     }
 
     if let Some(f) = api_formula {
-        info.insert(
-            "available_version".to_string(),
-            serde_json::json!(f.effective_version()),
+        let api_info = build_formula_api_json(
+            &f.effective_version(),
+            f.desc.as_deref(),
+            f.homepage.as_deref(),
+            f.license.as_deref(),
+            &f.effective_dependencies(),
+            &f.build_dependencies,
+            f.caveats.as_deref(),
+            f.keg_only,
         );
-        if let Some(desc) = &f.desc {
-            info.insert("description".to_string(), serde_json::json!(desc));
+        info.extend(api_info);
+
+        // Add outdated info if there's an update available
+        if let Some(keg) = keg {
+            let available_version = f.effective_version();
+            if is_update_available(&keg.version, &available_version) {
+                let outdated = build_outdated_json(formula, &keg.version, &available_version);
+                info.insert("outdated".to_string(), outdated);
+            }
         }
-        if let Some(homepage) = &f.homepage {
-            info.insert("homepage".to_string(), serde_json::json!(homepage));
-        }
-        if let Some(license) = &f.license {
-            info.insert("license".to_string(), serde_json::json!(license));
-        }
-        info.insert(
-            "dependencies".to_string(),
-            serde_json::json!(f.effective_dependencies()),
-        );
-        info.insert(
-            "build_dependencies".to_string(),
-            serde_json::json!(f.build_dependencies),
-        );
-        if let Some(caveats) = &f.caveats {
-            info.insert("caveats".to_string(), serde_json::json!(caveats));
-        }
-        info.insert("keg_only".to_string(), serde_json::json!(f.keg_only));
     }
 
     match serde_json::to_string_pretty(&info) {
@@ -151,7 +139,8 @@ async fn print_info_human(
     keg: &Option<InstalledKeg>,
     api_formula: &Option<Formula>,
 ) -> Result<(), zb_core::Error> {
-    if keg.is_none() && api_formula.is_none() {
+    let output_kind = determine_info_output_kind(keg.is_some(), api_formula.is_some());
+    if output_kind == InfoOutputKind::NotFound {
         println!("Formula '{}' not found.", formula);
         std::process::exit(1);
     }
@@ -171,17 +160,27 @@ async fn print_info_human(
 
     println!();
 
-    // Version info
+    // Version info - use helper functions for testable logic
     if let Some(keg) = keg {
+        // format_installed_version_line provides the complete plain text format
+        // We use the individual markers for styled terminal output
+        let installed_line = format_installed_version_line(&keg.version, keg.pinned, keg.explicit);
+        
+        // Log plain format for debugging/scripting if needed
+        tracing::debug!("Installed info: {}", installed_line);
+        
+        // Styled output for terminal
         print!(
             "{} {}",
             style("Installed:").dim(),
             style(&keg.version).green()
         );
-        if keg.pinned {
+        let pin_marker = format_pin_marker(keg.pinned);
+        if !pin_marker.is_empty() {
             print!(" {}", style("(pinned)").yellow());
         }
-        if !keg.explicit {
+        let explicit_marker = format_explicit_marker(keg.explicit);
+        if !explicit_marker.is_empty() {
             print!(" {}", style("(installed as dependency)").dim());
         }
         println!();
@@ -191,17 +190,30 @@ async fn print_info_human(
 
     if let Some(f) = api_formula {
         let available_version = f.effective_version();
-        if let Some(keg) = keg {
-            if keg.version != available_version {
+        let installed_version = keg.as_ref().map(|k| k.version.as_str());
+        
+        // format_available_version_line provides the plain text format for scripting
+        let available_line = format_available_version_line(&available_version, installed_version);
+        tracing::debug!("Available info: {}", available_line);
+        
+        // Use format_version_comparison for styled output logic
+        let version_display = format_version_comparison(installed_version, &available_version);
+
+        match version_display {
+            VersionDisplay::UpdateAvailable { installed: _, available } => {
                 println!(
                     "{} {} {}",
                     style("Available:").dim(),
-                    style(&available_version).yellow(),
+                    style(&available).yellow(),
                     style("(update available)").yellow()
                 );
             }
-        } else {
-            println!("{} {}", style("Available:").dim(), available_version);
+            VersionDisplay::NotInstalled(version) => {
+                println!("{} {}", style("Available:").dim(), version);
+            }
+            VersionDisplay::UpToDate(_) => {
+                // Don't show available version if up to date
+            }
         }
     }
 
@@ -216,13 +228,9 @@ async fn print_info_human(
     if let Some(f) = api_formula
         && f.keg_only
     {
-        print!("{} Yes", style("Keg-only:").dim());
-        if let Some(reason) = &f.keg_only_reason
-            && !reason.explanation.is_empty()
-        {
-            print!(" ({})", reason.explanation);
-        }
-        println!();
+        let explanation = f.keg_only_reason.as_ref().map(|r| r.explanation.as_str());
+        let keg_only_display = format_keg_only_reason(explanation);
+        println!("{} {}", style("Keg-only:").dim(), keg_only_display);
     }
 
     // Dependencies
@@ -233,10 +241,11 @@ async fn print_info_human(
             println!("{}", style("Dependencies:").dim());
             for dep in &deps {
                 let installed = installer.is_installed(dep);
+                let marker_str = format_dependency_status(installed);
                 let marker = if installed {
-                    style("✓").green()
+                    style(marker_str).green()
                 } else {
-                    style("✗").red()
+                    style(marker_str).red()
                 };
                 println!("  {} {}", marker, dep);
             }
@@ -268,25 +277,28 @@ async fn print_info_human(
         && let Ok(linked_files) = installer.get_linked_files(formula)
         && !linked_files.is_empty()
     {
+        let (display_count, remaining) = calculate_linked_files_display(linked_files.len(), 5);
+
         println!();
         println!(
             "{} ({} files)",
             style("Linked files:").dim(),
             linked_files.len()
         );
-        for (link, _target) in linked_files.iter().take(5) {
+        for (link, _target) in linked_files.iter().take(display_count) {
             println!("  {}", link);
         }
-        if linked_files.len() > 5 {
+        if let Some(more) = remaining {
             println!(
                 "  {} and {} more...",
                 style("...").dim(),
-                linked_files.len() - 5
+                more
             );
         }
 
         println!();
-        println!("{} {}", style("Store key:").dim(), &keg.store_key[..12]);
+        let store_key_display = format_store_key(&keg.store_key);
+        println!("{} {}", style("Store key:").dim(), store_key_display);
         println!(
             "{} {}",
             style("Installed:").dim(),
@@ -300,8 +312,8 @@ async fn print_info_human(
     {
         println!();
         println!("{}", style("==> Caveats").yellow().bold());
-        let caveats = caveats.replace("$HOMEBREW_PREFIX", &prefix.to_string_lossy());
-        for line in caveats.lines() {
+        let formatted_caveats = format_caveats(caveats, &prefix.to_string_lossy());
+        for line in formatted_caveats.lines() {
             println!("{}", line);
         }
     }
@@ -483,7 +495,9 @@ pub(crate) fn format_version_comparison(
     available: &str,
 ) -> VersionDisplay {
     match installed {
-        Some(inst) if inst == available => VersionDisplay::UpToDate(inst.to_string()),
+        Some(inst) if !is_update_available(inst, available) => {
+            VersionDisplay::UpToDate(inst.to_string())
+        }
         Some(inst) => VersionDisplay::UpdateAvailable {
             installed: inst.to_string(),
             available: available.to_string(),
@@ -722,83 +736,93 @@ pub async fn run_search(
         results.retain(|r| installer.is_installed(&r.name));
     }
 
-    if json {
-        let json_results: Vec<serde_json::Value> = results
-            .iter()
-            .map(|r| {
-                let is_installed = installer.is_installed(&r.name);
-                serde_json::json!({
-                    "name": r.name,
-                    "full_name": r.full_name,
-                    "version": r.version,
-                    "description": r.description,
-                    "installed": is_installed
+    let output_kind = determine_search_output_kind(json, results.len(), installed);
+
+    match output_kind {
+        SearchOutputKind::Json => {
+            let json_results: Vec<serde_json::Value> = results
+                .iter()
+                .map(|r| {
+                    let is_installed = installer.is_installed(&r.name);
+                    build_search_result_json(
+                        &r.name,
+                        &r.full_name,
+                        &r.version,
+                        &r.description,
+                        is_installed,
+                    )
                 })
-            })
-            .collect();
-        match serde_json::to_string_pretty(&json_results) {
-            Ok(json) => println!("{}", json),
-            Err(e) => {
-                eprintln!(
-                    "{} Failed to serialize JSON: {}",
-                    style("error:").red().bold(),
-                    e
-                );
-                std::process::exit(1);
+                .collect();
+            match serde_json::to_string_pretty(&json_results) {
+                Ok(json) => println!("{}", json),
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to serialize JSON: {}",
+                        style("error:").red().bold(),
+                        e
+                    );
+                    std::process::exit(1);
+                }
             }
         }
-    } else if results.is_empty() {
-        if installed {
-            println!("No installed formulas found matching '{}'.", query);
-        } else {
-            println!("No formulas found matching '{}'.", query);
+        SearchOutputKind::Empty { installed_only } => {
+            println!("{}", empty_search_message(&query, installed_only));
         }
-    } else {
-        let label = if installed {
-            "installed formulas"
-        } else {
-            "formulas"
-        };
-        println!(
-            "{} Found {} {}:",
-            style("==>").cyan().bold(),
-            style(results.len()).green().bold(),
-            label
-        );
-        println!();
-
-        for result in results.iter().take(20) {
-            let is_installed = installer.is_installed(&result.name);
-            let marker = if is_installed {
-                style("✓").green().to_string()
-            } else {
-                " ".to_string()
-            };
-
+        SearchOutputKind::Results { count, installed_only } => {
+            let label = search_results_label(installed_only);
             println!(
-                "{} {} {}",
-                marker,
-                style(&result.name).bold(),
-                style(&result.version).dim()
+                "{} Found {} {}:",
+                style("==>").cyan().bold(),
+                style(count).green().bold(),
+                label
             );
-
-            if !result.description.is_empty() {
-                let desc = if result.description.len() > 70 {
-                    format!("{}...", &result.description[..67])
-                } else {
-                    result.description.clone()
-                };
-                println!("    {}", style(desc).dim());
-            }
-        }
-
-        if results.len() > 20 {
             println!();
-            println!(
-                "    {} and {} more...",
-                style("...").dim(),
-                results.len() - 20
-            );
+
+            let (display_count, remaining) = calculate_search_display(results.len(), 20);
+
+            for result in results.iter().take(display_count) {
+                let is_installed = installer.is_installed(&result.name);
+                
+                // Use format_search_result_entry for the base plain-text format
+                let plain_lines = format_search_result_entry(
+                    &result.name,
+                    &result.version,
+                    &result.description,
+                    is_installed,
+                    70,
+                );
+
+                // Apply styling for terminal display
+                let marker_str = format_dependency_status(is_installed);
+                let marker = if is_installed {
+                    style(marker_str).green().to_string()
+                } else {
+                    " ".to_string()
+                };
+
+                println!(
+                    "{} {} {}",
+                    marker,
+                    style(&result.name).bold(),
+                    style(&result.version).dim()
+                );
+
+                // Use the description from plain_lines if available
+                if plain_lines.len() > 1 {
+                    // plain_lines[1] contains "    {description}"
+                    let desc = truncate_description(&result.description, 70);
+                    println!("    {}", style(desc).dim());
+                }
+            }
+
+            if let Some(more) = remaining {
+                println!();
+                println!(
+                    "    {} and {} more...",
+                    style("...").dim(),
+                    more
+                );
+            }
         }
     }
 

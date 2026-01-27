@@ -39,14 +39,20 @@ async fn run_install(
     cwd: &std::path::Path,
     file: Option<PathBuf>,
 ) -> Result<(), zb_core::Error> {
-    let brewfile_path = if let Some(path) = file {
-        path
-    } else {
-        installer.find_brewfile(cwd).ok_or_else(|| {
-            zb_core::Error::StoreCorruption {
-                message: "No Brewfile found in current directory or parent directories".to_string(),
-            }
-        })?
+    let brewfile_path = match file {
+        Some(path) => {
+            // Validate explicit path exists
+            validate_brewfile_path(Some(path), cwd).map_err(|e| {
+                zb_core::Error::StoreCorruption { message: e }
+            })?
+        }
+        None => {
+            installer.find_brewfile(cwd).ok_or_else(|| {
+                zb_core::Error::StoreCorruption {
+                    message: format_no_brewfile_error(),
+                }
+            })?
+        }
     };
 
     println!(
@@ -102,14 +108,20 @@ fn run_check(
     file: Option<PathBuf>,
     strict: bool,
 ) -> Result<(), zb_core::Error> {
-    let brewfile_path = if let Some(path) = file {
-        path
-    } else {
-        installer.find_brewfile(cwd).ok_or_else(|| {
-            zb_core::Error::StoreCorruption {
-                message: "No Brewfile found in current directory or parent directories".to_string(),
-            }
-        })?
+    let brewfile_path = match file {
+        Some(path) => {
+            // Validate explicit path exists
+            validate_brewfile_path(Some(path), cwd).map_err(|e| {
+                zb_core::Error::StoreCorruption { message: e }
+            })?
+        }
+        None => {
+            installer.find_brewfile(cwd).ok_or_else(|| {
+                zb_core::Error::StoreCorruption {
+                    message: format_no_brewfile_error(),
+                }
+            })?
+        }
     };
 
     println!(
@@ -134,14 +146,20 @@ fn run_list(
     cwd: &std::path::Path,
     file: Option<PathBuf>,
 ) -> Result<(), zb_core::Error> {
-    let brewfile_path = if let Some(path) = file {
-        path
-    } else {
-        installer.find_brewfile(cwd).ok_or_else(|| {
-            zb_core::Error::StoreCorruption {
-                message: "No Brewfile found in current directory or parent directories".to_string(),
-            }
-        })?
+    let brewfile_path = match file {
+        Some(path) => {
+            // Validate explicit path exists
+            validate_brewfile_path(Some(path), cwd).map_err(|e| {
+                zb_core::Error::StoreCorruption { message: e }
+            })?
+        }
+        None => {
+            installer.find_brewfile(cwd).ok_or_else(|| {
+                zb_core::Error::StoreCorruption {
+                    message: format_no_brewfile_error(),
+                }
+            })?
+        }
     };
 
     let entries = installer.parse_brewfile(&brewfile_path)?;
@@ -177,6 +195,7 @@ pub(crate) fn count_brewfile_entries(entries: &[BrewfileEntry]) -> (usize, usize
 }
 
 /// Format brew entry with args for display.
+#[cfg(test)]
 pub(crate) fn format_brew_entry(name: &str, args: &[String]) -> String {
     if args.is_empty() {
         format!("brew {}", name)
@@ -186,6 +205,7 @@ pub(crate) fn format_brew_entry(name: &str, args: &[String]) -> String {
 }
 
 /// Format tap entry for display.
+#[cfg(test)]
 pub(crate) fn format_tap_entry(name: &str) -> String {
     format!("tap  {}", name)
 }
@@ -228,6 +248,7 @@ pub(crate) fn validate_brewfile_path(
 
 /// Format the install result for display.
 /// Returns formatted output without ANSI color codes for testability.
+#[cfg(test)]
 pub(crate) fn format_install_result_plain(result: &BundleInstallResult) -> String {
     let mut output = String::new();
 
@@ -323,21 +344,21 @@ fn format_install_result(result: &BundleInstallResult) -> String {
 
     // Summary
     output.push('\n');
-    let total_installed = result.taps_added.len() + result.formulas_installed.len();
-    if result.failed.is_empty() {
+    let (total_installed, skipped, failed, has_errors) = compute_install_summary(result);
+    if !has_errors {
         output.push_str(&format!(
             "{} Bundle complete. {} installed, {} already satisfied.\n",
             style("==>").cyan().bold(),
             total_installed,
-            result.formulas_skipped.len()
+            skipped
         ));
     } else {
         output.push_str(&format!(
             "{} Bundle complete with errors. {} installed, {} already satisfied, {} failed.\n",
             style("==>").yellow().bold(),
             total_installed,
-            result.formulas_skipped.len(),
-            result.failed.len()
+            skipped,
+            failed
         ));
     }
 
@@ -345,6 +366,7 @@ fn format_install_result(result: &BundleInstallResult) -> String {
 }
 
 /// Format the check result for display (plain text).
+#[cfg(test)]
 pub(crate) fn format_check_result_plain(result: &BundleCheckResult) -> String {
     let mut output = String::new();
 
@@ -375,7 +397,9 @@ pub(crate) fn format_check_result_plain(result: &BundleCheckResult) -> String {
 fn format_check_result(result: &BundleCheckResult) -> String {
     let mut output = String::new();
 
-    if result.satisfied {
+    let (_missing_taps_count, _missing_formulas_count, all_satisfied) = compute_check_summary(result);
+    
+    if all_satisfied {
         output.push_str(&format!(
             "\n{} All entries are satisfied!\n",
             style("==>").green().bold()
@@ -411,26 +435,18 @@ fn format_check_result(result: &BundleCheckResult) -> String {
 }
 
 /// Format the list output for display (plain text).
+#[cfg(test)]
 pub(crate) fn format_list_output_plain(entries: &[BrewfileEntry]) -> String {
     let mut output = String::new();
     output.push('\n');
 
-    let mut tap_count = 0;
-    let mut brew_count = 0;
-
     for entry in entries {
         match entry {
             BrewfileEntry::Tap { name } => {
-                output.push_str(&format!("tap  {}\n", name));
-                tap_count += 1;
+                output.push_str(&format!("{}\n", format_tap_entry(name)));
             }
             BrewfileEntry::Brew { name, args } => {
-                if args.is_empty() {
-                    output.push_str(&format!("brew {}\n", name));
-                } else {
-                    output.push_str(&format!("brew {} ({})\n", name, args.join(", ")));
-                }
-                brew_count += 1;
+                output.push_str(&format!("{}\n", format_brew_entry(name, args)));
             }
             BrewfileEntry::Comment(_) => {
                 // Skip comments in list output
@@ -438,6 +454,7 @@ pub(crate) fn format_list_output_plain(entries: &[BrewfileEntry]) -> String {
         }
     }
 
+    let (tap_count, brew_count) = count_brewfile_entries(entries);
     output.push_str(&format!("\n==> {} taps, {} formulas\n", tap_count, brew_count));
 
     output
@@ -448,16 +465,17 @@ fn format_list_output(entries: &[BrewfileEntry]) -> String {
     let mut output = String::new();
     output.push('\n');
 
-    let mut tap_count = 0;
-    let mut brew_count = 0;
-
     for entry in entries {
         match entry {
             BrewfileEntry::Tap { name } => {
-                output.push_str(&format!("tap  {}\n", style(name).cyan()));
-                tap_count += 1;
+                // Use format_tap_entry pattern but with colors
+                output.push_str(&format!(
+                    "tap  {}\n",
+                    style(name).cyan()
+                ));
             }
             BrewfileEntry::Brew { name, args } => {
+                // Use format_brew_entry pattern but with colors
                 if args.is_empty() {
                     output.push_str(&format!("brew {}\n", style(name).green()));
                 } else {
@@ -467,7 +485,6 @@ fn format_list_output(entries: &[BrewfileEntry]) -> String {
                         args.join(", ")
                     ));
                 }
-                brew_count += 1;
             }
             BrewfileEntry::Comment(_) => {
                 // Skip comments in list output
@@ -475,6 +492,7 @@ fn format_list_output(entries: &[BrewfileEntry]) -> String {
         }
     }
 
+    let (tap_count, brew_count) = count_brewfile_entries(entries);
     output.push_str(&format!(
         "\n{} {} taps, {} formulas\n",
         style("==>").cyan().bold(),
@@ -504,6 +522,7 @@ pub(crate) fn format_dump_exists_error(path: &std::path::Path) -> String {
 }
 
 /// Format error message when dump file already exists (plain text).
+#[cfg(test)]
 pub(crate) fn format_dump_exists_error_plain(path: &std::path::Path) -> String {
     format!(
         "error: File '{}' already exists. Use --force to overwrite.",

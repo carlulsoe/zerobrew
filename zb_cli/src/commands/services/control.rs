@@ -354,9 +354,9 @@ pub fn run_start(
 ) -> Result<(), zb_core::Error> {
     if !installer.is_installed(formula) {
         eprintln!(
-            "{} Formula '{}' is not installed.",
+            "{} {}",
             style("error:").red().bold(),
-            formula
+            format_not_installed_error(formula)
         );
         std::process::exit(1);
     }
@@ -374,41 +374,37 @@ pub fn run_start(
 
         if let Some(config) = service_manager.detect_service_config(formula, &keg_path) {
             println!(
-                "{} Creating service file for {}...",
+                "{} {}",
                 style("==>").cyan().bold(),
-                style(formula).bold()
+                format_creating_service_message(formula)
             );
             service_manager.create_service(formula, &config)?;
         } else {
             eprintln!(
-                "{} Formula '{}' does not have a service definition.",
+                "{} {}",
                 style("error:").red().bold(),
-                formula
+                format_no_service_definition_error(formula)
             );
             eprintln!();
             eprintln!("    Not all formulas provide services.");
-            eprintln!(
-                "    Check the formula's caveats with: {} info {}",
-                style("zb").cyan(),
-                formula
-            );
+            eprintln!("    {}", format_check_caveats_hint(formula));
             std::process::exit(1);
         }
     }
 
     println!(
-        "{} Starting {}...",
+        "{} {}",
         style("==>").cyan().bold(),
-        style(formula).bold()
+        format_starting_message(formula)
     );
 
     service_manager.start(formula)?;
 
     println!(
-        "{} {} Started {}",
+        "{} {} {}",
         style("==>").cyan().bold(),
         style("✓").green(),
-        style(formula).bold()
+        format_started_message(formula)
     );
 
     Ok(())
@@ -417,18 +413,18 @@ pub fn run_start(
 /// Stop a service.
 pub fn run_stop(service_manager: &ServiceManager, formula: &str) -> Result<(), zb_core::Error> {
     println!(
-        "{} Stopping {}...",
+        "{} {}",
         style("==>").cyan().bold(),
-        style(formula).bold()
+        format_stopping_message(formula)
     );
 
     service_manager.stop(formula)?;
 
     println!(
-        "{} {} Stopped {}",
+        "{} {} {}",
         style("==>").cyan().bold(),
         style("✓").green(),
-        style(formula).bold()
+        format_stopped_message(formula)
     );
 
     Ok(())
@@ -437,18 +433,18 @@ pub fn run_stop(service_manager: &ServiceManager, formula: &str) -> Result<(), z
 /// Restart a service.
 pub fn run_restart(service_manager: &ServiceManager, formula: &str) -> Result<(), zb_core::Error> {
     println!(
-        "{} Restarting {}...",
+        "{} {}",
         style("==>").cyan().bold(),
-        style(formula).bold()
+        format_restarting_message(formula)
     );
 
     service_manager.restart(formula)?;
 
     println!(
-        "{} {} Restarted {}",
+        "{} {} {}",
         style("==>").cyan().bold(),
         style("✓").green(),
-        style(formula).bold()
+        format_restarted_message(formula)
     );
 
     Ok(())
@@ -457,39 +453,41 @@ pub fn run_restart(service_manager: &ServiceManager, formula: &str) -> Result<()
 /// Enable a service to start automatically.
 pub fn run_enable(service_manager: &ServiceManager, formula: &str) -> Result<(), zb_core::Error> {
     let info = service_manager.get_service_info(formula)?;
-    if !info.file_path.exists() {
-        eprintln!(
-            "{} No service file found for '{}'.",
-            style("error:").red().bold(),
-            formula
-        );
-        eprintln!();
-        eprintln!("    Start the service first to create the service file:");
-        eprintln!("    {} services start {}", style("zb").cyan(), formula);
-        std::process::exit(1);
-    }
+    
+    match determine_enable_action(&info) {
+        EnableAction::NoServiceFile => {
+            eprintln!(
+                "{} {}",
+                style("error:").red().bold(),
+                format_no_service_file_error(formula)
+            );
+            eprintln!();
+            eprintln!("    {}", format_start_service_for_enable_hint(formula));
+            std::process::exit(1);
+        }
+        EnableAction::AlreadyEnabled => {
+            println!(
+                "{} {}",
+                style("==>").cyan().bold(),
+                format_already_enabled_message(formula)
+            );
+        }
+        EnableAction::NeedToEnable => {
+            println!(
+                "{} {}",
+                style("==>").cyan().bold(),
+                format_enabling_message(formula)
+            );
 
-    if info.auto_start {
-        println!(
-            "{} {} is already set to start automatically.",
-            style("==>").cyan().bold(),
-            style(formula).bold()
-        );
-    } else {
-        println!(
-            "{} Enabling {} to start automatically...",
-            style("==>").cyan().bold(),
-            style(formula).bold()
-        );
+            service_manager.enable_auto_start(formula)?;
 
-        service_manager.enable_auto_start(formula)?;
-
-        println!(
-            "{} {} Enabled {} - it will start automatically at login",
-            style("==>").cyan().bold(),
-            style("✓").green(),
-            style(formula).bold()
-        );
+            println!(
+                "{} {} {}",
+                style("==>").cyan().bold(),
+                style("✓").green(),
+                format_enabled_message(formula)
+            );
+        }
     }
 
     Ok(())
@@ -498,36 +496,39 @@ pub fn run_enable(service_manager: &ServiceManager, formula: &str) -> Result<(),
 /// Disable a service from starting automatically.
 pub fn run_disable(service_manager: &ServiceManager, formula: &str) -> Result<(), zb_core::Error> {
     let info = service_manager.get_service_info(formula)?;
-    if !info.file_path.exists() {
-        eprintln!(
-            "{} No service file found for '{}'.",
-            style("error:").red().bold(),
-            formula
-        );
-        std::process::exit(1);
-    }
+    
+    match determine_disable_action(&info) {
+        DisableAction::NoServiceFile => {
+            eprintln!(
+                "{} {}",
+                style("error:").red().bold(),
+                format_no_service_file_error(formula)
+            );
+            std::process::exit(1);
+        }
+        DisableAction::NotEnabled => {
+            println!(
+                "{} {}",
+                style("==>").cyan().bold(),
+                format_not_enabled_message(formula)
+            );
+        }
+        DisableAction::NeedToDisable => {
+            println!(
+                "{} {}",
+                style("==>").cyan().bold(),
+                format_disabling_message(formula)
+            );
 
-    if !info.auto_start {
-        println!(
-            "{} {} is not set to start automatically.",
-            style("==>").cyan().bold(),
-            style(formula).bold()
-        );
-    } else {
-        println!(
-            "{} Disabling {} from starting automatically...",
-            style("==>").cyan().bold(),
-            style(formula).bold()
-        );
+            service_manager.disable_auto_start(formula)?;
 
-        service_manager.disable_auto_start(formula)?;
-
-        println!(
-            "{} {} Disabled {} - it will no longer start automatically",
-            style("==>").cyan().bold(),
-            style("✓").green(),
-            style(formula).bold()
-        );
+            println!(
+                "{} {} {}",
+                style("==>").cyan().bold(),
+                style("✓").green(),
+                format_disabled_message(formula)
+            );
+        }
     }
 
     Ok(())
@@ -542,9 +543,9 @@ pub fn run_foreground(
 ) -> Result<(), zb_core::Error> {
     if !installer.is_installed(formula) {
         eprintln!(
-            "{} Formula '{}' is not installed.",
+            "{} {}",
             style("error:").red().bold(),
-            formula
+            format_not_installed_error(formula)
         );
         std::process::exit(1);
     }
@@ -558,14 +559,13 @@ pub fn run_foreground(
 
     if let Some(config) = service_manager.detect_service_config(formula, &keg_path) {
         println!(
-            "{} Running {} in foreground...",
+            "{} {}",
             style("==>").cyan().bold(),
-            style(formula).bold()
+            format_foreground_message(formula)
         );
         println!(
-            "    Command: {} {}",
-            config.program.display(),
-            config.args.join(" ")
+            "    {}",
+            format_foreground_command(&config.program, &config.args)
         );
         println!("    Press Ctrl+C to stop.");
         println!();
@@ -586,17 +586,18 @@ pub fn run_foreground(
         })?;
 
         if !status.success() {
+            let exit_code = parse_exit_code(status.code());
             eprintln!(
-                "\n{} Service exited with status: {}",
+                "\n{} {}",
                 style("==>").cyan().bold(),
-                status.code().unwrap_or(-1)
+                format_service_exited_message(exit_code)
             );
         }
     } else {
         eprintln!(
-            "{} Formula '{}' does not have a service definition.",
+            "{} {}",
             style("error:").red().bold(),
-            formula
+            format_no_service_definition_error(formula)
         );
         std::process::exit(1);
     }
@@ -611,38 +612,42 @@ pub fn run_log(
     lines: usize,
     follow: bool,
 ) -> Result<(), zb_core::Error> {
-    let (stdout_log, stderr_log) = service_manager.get_log_paths(formula);
-
-    if !stdout_log.exists() && !stderr_log.exists() {
-        eprintln!(
-            "{} No log files found for '{}'.",
-            style("error:").red().bold(),
-            formula
-        );
-        eprintln!();
-        eprintln!("    Expected log files:");
-        eprintln!("      {}", stdout_log.display());
-        eprintln!("      {}", stderr_log.display());
-        eprintln!();
-        eprintln!(
-            "    Start the service first with: {} services start {}",
-            style("zb").cyan(),
-            formula
-        );
+    // Validate inputs
+    if let Err(e) = validate_formula_name(formula) {
+        eprintln!("{} {}", style("error:").red().bold(), e);
+        std::process::exit(1);
+    }
+    if let Err(e) = validate_log_lines(lines) {
+        eprintln!("{} {}", style("error:").red().bold(), e);
         std::process::exit(1);
     }
 
-    let log_file = if stdout_log.exists() {
-        &stdout_log
-    } else {
-        &stderr_log
+    let (stdout_log, stderr_log) = service_manager.get_log_paths(formula);
+
+    let log_file = match select_log_file(&stdout_log, &stderr_log) {
+        None => {
+            eprintln!(
+                "{} {}",
+                style("error:").red().bold(),
+                format_no_log_files_error(formula)
+            );
+            eprintln!();
+            eprintln!("    {}", format_expected_log_files_hint(&stdout_log, &stderr_log));
+            eprintln!();
+            eprintln!("    {}", format_start_service_hint(formula));
+            std::process::exit(1);
+        }
+        Some(path) => path,
     };
+
+    // Determine which log file was chosen for later use
+    let log_choice = determine_log_file(stdout_log.exists(), stderr_log.exists());
 
     if follow {
         println!(
-            "{} Following logs for {} (Ctrl+C to stop)...",
+            "{} {}",
             style("==>").cyan().bold(),
-            style(formula).bold()
+            format_log_follow_header(formula)
         );
         println!("    {}", log_file.display());
         println!();
@@ -656,14 +661,13 @@ pub fn run_log(
         })?;
 
         if !status.success() {
-            std::process::exit(status.code().unwrap_or(1));
+            std::process::exit(parse_exit_code(status.code()));
         }
     } else {
         println!(
-            "{} Logs for {} (last {} lines):",
+            "{} {}",
             style("==>").cyan().bold(),
-            style(formula).bold(),
-            lines
+            format_log_header(formula, lines)
         );
         println!("    {}", log_file.display());
         println!();
@@ -677,12 +681,14 @@ pub fn run_log(
             println!("{}", line);
         }
 
-        if stderr_log.exists() && stderr_log != *log_file {
-            println!();
-            println!(
-                "    Note: Error log also exists at {}",
-                stderr_log.display()
-            );
+        if let Some(choice) = log_choice {
+            if should_show_stderr_note(&choice, stderr_log.exists()) {
+                println!();
+                println!(
+                    "    Note: Error log also exists at {}",
+                    stderr_log.display()
+                );
+            }
         }
     }
 
@@ -704,35 +710,35 @@ pub fn run_cleanup(
     let orphaned = service_manager.find_orphaned_services(&installed)?;
 
     if orphaned.is_empty() {
-        println!("{} No orphaned services found.", style("==>").cyan().bold());
+        println!("{} {}", style("==>").cyan().bold(), format_no_orphaned_services_message());
         return Ok(());
     }
 
     if dry_run {
         println!(
-            "{} Would remove {} orphaned service{}:",
+            "{} {}:",
             style("==>").cyan().bold(),
-            orphaned.len(),
-            if orphaned.len() == 1 { "" } else { "s" }
+            format_orphan_count_message(orphaned.len(), true)
         );
         println!();
 
-        for service in &orphaned {
-            println!("    {}", service.name);
-            println!("        {}", style(service.file_path.display()).dim());
+        let formatted = format_orphaned_service_list(&orphaned);
+        for (name, path) in &formatted {
+            println!("    {}", name);
+            println!("        {}", style(path).dim());
         }
 
         println!();
         println!(
-            "    → Run {} services cleanup to remove",
-            style("zb").cyan()
+            "    → {} {}",
+            style("zb").cyan(),
+            format_cleanup_dry_run_prompt()
         );
     } else {
         println!(
-            "{} Removing {} orphaned service{}...",
+            "{} {}...",
             style("==>").cyan().bold(),
-            orphaned.len(),
-            if orphaned.len() == 1 { "" } else { "s" }
+            format_orphan_count_message(orphaned.len(), false)
         );
         println!();
 
@@ -744,10 +750,9 @@ pub fn run_cleanup(
 
         println!();
         println!(
-            "{} Removed {} orphaned service{}",
+            "{} {}",
             style("==>").cyan().bold(),
-            count,
-            if count == 1 { "" } else { "s" }
+            format_cleanup_complete_message(count)
         );
     }
 

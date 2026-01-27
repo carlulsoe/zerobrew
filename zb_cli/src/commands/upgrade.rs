@@ -21,67 +21,60 @@ pub async fn run_outdated(installer: &mut Installer, json: bool) -> Result<(), z
     let pinned = installer.list_pinned()?;
     let pinned_count = pinned.len();
 
-    if json {
-        let json_output: Vec<serde_json::Value> = outdated
-            .iter()
-            .map(|pkg| {
-                serde_json::json!({
-                    "name": pkg.name,
-                    "installed_version": pkg.installed_version,
-                    "available_version": pkg.available_version
-                })
-            })
-            .collect();
-        match serde_json::to_string_pretty(&json_output) {
-            Ok(json) => println!("{}", json),
-            Err(e) => {
-                eprintln!(
-                    "{} Failed to serialize JSON: {}",
-                    style("error:").red().bold(),
-                    e
-                );
-                std::process::exit(1);
+    let output_kind = determine_outdated_output_kind(json, outdated.len(), pinned_count);
+
+    match output_kind {
+        OutdatedOutputKind::Json => {
+            let json_output = build_outdated_json(&outdated);
+            match serde_json::to_string_pretty(&json_output) {
+                Ok(json_str) => println!("{}", json_str),
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to serialize JSON: {}",
+                        style("error:").red().bold(),
+                        e
+                    );
+                    std::process::exit(1);
+                }
             }
         }
-    } else if outdated.is_empty() {
-        println!("All packages are up to date.");
-        if pinned_count > 0 {
-            println!(
-                "    {} {} pinned packages not checked",
-                style("→").dim(),
-                pinned_count
-            );
+        OutdatedOutputKind::AllUpToDate { pinned_count } => {
+            let (main_msg, pinned_msg) = format_all_up_to_date_message(pinned_count);
+            println!("{}", main_msg);
+            if let Some(msg) = pinned_msg {
+                println!("    {} {}", style("→").dim(), msg);
+            }
         }
-    } else {
-        println!(
-            "{} {} outdated packages:",
-            style("==>").cyan().bold(),
-            style(outdated.len()).yellow().bold()
-        );
-        println!();
-
-        for pkg in &outdated {
+        OutdatedOutputKind::HasOutdated {
+            outdated_count,
+            pinned_count,
+        } => {
             println!(
-                "  {} {} → {}",
-                style(&pkg.name).bold(),
-                style(&pkg.installed_version).red(),
-                style(&pkg.available_version).green()
+                "{} {}",
+                style("==>").cyan().bold(),
+                style(format_outdated_header(outdated_count)).yellow().bold()
             );
-        }
+            println!();
 
-        println!();
-        println!(
-            "    {} Run {} to upgrade all",
-            style("→").cyan(),
-            style("zb upgrade").cyan()
-        );
-        if pinned_count > 0 {
+            let sorted = sort_outdated_packages(outdated);
+            for pkg in &sorted {
+                println!(
+                    "  {} {} → {}",
+                    style(&pkg.name).bold(),
+                    style(&pkg.installed_version).red(),
+                    style(&pkg.available_version).green()
+                );
+            }
+
+            println!();
             println!(
-                "    {} {} pinned packages not shown (use {} to see them)",
-                style("→").dim(),
-                pinned_count,
-                style("zb list --pinned").dim()
+                "    {} {}",
+                style("→").cyan(),
+                style(format_upgrade_suggestion()).cyan()
             );
+            if pinned_count > 0 {
+                println!("    {} {}", style("→").dim(), format_pinned_footer(pinned_count));
+            }
         }
     }
 
@@ -97,78 +90,81 @@ pub async fn run_upgrade(
     let start = Instant::now();
 
     // Get list of packages to upgrade
-    let to_upgrade = if let Some(ref name) = formula {
-        let outdated = installer.get_outdated().await?;
-        outdated
-            .into_iter()
-            .filter(|p| p.name == *name)
-            .collect::<Vec<_>>()
-    } else {
-        installer.get_outdated().await?
-    };
+    let outdated = installer.get_outdated().await?;
+    let to_upgrade = filter_outdated_by_name(outdated, formula.as_deref());
 
-    if to_upgrade.is_empty() {
-        if let Some(ref name) = formula {
-            if installer.is_installed(name) {
+    // Check if formula is installed (for status messages)
+    let is_installed = formula
+        .as_ref()
+        .map(|name| installer.is_installed(name))
+        .unwrap_or(true);
+
+    let output_kind =
+        determine_upgrade_output_kind(formula.as_deref(), is_installed, to_upgrade.len(), dry_run);
+
+    match output_kind {
+        UpgradeOutputKind::NotInstalled { formula } => {
+            println!(
+                "{} {}",
+                style("==>").cyan().bold(),
+                get_upgrade_status_message(Some(&formula), false, false)
+            );
+            return Ok(());
+        }
+        UpgradeOutputKind::AlreadyUpToDate { formula } => {
+            println!(
+                "{} {}",
+                style("==>").cyan().bold(),
+                get_upgrade_status_message(Some(&formula), true, false)
+            );
+            return Ok(());
+        }
+        UpgradeOutputKind::AllUpToDate => {
+            println!(
+                "{} {}",
+                style("==>").cyan().bold(),
+                get_upgrade_status_message(None, true, false)
+            );
+            return Ok(());
+        }
+        UpgradeOutputKind::DryRun { count } => {
+            println!(
+                "{} {}",
+                style("==>").cyan().bold(),
+                style(format_dry_run_header(count)).yellow().bold()
+            );
+            println!();
+            for pkg in &to_upgrade {
                 println!(
-                    "{} {} is already up to date.",
-                    style("==>").cyan().bold(),
-                    style(name).bold()
-                );
-            } else {
-                println!(
-                    "{} {} is not installed.",
-                    style("==>").cyan().bold(),
-                    style(name).bold()
+                    "  {} {} → {}",
+                    style(&pkg.name).bold(),
+                    style(&pkg.installed_version).red(),
+                    style(&pkg.available_version).green()
                 );
             }
-        } else {
+            return Ok(());
+        }
+        UpgradeOutputKind::Upgrade { count } => {
             println!(
-                "{} All packages are up to date.",
-                style("==>").cyan().bold()
+                "{} {}",
+                style("==>").cyan().bold(),
+                style(format_upgrade_header(count)).yellow().bold()
             );
         }
-        return Ok(());
     }
-
-    if dry_run {
-        println!(
-            "{} Would upgrade {} packages:",
-            style("==>").cyan().bold(),
-            style(to_upgrade.len()).yellow().bold()
-        );
-        println!();
-        for pkg in &to_upgrade {
-            println!(
-                "  {} {} → {}",
-                style(&pkg.name).bold(),
-                style(&pkg.installed_version).red(),
-                style(&pkg.available_version).green()
-            );
-        }
-        return Ok(());
-    }
-
-    println!(
-        "{} Upgrading {} packages...",
-        style("==>").cyan().bold(),
-        style(to_upgrade.len()).yellow().bold()
-    );
 
     let multi = MultiProgress::new();
     let styles = ProgressStyles::default();
     let (progress_callback, bars) = create_progress_callback(multi, styles, "upgraded");
 
-    // Perform the upgrades
-    let mut upgraded_packages = Vec::new();
+    // Perform the upgrades using UpgradeSummary to track results
+    let mut summary = UpgradeSummary::new();
     for pkg in &to_upgrade {
         println!();
         println!(
-            "{} Upgrading {} {} → {}...",
+            "{} {}",
             style("==>").cyan().bold(),
-            style(&pkg.name).bold(),
-            style(&pkg.installed_version).red(),
-            style(&pkg.available_version).green()
+            format_upgrade_announcement(&pkg.name, &pkg.installed_version, &pkg.available_version)
         );
 
         match installer
@@ -176,22 +172,23 @@ pub async fn run_upgrade(
             .await
         {
             Ok(Some((old_ver, new_ver))) => {
-                upgraded_packages.push((pkg.name.clone(), old_ver, new_ver));
+                summary.record_success(pkg.name.clone(), old_ver, new_ver);
             }
             Ok(None) => {
                 println!(
-                    "    {} {} is already up to date",
+                    "    {} {}",
                     style("✓").green(),
-                    pkg.name
+                    format_upgrade_success(&pkg.name)
                 );
+                summary.record_up_to_date(pkg.name.clone());
             }
             Err(e) => {
                 eprintln!(
-                    "    {} Failed to upgrade {}: {}",
+                    "    {} {}",
                     style("✗").red(),
-                    pkg.name,
-                    e
+                    format_upgrade_failure(&pkg.name, &e.to_string())
                 );
+                summary.record_failure(pkg.name.clone(), e.to_string());
             }
         }
     }
@@ -200,22 +197,25 @@ pub async fn run_upgrade(
 
     let elapsed = start.elapsed();
     println!();
-    if upgraded_packages.is_empty() {
-        println!("{} No packages were upgraded.", style("==>").cyan().bold());
+    if !summary.has_upgrades() {
+        println!(
+            "{} {}",
+            style("==>").cyan().bold(),
+            format_no_upgrades_message()
+        );
     } else {
         println!(
-            "{} Upgraded {} packages in {:.2}s:",
+            "{} {}",
             style("==>").cyan().bold(),
-            style(upgraded_packages.len()).green().bold(),
-            elapsed.as_secs_f64()
+            style(format_upgrade_summary(summary.upgraded_count(), elapsed.as_secs_f64()))
+                .green()
+                .bold()
         );
-        for (name, old_ver, new_ver) in &upgraded_packages {
+        for (name, old_ver, new_ver) in &summary.upgraded {
             println!(
-                "    {} {} {} → {}",
+                "    {} {}",
                 style("✓").green(),
-                style(name).bold(),
-                style(old_ver).dim(),
-                style(new_ver).green()
+                format_upgraded_package(name, old_ver, new_ver)
             );
         }
     }
@@ -225,19 +225,28 @@ pub async fn run_upgrade(
 
 /// Run the pin command.
 pub fn run_pin(installer: &mut Installer, formula: &str) -> Result<(), zb_core::Error> {
+    if !is_valid_formula_name(formula) {
+        eprintln!(
+            "{} Invalid formula name: {}",
+            style("error:").red().bold(),
+            formula
+        );
+        std::process::exit(1);
+    }
+
     match installer.pin(formula) {
         Ok(true) => {
             println!(
-                "{} Pinned {} - it will not be upgraded",
+                "{} {}",
                 style("==>").cyan().bold(),
-                style(formula).green().bold()
+                format_pin_status_message(formula, true)
             );
         }
         Ok(false) => {
-            println!("Formula '{}' is not installed.", formula);
+            println!("{}", format_not_installed_error(formula));
         }
         Err(zb_core::Error::NotInstalled { .. }) => {
-            println!("Formula '{}' is not installed.", formula);
+            println!("{}", format_not_installed_error(formula));
             std::process::exit(1);
         }
         Err(e) => return Err(e),
@@ -247,19 +256,28 @@ pub fn run_pin(installer: &mut Installer, formula: &str) -> Result<(), zb_core::
 
 /// Run the unpin command.
 pub fn run_unpin(installer: &mut Installer, formula: &str) -> Result<(), zb_core::Error> {
+    if !is_valid_formula_name(formula) {
+        eprintln!(
+            "{} Invalid formula name: {}",
+            style("error:").red().bold(),
+            formula
+        );
+        std::process::exit(1);
+    }
+
     match installer.unpin(formula) {
         Ok(true) => {
             println!(
-                "{} Unpinned {} - it will be upgraded when outdated",
+                "{} {}",
                 style("==>").cyan().bold(),
-                style(formula).green().bold()
+                format_pin_status_message(formula, false)
             );
         }
         Ok(false) => {
-            println!("Formula '{}' is not installed.", formula);
+            println!("{}", format_not_installed_error(formula));
         }
         Err(zb_core::Error::NotInstalled { .. }) => {
-            println!("Formula '{}' is not installed.", formula);
+            println!("{}", format_not_installed_error(formula));
             std::process::exit(1);
         }
         Err(e) => return Err(e),
@@ -281,7 +299,8 @@ pub(crate) fn filter_outdated_by_name(
 }
 
 /// Format an outdated package as a version transition string.
-/// Extracted for testability.
+/// Extracted for testability. Used in tests and available for logging/API output.
+#[allow(dead_code)]
 pub(crate) fn format_version_transition(
     name: &str,
     old_version: &str,
@@ -373,7 +392,8 @@ pub(crate) fn format_pin_status_message(formula: &str, pinned: bool) -> String {
 }
 
 /// Check if any packages need upgrading.
-/// Extracted for testability.
+/// Extracted for testability. Used in tests and available for programmatic checks.
+#[allow(dead_code)]
 pub(crate) fn has_upgrades(outdated: &[zb_core::version::OutdatedPackage]) -> bool {
     !outdated.is_empty()
 }
@@ -429,7 +449,8 @@ pub(crate) fn format_no_upgrades_message() -> String {
 }
 
 /// Format a single outdated package display line.
-/// Extracted for testability.
+/// Extracted for testability. Used in tests and available for plain-text output.
+#[allow(dead_code)]
 pub(crate) fn format_outdated_package_line(
     name: &str,
     installed: &str,
@@ -566,6 +587,7 @@ impl UpgradeSummary {
     }
 
     /// Get the count of failed upgrades.
+    #[allow(dead_code)]
     pub fn failed_count(&self) -> usize {
         self.failed.len()
     }
@@ -576,18 +598,21 @@ impl UpgradeSummary {
     }
 
     /// Check if any upgrades failed.
+    #[allow(dead_code)]
     pub fn has_failures(&self) -> bool {
         !self.failed.is_empty()
     }
 
     /// Get total attempted upgrades.
+    #[allow(dead_code)]
     pub fn total_attempted(&self) -> usize {
         self.upgraded.len() + self.already_up_to_date.len() + self.failed.len()
     }
 }
 
 /// Format the complete upgrade summary output.
-/// Extracted for testability.
+/// Extracted for testability. Used in tests and available for batch output formatting.
+#[allow(dead_code)]
 pub(crate) fn format_upgrade_summary_output(
     summary: &UpgradeSummary,
     elapsed_secs: f64,
@@ -615,7 +640,8 @@ pub(crate) fn format_upgrade_summary_output(
 }
 
 /// Format the dry-run output lines.
-/// Extracted for testability.
+/// Extracted for testability. Used in tests and available for batch output formatting.
+#[allow(dead_code)]
 pub(crate) fn format_dry_run_output(
     packages: &[zb_core::version::OutdatedPackage],
 ) -> Vec<String> {
@@ -634,7 +660,8 @@ pub(crate) fn format_dry_run_output(
 /// Check if a package should be excluded from upgrade due to pinning.
 /// In the current implementation, pinned packages are excluded at the Installer level,
 /// but this function documents the logic.
-/// Extracted for testability.
+/// Extracted for testability. Used in tests and available for custom filtering.
+#[allow(dead_code)]
 pub(crate) fn should_exclude_pinned(
     package_name: &str,
     pinned_packages: &[String],
@@ -652,7 +679,8 @@ pub(crate) fn sort_outdated_packages(
 }
 
 /// Group packages by their version change type.
-/// Extracted for testability.
+/// Extracted for testability. Used in tests and available for version analysis features.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VersionChangeType {
     /// Major version bump (e.g., 1.x.x -> 2.x.x)
@@ -666,7 +694,8 @@ pub(crate) enum VersionChangeType {
 }
 
 /// Determine the type of version change between two versions.
-/// Extracted for testability.
+/// Extracted for testability. Used in tests and available for version analysis features.
+#[allow(dead_code)]
 pub(crate) fn classify_version_change(old_version: &str, new_version: &str) -> VersionChangeType {
     let old_parts: Vec<&str> = old_version.split('.').collect();
     let new_parts: Vec<&str> = new_version.split('.').collect();
@@ -730,7 +759,8 @@ pub(crate) fn classify_version_change(old_version: &str, new_version: &str) -> V
 }
 
 /// Count packages by version change type.
-/// Extracted for testability.
+/// Extracted for testability. Used in tests and available for version analysis features.
+#[allow(dead_code)]
 pub(crate) fn count_by_change_type(
     packages: &[zb_core::version::OutdatedPackage],
 ) -> (usize, usize, usize, usize) {
