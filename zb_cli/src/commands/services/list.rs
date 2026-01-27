@@ -161,10 +161,11 @@ pub fn run_info(service_manager: &ServiceManager, formula: &str) -> Result<(), z
         println!("PID:           {}", pid);
     }
 
+    let auto_start_text = format_auto_start_display(info.auto_start);
     let auto_start_display = if info.auto_start {
-        style("yes").green().to_string()
+        style(auto_start_text).green().to_string()
     } else {
-        style("no").dim().to_string()
+        style(auto_start_text).dim().to_string()
     };
     println!("Auto-start:    {}", auto_start_display);
 
