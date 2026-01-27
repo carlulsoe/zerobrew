@@ -1,3 +1,7 @@
+// Allow collapsible_if for macOS-specific service code that uses nested if-lets
+// These are intentionally separate for readability in plist/launchd parsing
+#![allow(clippy::collapsible_if)]
+
 //! I/O layer for zerobrew - a fast Homebrew-compatible package manager.
 //!
 //! This crate provides the core I/O and orchestration functionality:
