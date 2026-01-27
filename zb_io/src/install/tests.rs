@@ -4885,10 +4885,10 @@ mod orphan_tests {
         assert!(orphans.contains(&"chain_d".to_string()));
     }
 
-    /// Test that mark_explicit returns Ok(false) when package is already explicit.
-    /// And mark_dependency returns Ok(false) when package is already a dependency.
+    /// Test that mark_explicit and mark_dependency are safe to call multiple times.
+    /// They return Ok(true) if the package exists (rows affected), regardless of current state.
     #[tokio::test]
-    async fn test_mark_idempotent() {
+    async fn test_mark_idempotent_safety() {
         let mut ctx = TestContext::new().await;
         
         mount_formula_with_deps(&ctx, "idem_lib", "1.0.0", &[]).await;
@@ -4896,13 +4896,24 @@ mod orphan_tests {
         
         ctx.installer_mut().install("idem_app", true).await.unwrap();
         
-        // idem_app is already explicit - marking it again should return Ok(false)
-        let changed = ctx.installer().mark_explicit("idem_app").unwrap();
-        assert!(!changed, "mark_explicit on already explicit should return false");
+        // idem_app is already explicit - marking it again should succeed
+        let result = ctx.installer().mark_explicit("idem_app").unwrap();
+        assert!(result, "mark_explicit on installed package should return true");
+        assert!(ctx.installer().is_explicit("idem_app"));
         
-        // idem_lib is already a dependency - marking it again should return Ok(false)
-        let changed = ctx.installer().mark_dependency("idem_lib").unwrap();
-        assert!(!changed, "mark_dependency on already dependency should return false");
+        // idem_lib is already a dependency - marking it again should succeed
+        let result = ctx.installer().mark_dependency("idem_lib").unwrap();
+        assert!(result, "mark_dependency on installed package should return true");
+        assert!(!ctx.installer().is_explicit("idem_lib"));
+        
+        // Multiple calls should be safe and maintain state
+        ctx.installer().mark_explicit("idem_lib").unwrap();
+        ctx.installer().mark_explicit("idem_lib").unwrap();
+        assert!(ctx.installer().is_explicit("idem_lib"));
+        
+        ctx.installer().mark_dependency("idem_lib").unwrap();
+        ctx.installer().mark_dependency("idem_lib").unwrap();
+        assert!(!ctx.installer().is_explicit("idem_lib"));
     }
 }
 
