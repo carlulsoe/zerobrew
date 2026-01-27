@@ -36,6 +36,12 @@ impl Database {
             message: format!("failed to open database: {e}"),
         })?;
 
+        // Enable foreign key enforcement
+        conn.execute("PRAGMA foreign_keys = ON", [])
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to enable foreign keys: {e}"),
+            })?;
+
         Self::init_schema(&conn)?;
 
         Ok(Self { conn })
@@ -45,6 +51,12 @@ impl Database {
         let conn = Connection::open_in_memory().map_err(|e| Error::StoreCorruption {
             message: format!("failed to open in-memory database: {e}"),
         })?;
+
+        // Enable foreign key enforcement
+        conn.execute("PRAGMA foreign_keys = ON", [])
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to enable foreign keys: {e}"),
+            })?;
 
         Self::init_schema(&conn)?;
 
@@ -65,7 +77,7 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS store_refs (
                 store_key TEXT PRIMARY KEY,
-                refcount INTEGER NOT NULL DEFAULT 1
+                refcount INTEGER NOT NULL DEFAULT 1 CHECK(refcount >= 0)
             );
 
             CREATE TABLE IF NOT EXISTS keg_files (
@@ -836,11 +848,11 @@ impl<'a> InstallTransaction<'a> {
                 message: format!("failed to remove keg files records: {e}"),
             })?;
 
-        // Decrement store ref if we had one
+        // Decrement store ref if we had one (clamped to 0 to prevent negative values)
         if let Some(ref key) = store_key {
             self.tx
                 .execute(
-                    "UPDATE store_refs SET refcount = refcount - 1 WHERE store_key = ?1",
+                    "UPDATE store_refs SET refcount = MAX(refcount - 1, 0) WHERE store_key = ?1",
                     params![key],
                 )
                 .map_err(|e| Error::StoreCorruption {
