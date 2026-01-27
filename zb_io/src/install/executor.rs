@@ -13,7 +13,7 @@ use crate::progress::{InstallProgress, ProgressCallback};
 
 use zb_core::{Error, Formula, SelectedBottle};
 
-use super::{CleanupResult, Installer, InstallPlan, ProcessedPackage, MAX_CORRUPTION_RETRIES};
+use super::{CleanupResult, InstallPlan, Installer, MAX_CORRUPTION_RETRIES, ProcessedPackage};
 
 /// Result of executing an install plan
 #[derive(Debug)]
@@ -505,8 +505,8 @@ mod tests {
     }
 
     fn create_bottle_tarball(formula_name: &str) -> Vec<u8> {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::io::Write;
         use tar::Builder;
 
@@ -538,10 +538,7 @@ mod tests {
     }
 
     /// Create an Installer for testing with a mock server
-    fn create_test_installer_for_executor(
-        mock_server: &MockServer,
-        tmp: &TempDir,
-    ) -> Installer {
+    fn create_test_installer_for_executor(mock_server: &MockServer, tmp: &TempDir) -> Installer {
         let root = tmp.path().join("zerobrew");
         let prefix = tmp.path().join("homebrew");
         fs::create_dir_all(root.join("db")).unwrap();

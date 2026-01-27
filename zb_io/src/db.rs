@@ -1866,7 +1866,10 @@ mod tests {
             .unwrap();
 
         // Initial: stopped
-        assert_eq!(db.get_service("zerobrew.status-test").unwrap().status, "stopped");
+        assert_eq!(
+            db.get_service("zerobrew.status-test").unwrap().status,
+            "stopped"
+        );
 
         // Transition: stopped -> running
         db.update_service_status("zerobrew.status-test", "running", Some(1000))
@@ -1948,18 +1951,12 @@ mod tests {
             .unwrap();
 
         // With dashes
-        db.add_tap(
-            "user/my-tap",
-            "https://github.com/user/homebrew-my-tap",
-        )
-        .unwrap();
+        db.add_tap("user/my-tap", "https://github.com/user/homebrew-my-tap")
+            .unwrap();
 
         // Longer path
-        db.add_tap(
-            "org/team/repo",
-            "https://github.com/org/team-homebrew-repo",
-        )
-        .unwrap();
+        db.add_tap("org/team/repo", "https://github.com/org/team-homebrew-repo")
+            .unwrap();
 
         let taps = db.list_taps().unwrap();
         assert_eq!(taps.len(), 3);
@@ -1975,8 +1972,7 @@ mod tests {
 
         /// Strategy to generate valid package names
         fn package_name_strategy() -> impl Strategy<Value = String> {
-            "[a-z][a-z0-9_-]{0,15}"
-                .prop_filter("non-empty", |s| !s.is_empty())
+            "[a-z][a-z0-9_-]{0,15}".prop_filter("non-empty", |s| !s.is_empty())
         }
 
         /// Strategy to generate version strings

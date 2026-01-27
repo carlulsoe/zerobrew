@@ -178,7 +178,10 @@ fn test_detect_service_config_returns_none_when_no_binary() {
     fs::create_dir_all(&keg_path).unwrap();
 
     let config = manager.detect_service_config("libfoo", &keg_path);
-    assert!(config.is_none(), "Should not detect service config for library-only formula");
+    assert!(
+        config.is_none(),
+        "Should not detect service config for library-only formula"
+    );
 }
 
 // ============================================================================
@@ -258,8 +261,14 @@ fn test_generate_service_file_linux_basic() {
 
     // Verify systemd unit file structure
     assert!(content.contains("[Unit]"), "Should have [Unit] section");
-    assert!(content.contains("[Service]"), "Should have [Service] section");
-    assert!(content.contains("[Install]"), "Should have [Install] section");
+    assert!(
+        content.contains("[Service]"),
+        "Should have [Service] section"
+    );
+    assert!(
+        content.contains("[Install]"),
+        "Should have [Install] section"
+    );
     assert!(
         content.contains("Description=Zerobrew: redis"),
         "Should have description"
@@ -353,7 +362,10 @@ fn test_generate_service_file_with_environment() {
     let service_file = service_dir.join("zerobrew.redis.service");
     let content = fs::read_to_string(&service_file).unwrap();
 
-    assert!(content.contains("Environment="), "Should have environment variables");
+    assert!(
+        content.contains("Environment="),
+        "Should have environment variables"
+    );
     assert!(
         content.contains("REDIS_PORT=6379") || content.contains("\"REDIS_PORT=6379\""),
         "Should have REDIS_PORT"
@@ -514,7 +526,10 @@ fn test_find_orphaned_services_empty_service_dir() {
 
     let orphaned = manager.find_orphaned_services(&installed_formulas).unwrap();
 
-    assert!(orphaned.is_empty(), "Should find no orphaned services in empty dir");
+    assert!(
+        orphaned.is_empty(),
+        "Should find no orphaned services in empty dir"
+    );
 }
 
 /// Test orphan detection ignores non-zerobrew service files.
@@ -528,7 +543,11 @@ fn test_find_orphaned_services_ignores_non_zerobrew_files() {
     create_fake_service_file(&service_dir, "redis");
 
     // Create non-zerobrew service files
-    fs::write(service_dir.join("other.service"), "[Unit]\nDescription=Other").unwrap();
+    fs::write(
+        service_dir.join("other.service"),
+        "[Unit]\nDescription=Other",
+    )
+    .unwrap();
     fs::write(
         service_dir.join("someapp.service"),
         "[Unit]\nDescription=Some App",
@@ -591,7 +610,10 @@ fn test_list_services_nonexistent_dir() {
 
     let services = manager.list().unwrap();
 
-    assert!(services.is_empty(), "Should return empty list for nonexistent dir");
+    assert!(
+        services.is_empty(),
+        "Should return empty list for nonexistent dir"
+    );
 }
 
 /// Test that listed services are sorted by name.
@@ -644,10 +666,7 @@ fn test_get_service_info_file_path_linux() {
 
     let info = manager.get_service_info("redis").unwrap();
 
-    assert_eq!(
-        info.file_path,
-        service_dir.join("zerobrew.redis.service")
-    );
+    assert_eq!(info.file_path, service_dir.join("zerobrew.redis.service"));
 }
 
 #[test]

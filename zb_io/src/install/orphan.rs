@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use zb_core::{Error, resolve_closure};
 
-use super::{copy_dir_recursive, Installer};
+use super::{Installer, copy_dir_recursive};
 
 /// Result of a source build operation
 #[derive(Debug, Clone)]

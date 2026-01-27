@@ -227,14 +227,15 @@ mod tests {
 
     // Strategy to generate valid semantic version strings
     fn version_strategy() -> impl Strategy<Value = String> {
-        (1u32..100, 0u32..100, 0u32..100, prop::option::of(1u32..10))
-            .prop_map(|(major, minor, patch, rebuild)| {
+        (1u32..100, 0u32..100, 0u32..100, prop::option::of(1u32..10)).prop_map(
+            |(major, minor, patch, rebuild)| {
                 if let Some(r) = rebuild {
                     format!("{}.{}.{}_{}", major, minor, patch, r)
                 } else {
                     format!("{}.{}.{}", major, minor, patch)
                 }
-            })
+            },
+        )
     }
 
     proptest! {

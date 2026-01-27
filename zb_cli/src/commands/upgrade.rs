@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use zb_io::install::Installer;
 
-use crate::display::{create_progress_callback, finish_progress_bars, ProgressStyles};
+use crate::display::{ProgressStyles, create_progress_callback, finish_progress_bars};
 
 /// Run the outdated command.
 pub async fn run_outdated(installer: &mut Installer, json: bool) -> Result<(), zb_core::Error> {
@@ -52,7 +52,9 @@ pub async fn run_outdated(installer: &mut Installer, json: bool) -> Result<(), z
             println!(
                 "{} {}",
                 style("==>").cyan().bold(),
-                style(format_outdated_header(outdated_count)).yellow().bold()
+                style(format_outdated_header(outdated_count))
+                    .yellow()
+                    .bold()
             );
             println!();
 
@@ -73,7 +75,11 @@ pub async fn run_outdated(installer: &mut Installer, json: bool) -> Result<(), z
                 style(format_upgrade_suggestion()).cyan()
             );
             if pinned_count > 0 {
-                println!("    {} {}", style("→").dim(), format_pinned_footer(pinned_count));
+                println!(
+                    "    {} {}",
+                    style("→").dim(),
+                    format_pinned_footer(pinned_count)
+                );
             }
         }
     }
@@ -207,9 +213,12 @@ pub async fn run_upgrade(
         println!(
             "{} {}",
             style("==>").cyan().bold(),
-            style(format_upgrade_summary(summary.upgraded_count(), elapsed.as_secs_f64()))
-                .green()
-                .bold()
+            style(format_upgrade_summary(
+                summary.upgraded_count(),
+                elapsed.as_secs_f64()
+            ))
+            .green()
+            .bold()
         );
         for (name, old_ver, new_ver) in &summary.upgraded {
             println!(
@@ -451,11 +460,7 @@ pub(crate) fn format_no_upgrades_message() -> String {
 /// Format a single outdated package display line.
 /// Extracted for testability. Used in tests and available for plain-text output.
 #[allow(dead_code)]
-pub(crate) fn format_outdated_package_line(
-    name: &str,
-    installed: &str,
-    available: &str,
-) -> String {
+pub(crate) fn format_outdated_package_line(name: &str, installed: &str, available: &str) -> String {
     format!("{} {} → {}", name, installed, available)
 }
 
@@ -622,15 +627,24 @@ pub(crate) fn format_upgrade_summary_output(
     if summary.upgraded.is_empty() {
         lines.push(format_no_upgrades_message());
     } else {
-        lines.push(format_upgrade_summary(summary.upgraded_count(), elapsed_secs));
+        lines.push(format_upgrade_summary(
+            summary.upgraded_count(),
+            elapsed_secs,
+        ));
         for (name, old_ver, new_ver) in &summary.upgraded {
-            lines.push(format!("    ✓ {}", format_upgraded_package(name, old_ver, new_ver)));
+            lines.push(format!(
+                "    ✓ {}",
+                format_upgraded_package(name, old_ver, new_ver)
+            ));
         }
     }
 
     if !summary.failed.is_empty() {
         lines.push(String::new());
-        lines.push(format!("Failed to upgrade {} packages:", summary.failed_count()));
+        lines.push(format!(
+            "Failed to upgrade {} packages:",
+            summary.failed_count()
+        ));
         for (name, error) in &summary.failed {
             lines.push(format!("    ✗ {}: {}", name, error));
         }
@@ -642,9 +656,7 @@ pub(crate) fn format_upgrade_summary_output(
 /// Format the dry-run output lines.
 /// Extracted for testability. Used in tests and available for batch output formatting.
 #[allow(dead_code)]
-pub(crate) fn format_dry_run_output(
-    packages: &[zb_core::version::OutdatedPackage],
-) -> Vec<String> {
+pub(crate) fn format_dry_run_output(packages: &[zb_core::version::OutdatedPackage]) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format_dry_run_header(packages.len()));
     lines.push(String::new());
@@ -662,10 +674,7 @@ pub(crate) fn format_dry_run_output(
 /// but this function documents the logic.
 /// Extracted for testability. Used in tests and available for custom filtering.
 #[allow(dead_code)]
-pub(crate) fn should_exclude_pinned(
-    package_name: &str,
-    pinned_packages: &[String],
-) -> bool {
+pub(crate) fn should_exclude_pinned(package_name: &str, pinned_packages: &[String]) -> bool {
     pinned_packages.contains(&package_name.to_string())
 }
 
@@ -788,13 +797,16 @@ pub(crate) fn is_valid_formula_name(name: &str) -> bool {
         return false;
     }
     // Must start with a letter
-    if !name.chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+    if !name
+        .chars()
+        .next()
+        .map_or(false, |c| c.is_ascii_alphabetic())
+    {
         return false;
     }
     // Can contain letters, numbers, hyphens, underscores, and @ for versioned formulas
-    name.chars().all(|c| {
-        c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '.'
-    })
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '.')
 }
 
 /// Format the "not installed" error message.
@@ -1378,7 +1390,11 @@ mod tests {
     #[test]
     fn test_upgrade_summary_record_success() {
         let mut summary = UpgradeSummary::new();
-        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_success(
+            "git".to_string(),
+            "2.43.0".to_string(),
+            "2.44.0".to_string(),
+        );
 
         assert_eq!(summary.upgraded.len(), 1);
         assert_eq!(summary.upgraded[0].0, "git");
@@ -1408,8 +1424,16 @@ mod tests {
     #[test]
     fn test_upgrade_summary_upgraded_count() {
         let mut summary = UpgradeSummary::new();
-        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
-        summary.record_success("ripgrep".to_string(), "14.0.0".to_string(), "14.1.0".to_string());
+        summary.record_success(
+            "git".to_string(),
+            "2.43.0".to_string(),
+            "2.44.0".to_string(),
+        );
+        summary.record_success(
+            "ripgrep".to_string(),
+            "14.0.0".to_string(),
+            "14.1.0".to_string(),
+        );
 
         assert_eq!(summary.upgraded_count(), 2);
     }
@@ -1428,7 +1452,11 @@ mod tests {
         let mut summary = UpgradeSummary::new();
         assert!(!summary.has_upgrades());
 
-        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_success(
+            "git".to_string(),
+            "2.43.0".to_string(),
+            "2.44.0".to_string(),
+        );
         assert!(summary.has_upgrades());
     }
 
@@ -1444,7 +1472,11 @@ mod tests {
     #[test]
     fn test_upgrade_summary_total_attempted() {
         let mut summary = UpgradeSummary::new();
-        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_success(
+            "git".to_string(),
+            "2.43.0".to_string(),
+            "2.44.0".to_string(),
+        );
         summary.record_up_to_date("ripgrep".to_string());
         summary.record_failure("jq".to_string(), "error".to_string());
 
@@ -1454,8 +1486,16 @@ mod tests {
     #[test]
     fn test_upgrade_summary_mixed_results() {
         let mut summary = UpgradeSummary::new();
-        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
-        summary.record_success("ripgrep".to_string(), "14.0.0".to_string(), "14.1.0".to_string());
+        summary.record_success(
+            "git".to_string(),
+            "2.43.0".to_string(),
+            "2.44.0".to_string(),
+        );
+        summary.record_success(
+            "ripgrep".to_string(),
+            "14.0.0".to_string(),
+            "14.1.0".to_string(),
+        );
         summary.record_up_to_date("jq".to_string());
         summary.record_failure("curl".to_string(), "checksum mismatch".to_string());
 
@@ -1483,8 +1523,16 @@ mod tests {
     #[test]
     fn test_format_upgrade_summary_output_with_upgrades() {
         let mut summary = UpgradeSummary::new();
-        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
-        summary.record_success("ripgrep".to_string(), "14.0.0".to_string(), "14.1.0".to_string());
+        summary.record_success(
+            "git".to_string(),
+            "2.43.0".to_string(),
+            "2.44.0".to_string(),
+        );
+        summary.record_success(
+            "ripgrep".to_string(),
+            "14.0.0".to_string(),
+            "14.1.0".to_string(),
+        );
 
         let lines = format_upgrade_summary_output(&summary, 5.25);
 
@@ -1497,14 +1545,22 @@ mod tests {
     #[test]
     fn test_format_upgrade_summary_output_with_failures() {
         let mut summary = UpgradeSummary::new();
-        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_success(
+            "git".to_string(),
+            "2.43.0".to_string(),
+            "2.44.0".to_string(),
+        );
         summary.record_failure("ripgrep".to_string(), "network error".to_string());
 
         let lines = format_upgrade_summary_output(&summary, 3.0);
 
         assert!(lines.iter().any(|l| l.contains("Upgraded 1 packages")));
         assert!(lines.iter().any(|l| l.contains("Failed to upgrade 1")));
-        assert!(lines.iter().any(|l| l.contains("ripgrep") && l.contains("network error")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("ripgrep") && l.contains("network error"))
+        );
     }
 
     #[test]
@@ -1690,7 +1746,10 @@ mod tests {
     #[test]
     fn test_classify_version_change_unknown() {
         // Single component versions
-        assert_eq!(classify_version_change("1", "2"), VersionChangeType::Unknown);
+        assert_eq!(
+            classify_version_change("1", "2"),
+            VersionChangeType::Unknown
+        );
         // Non-numeric
         assert_eq!(
             classify_version_change("abc", "def"),
@@ -1867,7 +1926,11 @@ mod tests {
 
         // Actual upgrade would show summary after completion
         let mut summary = UpgradeSummary::new();
-        summary.record_success("git".to_string(), "2.43.0".to_string(), "2.44.0".to_string());
+        summary.record_success(
+            "git".to_string(),
+            "2.43.0".to_string(),
+            "2.44.0".to_string(),
+        );
         let actual_output = format_upgrade_summary_output(&summary, 1.0);
         assert!(actual_output[0].contains("Upgraded"));
     }
@@ -1935,7 +1998,11 @@ mod tests {
             .collect();
 
         assert_eq!(upgradable.len(), 2);
-        assert!(upgradable.iter().all(|p| p.name != "git" && p.name != "node"));
+        assert!(
+            upgradable
+                .iter()
+                .all(|p| p.name != "git" && p.name != "node")
+        );
     }
 
     #[test]

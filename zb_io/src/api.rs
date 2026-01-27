@@ -165,9 +165,7 @@ impl ApiClient {
                                 full_name: f.full_name,
                                 desc: f.description,
                                 homepage: None,
-                                versions: FormulaVersions {
-                                    stable: f.version,
-                                },
+                                versions: FormulaVersions { stable: f.version },
                                 aliases: f.aliases,
                                 deprecated: f.deprecated,
                                 disabled: f.disabled,
@@ -212,9 +210,7 @@ impl ApiClient {
                                 full_name: f.full_name,
                                 desc: f.description,
                                 homepage: None,
-                                versions: FormulaVersions {
-                                    stable: f.version,
-                                },
+                                versions: FormulaVersions { stable: f.version },
                                 aliases: f.aliases,
                                 deprecated: f.deprecated,
                                 disabled: f.disabled,
@@ -267,11 +263,9 @@ impl ApiClient {
                 })
                 .collect();
 
-            if let Err(e) = cache.put_formulas(
-                &cached_formulas,
-                etag.as_deref(),
-                last_modified.as_deref(),
-            ) {
+            if let Err(e) =
+                cache.put_formulas(&cached_formulas, etag.as_deref(), last_modified.as_deref())
+            {
                 eprintln!("    Warning: failed to cache formulas: {}", e);
             }
         }

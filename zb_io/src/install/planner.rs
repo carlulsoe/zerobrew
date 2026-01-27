@@ -187,10 +187,7 @@ mod tests {
     use crate::tap::TapManager;
 
     /// Create an Installer for testing with a mock server
-    fn create_test_installer_for_planner(
-        mock_server: &MockServer,
-        tmp: &TempDir,
-    ) -> Installer {
+    fn create_test_installer_for_planner(mock_server: &MockServer, tmp: &TempDir) -> Installer {
         let root = tmp.path().join("zerobrew");
         let prefix = tmp.path().join("homebrew");
         fs::create_dir_all(root.join("db")).unwrap();

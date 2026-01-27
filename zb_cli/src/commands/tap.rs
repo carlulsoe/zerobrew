@@ -80,10 +80,8 @@ pub async fn run_tap(
         }
         Some(user_repo) => {
             // Add tap
-            let (user, repo) =
-                parse_tap_name(&user_repo).map_err(|message| zb_core::Error::StoreCorruption {
-                    message,
-                })?;
+            let (user, repo) = parse_tap_name(&user_repo)
+                .map_err(|message| zb_core::Error::StoreCorruption { message })?;
 
             println!(
                 "{} Tapping {}...",
@@ -107,10 +105,8 @@ pub async fn run_tap(
 
 /// Run the untap command.
 pub fn run_untap(installer: &mut Installer, user_repo: String) -> Result<(), zb_core::Error> {
-    let (user, repo) =
-        parse_tap_name(&user_repo).map_err(|message| zb_core::Error::StoreCorruption {
-            message,
-        })?;
+    let (user, repo) = parse_tap_name(&user_repo)
+        .map_err(|message| zb_core::Error::StoreCorruption { message })?;
 
     println!(
         "{} Untapping {}...",

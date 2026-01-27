@@ -1282,9 +1282,10 @@ mod tests {
     fn test_service_file_path_linux_versioned() {
         let manager = ServiceManager::new(Path::new("/opt/zerobrew/prefix"));
         let path = manager.service_file_path("postgresql@14");
-        assert!(path
-            .to_string_lossy()
-            .ends_with("zerobrew.postgresql@14.service"));
+        assert!(
+            path.to_string_lossy()
+                .ends_with("zerobrew.postgresql@14.service")
+        );
     }
 
     #[test]
@@ -1395,9 +1396,7 @@ mod tests {
         let content = manager.generate_service_file("redis", &config);
         assert!(content.contains("Environment="));
         // Check both possible orderings since HashMap doesn't guarantee order
-        assert!(
-            content.contains("REDIS_PORT=6379") || content.contains("\"REDIS_PORT=6379\"")
-        );
+        assert!(content.contains("REDIS_PORT=6379") || content.contains("\"REDIS_PORT=6379\""));
         assert!(
             content.contains("REDIS_HOST=localhost")
                 || content.contains("\"REDIS_HOST=localhost\"")
@@ -1437,7 +1436,10 @@ mod tests {
         };
 
         let content = manager.generate_service_file("myapp", &config);
-        assert!(content.contains("ExecStart=/usr/bin/myapp --config /etc/app.conf --verbose --port 8080"));
+        assert!(
+            content
+                .contains("ExecStart=/usr/bin/myapp --config /etc/app.conf --verbose --port 8080")
+        );
     }
 
     #[test]
@@ -1552,9 +1554,10 @@ Restart=no
     fn test_service_file_path_macos_versioned() {
         let manager = ServiceManager::new(Path::new("/opt/zerobrew/prefix"));
         let path = manager.service_file_path("postgresql@14");
-        assert!(path
-            .to_string_lossy()
-            .ends_with("com.zerobrew.postgresql@14.plist"));
+        assert!(
+            path.to_string_lossy()
+                .ends_with("com.zerobrew.postgresql@14.plist")
+        );
     }
 
     #[test]
@@ -1562,10 +1565,7 @@ Restart=no
     fn test_service_label_macos() {
         let manager = ServiceManager::new(Path::new("/opt/zerobrew/prefix"));
         assert_eq!(manager.service_label("redis"), "com.zerobrew.redis");
-        assert_eq!(
-            manager.service_label("mysql@8.0"),
-            "com.zerobrew.mysql@8.0"
-        );
+        assert_eq!(manager.service_label("mysql@8.0"), "com.zerobrew.mysql@8.0");
     }
 
     #[test]
@@ -1607,7 +1607,9 @@ Restart=no
         assert!(content.contains("<key>Label</key>"));
         assert!(content.contains("<string>com.zerobrew.redis</string>"));
         assert!(content.contains("<key>ProgramArguments</key>"));
-        assert!(content.contains("<string>/opt/zerobrew/prefix/opt/redis/bin/redis-server</string>"));
+        assert!(
+            content.contains("<string>/opt/zerobrew/prefix/opt/redis/bin/redis-server</string>")
+        );
         assert!(content.contains("<string>/opt/zerobrew/prefix/etc/redis.conf</string>"));
         assert!(content.contains("<key>RunAtLoad</key>"));
         assert!(content.contains("<true/>"));
@@ -2043,7 +2045,7 @@ Restart=no
 
         let services = manager.list().unwrap();
         assert_eq!(services.len(), 2);
-        
+
         let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"redis"));
         assert!(names.contains(&"postgresql"));
@@ -2633,7 +2635,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
 
         // Create service (file creation should work even if daemon_reload fails)
         let create_result = manager.create_service("testservice", &config);
-        
+
         // Verify directories exist regardless of daemon_reload result
         assert!(service_dir.exists());
         assert!(log_dir.exists());
@@ -2661,9 +2663,9 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_service_manager_prefix_propagation() {
         let manager = ServiceManager::new(Path::new("/custom/zerobrew/prefix"));
-        
+
         assert_eq!(manager.prefix, PathBuf::from("/custom/zerobrew/prefix"));
-        
+
         // Log paths should use the configured log_dir, not prefix
         let log_dir = manager.get_log_dir();
         assert!(!log_dir.to_string_lossy().is_empty());
@@ -2720,7 +2722,9 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
                 formula, formula
             );
             let content = content.unwrap_or(&default_content);
-            let path = self.service_dir.join(format!("zerobrew.{}.service", formula));
+            let path = self
+                .service_dir
+                .join(format!("zerobrew.{}.service", formula));
             std::fs::write(path, content).unwrap();
         }
 
@@ -2739,13 +2743,17 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
                 formula, formula
             );
             let content = content.unwrap_or(&default_content);
-            let path = self.service_dir.join(format!("com.zerobrew.{}.plist", formula));
+            let path = self
+                .service_dir
+                .join(format!("com.zerobrew.{}.plist", formula));
             std::fs::write(path, content).unwrap();
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         fn create_mock_service_file(&self, formula: &str, _content: Option<&str>) {
-            let path = self.service_dir.join(format!("zerobrew.{}.service", formula));
+            let path = self
+                .service_dir
+                .join(format!("zerobrew.{}.service", formula));
             std::fs::write(path, format!("# Service: {}\n", formula)).unwrap();
         }
 
@@ -2761,17 +2769,20 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
         /// Get the service file path for verification
         #[cfg(target_os = "linux")]
         fn service_file_path(&self, formula: &str) -> PathBuf {
-            self.service_dir.join(format!("zerobrew.{}.service", formula))
+            self.service_dir
+                .join(format!("zerobrew.{}.service", formula))
         }
 
         #[cfg(target_os = "macos")]
         fn service_file_path(&self, formula: &str) -> PathBuf {
-            self.service_dir.join(format!("com.zerobrew.{}.plist", formula))
+            self.service_dir
+                .join(format!("com.zerobrew.{}.plist", formula))
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         fn service_file_path(&self, formula: &str) -> PathBuf {
-            self.service_dir.join(format!("zerobrew.{}.service", formula))
+            self.service_dir
+                .join(format!("zerobrew.{}.service", formula))
         }
     }
 
@@ -2815,7 +2826,9 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
 
         // Verify Service section
         assert!(content.contains("Type=simple"));
-        assert!(content.contains("ExecStart=/opt/zerobrew/opt/redis/bin/redis-server --daemonize no --port 6379"));
+        assert!(content.contains(
+            "ExecStart=/opt/zerobrew/opt/redis/bin/redis-server --daemonize no --port 6379"
+        ));
         assert!(content.contains("WorkingDirectory=/var/lib/redis"));
         assert!(content.contains("Restart=on-failure"));
         assert!(content.contains("RestartSec=3"));
@@ -2876,7 +2889,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_service_file_path_versioned_formula() {
         let ctx = TestServiceManager::new();
-        
+
         for formula in ["postgresql@14", "node@20", "python@3.12"] {
             let path = ctx.manager.service_file_path(formula);
             assert!(path.to_string_lossy().contains(formula));
@@ -2887,11 +2900,11 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_service_file_path_special_names() {
         let ctx = TestServiceManager::new();
-        
+
         // Test various naming conventions
         let formulas = [
             "my-dashed-name",
-            "my_underscored_name", 
+            "my_underscored_name",
             "CamelCaseName",
             "name123",
             "123name",
@@ -2932,7 +2945,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     fn test_fs_log_dir_accessor() {
         let ctx = TestServiceManager::new();
         let log_dir = ctx.manager.get_log_dir();
-        
+
         assert_eq!(log_dir, &ctx.log_dir);
         assert!(log_dir.exists());
     }
@@ -2959,7 +2972,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_list_multiple_services() {
         let ctx = TestServiceManager::new();
-        
+
         for formula in ["alpha", "beta", "gamma", "delta"] {
             ctx.create_mock_service_file(formula, None);
         }
@@ -2975,7 +2988,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_list_filters_non_zerobrew_files() {
         let ctx = TestServiceManager::new();
-        
+
         // Create our service
         ctx.create_mock_service_file("redis", None);
 
@@ -2997,7 +3010,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_list_handles_versioned_services() {
         let ctx = TestServiceManager::new();
-        
+
         ctx.create_mock_service_file("node@18", None);
         ctx.create_mock_service_file("node@20", None);
         ctx.create_mock_service_file("postgresql@14", None);
@@ -3018,7 +3031,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
 
         let services = ctx.manager.list().unwrap();
         assert_eq!(services.len(), 1);
-        
+
         let expected_path = ctx.service_file_path("myservice");
         assert_eq!(services[0].file_path, expected_path);
     }
@@ -3028,26 +3041,26 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_orphan_detection_no_orphans() {
         let ctx = TestServiceManager::new();
-        
+
         ctx.create_mock_service_file("redis", None);
         ctx.create_mock_service_file("postgresql", None);
 
         let installed = vec!["redis".to_string(), "postgresql".to_string()];
         let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
-        
+
         assert!(orphaned.is_empty());
     }
 
     #[test]
     fn test_fs_orphan_detection_single_orphan() {
         let ctx = TestServiceManager::new();
-        
+
         ctx.create_mock_service_file("redis", None);
         ctx.create_mock_service_file("orphaned-service", None);
 
         let installed = vec!["redis".to_string()];
         let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
-        
+
         assert_eq!(orphaned.len(), 1);
         assert_eq!(orphaned[0].name, "orphaned-service");
     }
@@ -3055,7 +3068,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_orphan_detection_multiple_orphans() {
         let ctx = TestServiceManager::new();
-        
+
         ctx.create_mock_service_file("redis", None);
         ctx.create_mock_service_file("orphan1", None);
         ctx.create_mock_service_file("orphan2", None);
@@ -3063,7 +3076,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
 
         let installed = vec!["redis".to_string()];
         let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
-        
+
         assert_eq!(orphaned.len(), 3);
         let names: Vec<&str> = orphaned.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"orphan1"));
@@ -3074,23 +3087,23 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_orphan_detection_all_orphans() {
         let ctx = TestServiceManager::new();
-        
+
         ctx.create_mock_service_file("old-service-1", None);
         ctx.create_mock_service_file("old-service-2", None);
 
         let installed: Vec<String> = vec![]; // Nothing installed
         let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
-        
+
         assert_eq!(orphaned.len(), 2);
     }
 
     #[test]
     fn test_fs_orphan_detection_empty_service_dir() {
         let ctx = TestServiceManager::new();
-        
+
         let installed = vec!["redis".to_string(), "postgresql".to_string()];
         let orphaned = ctx.manager.find_orphaned_services(&installed).unwrap();
-        
+
         assert!(orphaned.is_empty());
     }
 
@@ -3099,7 +3112,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_create_service_writes_valid_file() {
         let ctx = TestServiceManager::new();
-        
+
         let config = ServiceConfig {
             program: PathBuf::from("/opt/zerobrew/opt/redis/bin/redis-server"),
             args: vec!["--port".to_string(), "6379".to_string()],
@@ -3117,7 +3130,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
 
         // Verify content
         let content = std::fs::read_to_string(&service_file).unwrap();
-        
+
         #[cfg(target_os = "linux")]
         {
             assert!(content.contains("[Unit]"));
@@ -3194,7 +3207,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
         ctx.create_mock_service_file("myservice", None);
 
         let info = ctx.manager.get_service_info("myservice").unwrap();
-        
+
         assert_eq!(info.name, "myservice");
         assert_eq!(info.file_path, ctx.service_file_path("myservice"));
     }
@@ -3206,7 +3219,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
         // Getting info for non-existent service should still return info
         // (with Unknown status since systemctl won't find it)
         let info = ctx.manager.get_service_info("nonexistent").unwrap();
-        
+
         assert_eq!(info.name, "nonexistent");
         // File path is computed, not validated
         assert!(info.file_path.to_string_lossy().contains("nonexistent"));
@@ -3231,7 +3244,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_detect_config_daemon_suffix() {
         let ctx = TestServiceManager::new();
-        
+
         // Create only the daemon-suffixed binary
         let bin_dir = ctx.prefix.join("opt/nginx/bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
@@ -3242,13 +3255,19 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
         let config = ctx.manager.detect_service_config("nginx", &keg_path);
 
         assert!(config.is_some());
-        assert!(config.unwrap().program.to_string_lossy().ends_with("nginxd"));
+        assert!(
+            config
+                .unwrap()
+                .program
+                .to_string_lossy()
+                .ends_with("nginxd")
+        );
     }
 
     #[test]
     fn test_fs_detect_config_server_suffix() {
         let ctx = TestServiceManager::new();
-        
+
         // Create only the server-suffixed binary
         let bin_dir = ctx.prefix.join("opt/redis/bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
@@ -3259,24 +3278,33 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
         let config = ctx.manager.detect_service_config("redis", &keg_path);
 
         assert!(config.is_some());
-        assert!(config.unwrap().program.to_string_lossy().ends_with("redis-server"));
+        assert!(
+            config
+                .unwrap()
+                .program
+                .to_string_lossy()
+                .ends_with("redis-server")
+        );
     }
 
     #[test]
     fn test_fs_detect_config_priority_exact_over_daemon() {
         let ctx = TestServiceManager::new();
-        
+
         // Create both exact and daemon binaries
         let bin_dir = ctx.prefix.join("opt/myapp/bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
-        
+
         let exact = bin_dir.join("myapp");
         let daemon = bin_dir.join("myappd");
         std::fs::write(&exact, "#!/bin/sh").unwrap();
         std::fs::write(&daemon, "#!/bin/sh").unwrap();
 
         let keg_path = ctx.prefix.join("Cellar/myapp/1.0");
-        let config = ctx.manager.detect_service_config("myapp", &keg_path).unwrap();
+        let config = ctx
+            .manager
+            .detect_service_config("myapp", &keg_path)
+            .unwrap();
 
         // Should prefer exact name
         assert_eq!(config.program, exact);
@@ -3285,7 +3313,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_detect_config_no_binary_found() {
         let ctx = TestServiceManager::new();
-        
+
         let keg_path = ctx.prefix.join("Cellar/unknown/1.0");
         let config = ctx.manager.detect_service_config("unknown", &keg_path);
 
@@ -3383,7 +3411,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[cfg(target_os = "linux")]
     fn test_fs_service_file_includes_log_paths() {
         let ctx = TestServiceManager::new();
-        
+
         let config = ServiceConfig {
             program: PathBuf::from("/usr/bin/myservice"),
             ..Default::default()
@@ -3393,15 +3421,21 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
 
         // Should include default log paths
         let (expected_stdout, expected_stderr) = ctx.manager.get_log_paths("myservice");
-        assert!(content.contains(&format!("StandardOutput=append:{}", expected_stdout.display())));
-        assert!(content.contains(&format!("StandardError=append:{}", expected_stderr.display())));
+        assert!(content.contains(&format!(
+            "StandardOutput=append:{}",
+            expected_stdout.display()
+        )));
+        assert!(content.contains(&format!(
+            "StandardError=append:{}",
+            expected_stderr.display()
+        )));
     }
 
     #[test]
     #[cfg(target_os = "linux")]
     fn test_fs_service_file_uses_custom_log_paths() {
         let ctx = TestServiceManager::new();
-        
+
         let config = ServiceConfig {
             program: PathBuf::from("/usr/bin/myservice"),
             stdout_log: Some(PathBuf::from("/custom/stdout.log")),
@@ -3420,7 +3454,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_cleanup_removes_multiple_services() {
         let ctx = TestServiceManager::new();
-        
+
         // Create some orphaned service files
         ctx.create_mock_service_file("orphan1", None);
         ctx.create_mock_service_file("orphan2", None);
@@ -3437,7 +3471,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
             .collect();
 
         let result = ctx.manager.cleanup_services(&orphans);
-        
+
         match result {
             Ok(count) => assert_eq!(count, 2),
             Err(_) => {} // Acceptable if systemctl fails
@@ -3447,7 +3481,7 @@ ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
     #[test]
     fn test_fs_cleanup_empty_list_returns_zero() {
         let ctx = TestServiceManager::new();
-        
+
         let result = ctx.manager.cleanup_services(&[]);
         assert_eq!(result.unwrap(), 0);
     }

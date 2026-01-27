@@ -14,8 +14,10 @@ use zb_core::Error;
 const PATCHELF_VERSION: &str = "0.18.0";
 
 /// GitHub release URLs for patchelf binaries
-const PATCHELF_URL_X86_64: &str = "https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0-x86_64.tar.gz";
-const PATCHELF_URL_AARCH64: &str = "https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0-aarch64.tar.gz";
+const PATCHELF_URL_X86_64: &str =
+    "https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0-x86_64.tar.gz";
+const PATCHELF_URL_AARCH64: &str =
+    "https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0-aarch64.tar.gz";
 
 /// Cached path to patchelf binary (computed once per process)
 static PATCHELF_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();

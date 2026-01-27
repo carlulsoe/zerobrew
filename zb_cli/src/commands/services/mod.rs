@@ -11,15 +11,14 @@ mod list;
 
 use std::path::Path;
 
-use zb_io::install::Installer;
 use zb_io::ServiceManager;
+use zb_io::install::Installer;
 
 use crate::ServicesAction;
 
 // Re-export submodule functions for use in dispatch
 pub use control::{
-    run_cleanup, run_disable, run_enable, run_foreground, run_log, run_restart, run_start,
-    run_stop,
+    run_cleanup, run_disable, run_enable, run_foreground, run_log, run_restart, run_start, run_stop,
 };
 pub use list::{run_info, run_list};
 

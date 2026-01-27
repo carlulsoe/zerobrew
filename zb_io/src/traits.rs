@@ -90,11 +90,13 @@ impl HttpClient for ReqwestHttpClient {
             });
         }
 
-        response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-            Error::NetworkFailure {
+        response
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| Error::NetworkFailure {
                 message: e.to_string(),
-            }
-        })
+            })
     }
 
     async fn get_with_timeout(&self, url: &str, timeout: Duration) -> Result<Vec<u8>, Error> {
@@ -114,11 +116,13 @@ impl HttpClient for ReqwestHttpClient {
             });
         }
 
-        response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-            Error::NetworkFailure {
+        response
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| Error::NetworkFailure {
                 message: e.to_string(),
-            }
-        })
+            })
     }
 }
 
@@ -194,8 +198,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_http_client_returns_data() {
         let mut mock = MockHttpClient::new();
-        mock.expect_get()
-            .returning(|_| Ok(b"hello world".to_vec()));
+        mock.expect_get().returning(|_| Ok(b"hello world".to_vec()));
 
         let result = mock.get("https://example.com/file").await;
         assert!(result.is_ok());
@@ -331,9 +334,7 @@ mod tests {
     fn test_mock_filesystem_path_verification() {
         let mut mock = MockFileSystem::new();
         mock.expect_write()
-            .withf(|path, data| {
-                path.to_string_lossy().ends_with(".txt") && !data.is_empty()
-            })
+            .withf(|path, data| path.to_string_lossy().ends_with(".txt") && !data.is_empty())
             .returning(|_, _| Ok(()));
 
         let result = mock.write(Path::new("/tmp/file.txt"), b"content");
@@ -679,9 +680,7 @@ mod tests {
         let mut mock = MockFileSystem::new();
 
         // Expect create_dir_all first
-        mock.expect_create_dir_all()
-            .times(1)
-            .returning(|_| Ok(()));
+        mock.expect_create_dir_all().times(1).returning(|_| Ok(()));
 
         // Then expect write
         mock.expect_write().times(1).returning(|_, _| Ok(()));

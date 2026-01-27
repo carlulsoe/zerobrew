@@ -315,10 +315,7 @@ mod tests {
                 let n = names.len();
                 // Generate dependency matrix: deps[i] can only depend on deps[j] where j < i
                 // This guarantees no cycles
-                let dep_bits = prop::collection::vec(
-                    prop::collection::vec(prop::bool::ANY, n),
-                    n,
-                );
+                let dep_bits = prop::collection::vec(prop::collection::vec(prop::bool::ANY, n), n);
                 (Just(names), dep_bits)
             })
             .prop_map(|(names, dep_matrix)| {

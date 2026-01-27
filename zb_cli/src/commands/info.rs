@@ -26,7 +26,7 @@ pub fn run_list(installer: &Installer, pinned: bool) -> Result<(), zb_core::Erro
             for keg in installed {
                 // format_list_entry provides the plain-text format (used for testing)
                 let _ = format_list_entry(&keg.name, &keg.version, keg.pinned);
-                
+
                 // Styled output for terminal
                 let styled_pin = if keg.pinned {
                     format!(" {}", style("(pinned)").yellow())
@@ -163,7 +163,7 @@ async fn print_info_human(
     if let Some(keg) = keg {
         // format_installed_version_line provides the complete plain text format (used for testing)
         let _ = format_installed_version_line(&keg.version, keg.pinned, keg.explicit);
-        
+
         // Styled output for terminal
         print!(
             "{} {}",
@@ -186,15 +186,18 @@ async fn print_info_human(
     if let Some(f) = api_formula {
         let available_version = f.effective_version();
         let installed_version = keg.as_ref().map(|k| k.version.as_str());
-        
+
         // format_available_version_line provides the plain text format (used for testing)
         let _ = format_available_version_line(&available_version, installed_version);
-        
+
         // Use format_version_comparison for styled output logic
         let version_display = format_version_comparison(installed_version, &available_version);
 
         match version_display {
-            VersionDisplay::UpdateAvailable { installed: _, available } => {
+            VersionDisplay::UpdateAvailable {
+                installed: _,
+                available,
+            } => {
                 println!(
                     "{} {} {}",
                     style("Available:").dim(),
@@ -283,11 +286,7 @@ async fn print_info_human(
             println!("  {}", link);
         }
         if let Some(more) = remaining {
-            println!(
-                "  {} and {} more...",
-                style("...").dim(),
-                more
-            );
+            println!("  {} and {} more...", style("...").dim(), more);
         }
 
         println!();
@@ -342,10 +341,7 @@ pub(crate) fn build_info_json_base(
     installed: bool,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut info = serde_json::Map::new();
-    info.insert(
-        "name".to_string(),
-        serde_json::json!(formula_name),
-    );
+    info.insert("name".to_string(), serde_json::json!(formula_name));
     info.insert("installed".to_string(), serde_json::json!(installed));
     info
 }
@@ -370,9 +366,7 @@ pub(crate) fn build_installed_info_json(
 
 /// Build linked files JSON array.
 /// Extracted for testability.
-pub(crate) fn build_linked_files_json(
-    linked_files: &[(String, String)],
-) -> Vec<serde_json::Value> {
+pub(crate) fn build_linked_files_json(linked_files: &[(String, String)]) -> Vec<serde_json::Value> {
     linked_files
         .iter()
         .map(|(link, target)| serde_json::json!({"link": link, "target": target}))
@@ -475,11 +469,7 @@ pub(crate) fn search_results_label(installed_only: bool) -> &'static str {
 /// Format dependency status marker for display.
 /// Extracted for testability.
 pub(crate) fn format_dependency_status(installed: bool) -> &'static str {
-    if installed {
-        "✓"
-    } else {
-        "✗"
-    }
+    if installed { "✓" } else { "✗" }
 }
 
 /// Format the version comparison message when update available.
@@ -504,7 +494,10 @@ pub(crate) fn format_version_comparison(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VersionDisplay {
     UpToDate(String),
-    UpdateAvailable { installed: String, available: String },
+    UpdateAvailable {
+        installed: String,
+        available: String,
+    },
     NotInstalled(String),
 }
 
@@ -541,7 +534,10 @@ pub(crate) fn build_formula_api_json(
         info.insert("license".to_string(), serde_json::json!(lic));
     }
     info.insert("dependencies".to_string(), serde_json::json!(dependencies));
-    info.insert("build_dependencies".to_string(), serde_json::json!(build_dependencies));
+    info.insert(
+        "build_dependencies".to_string(),
+        serde_json::json!(build_dependencies),
+    );
     if let Some(cavs) = caveats {
         info.insert("caveats".to_string(), serde_json::json!(cavs));
     }
@@ -594,11 +590,7 @@ pub(crate) fn determine_info_output_kind(
 
 /// Format the installed version line with optional markers.
 /// Extracted for testability.
-pub(crate) fn format_installed_version_line(
-    version: &str,
-    pinned: bool,
-    explicit: bool,
-) -> String {
+pub(crate) fn format_installed_version_line(version: &str, pinned: bool, explicit: bool) -> String {
     let mut line = format!("Installed: {}", version);
     if pinned {
         line.push_str(" (pinned)");
@@ -693,7 +685,9 @@ pub(crate) enum ListOutputKind {
 /// Determine list output type.
 pub(crate) fn determine_list_output_kind(item_count: usize, pinned_filter: bool) -> ListOutputKind {
     if item_count == 0 {
-        ListOutputKind::Empty { pinned: pinned_filter }
+        ListOutputKind::Empty {
+            pinned: pinned_filter,
+        }
     } else {
         ListOutputKind::HasItems { count: item_count }
     }
@@ -762,7 +756,10 @@ pub async fn run_search(
         SearchOutputKind::Empty { installed_only } => {
             println!("{}", empty_search_message(&query, installed_only));
         }
-        SearchOutputKind::Results { count, installed_only } => {
+        SearchOutputKind::Results {
+            count,
+            installed_only,
+        } => {
             let label = search_results_label(installed_only);
             println!(
                 "{} Found {} {}:",
@@ -776,7 +773,7 @@ pub async fn run_search(
 
             for result in results.iter().take(display_count) {
                 let is_installed = installer.is_installed(&result.name);
-                
+
                 // Use format_search_result_entry for the base plain-text format
                 let plain_lines = format_search_result_entry(
                     &result.name,
@@ -811,11 +808,7 @@ pub async fn run_search(
 
             if let Some(more) = remaining {
                 println!();
-                println!(
-                    "    {} and {} more...",
-                    style("...").dim(),
-                    more
-                );
+                println!("    {} and {} more...", style("...").dim(), more);
             }
         }
     }
@@ -1010,7 +1003,10 @@ mod tests {
 
     #[test]
     fn test_build_linked_files_json_single() {
-        let files = vec![("/usr/local/bin/git".to_string(), "/opt/zb/git/bin/git".to_string())];
+        let files = vec![(
+            "/usr/local/bin/git".to_string(),
+            "/opt/zb/git/bin/git".to_string(),
+        )];
         let json = build_linked_files_json(&files);
         assert_eq!(json.len(), 1);
         assert_eq!(json[0]["link"], "/usr/local/bin/git");
@@ -1389,47 +1385,41 @@ mod tests {
         );
         assert_eq!(json.get("homepage").unwrap(), "https://www.python.org/");
         assert_eq!(json.get("license").unwrap(), "Python-2.0");
-        assert_eq!(json.get("dependencies").unwrap(), &serde_json::json!(["openssl", "readline"]));
-        assert_eq!(json.get("build_dependencies").unwrap(), &serde_json::json!(["pkg-config"]));
-        assert_eq!(json.get("caveats").unwrap(), "See python.org for documentation");
+        assert_eq!(
+            json.get("dependencies").unwrap(),
+            &serde_json::json!(["openssl", "readline"])
+        );
+        assert_eq!(
+            json.get("build_dependencies").unwrap(),
+            &serde_json::json!(["pkg-config"])
+        );
+        assert_eq!(
+            json.get("caveats").unwrap(),
+            "See python.org for documentation"
+        );
         assert_eq!(json.get("keg_only").unwrap(), false);
     }
 
     #[test]
     fn test_build_formula_api_json_minimal() {
-        let json = build_formula_api_json(
-            "1.0.0",
-            None,
-            None,
-            None,
-            &[],
-            &[],
-            None,
-            false,
-        );
+        let json = build_formula_api_json("1.0.0", None, None, None, &[], &[], None, false);
 
         assert_eq!(json.get("available_version").unwrap(), "1.0.0");
         assert!(!json.contains_key("description"));
         assert!(!json.contains_key("homepage"));
         assert!(!json.contains_key("license"));
         assert_eq!(json.get("dependencies").unwrap(), &serde_json::json!([]));
-        assert_eq!(json.get("build_dependencies").unwrap(), &serde_json::json!([]));
+        assert_eq!(
+            json.get("build_dependencies").unwrap(),
+            &serde_json::json!([])
+        );
         assert!(!json.contains_key("caveats"));
         assert_eq!(json.get("keg_only").unwrap(), false);
     }
 
     #[test]
     fn test_build_formula_api_json_keg_only() {
-        let json = build_formula_api_json(
-            "1.0.0",
-            Some("Test"),
-            None,
-            None,
-            &[],
-            &[],
-            None,
-            true,
-        );
+        let json = build_formula_api_json("1.0.0", Some("Test"), None, None, &[], &[], None, true);
 
         assert_eq!(json.get("keg_only").unwrap(), true);
     }
@@ -1526,9 +1516,10 @@ mod tests {
 
     #[test]
     fn test_build_linked_files_json_with_spaces() {
-        let files = vec![
-            ("/path/with spaces/bin".to_string(), "/target/with spaces".to_string()),
-        ];
+        let files = vec![(
+            "/path/with spaces/bin".to_string(),
+            "/target/with spaces".to_string(),
+        )];
         let json = build_linked_files_json(&files);
         assert_eq!(json[0]["link"], "/path/with spaces/bin");
         assert_eq!(json[0]["target"], "/target/with spaces");
@@ -1536,9 +1527,7 @@ mod tests {
 
     #[test]
     fn test_build_linked_files_json_unicode_paths() {
-        let files = vec![
-            ("/usr/bin/日本語".to_string(), "/opt/日本語".to_string()),
-        ];
+        let files = vec![("/usr/bin/日本語".to_string(), "/opt/日本語".to_string())];
         let json = build_linked_files_json(&files);
         assert_eq!(json[0]["link"], "/usr/bin/日本語");
     }
@@ -1549,13 +1538,8 @@ mod tests {
 
     #[test]
     fn test_build_search_result_json_with_special_chars() {
-        let json = build_search_result_json(
-            "c++",
-            "homebrew/core/c++",
-            "1.0",
-            "A C++ compiler",
-            false,
-        );
+        let json =
+            build_search_result_json("c++", "homebrew/core/c++", "1.0", "A C++ compiler", false);
         assert_eq!(json["name"], "c++");
     }
 
@@ -1661,7 +1645,10 @@ mod tests {
     #[test]
     fn test_format_installed_version_line_pinned_dependency() {
         let result = format_installed_version_line("2.0.0", true, false);
-        assert_eq!(result, "Installed: 2.0.0 (pinned) (installed as dependency)");
+        assert_eq!(
+            result,
+            "Installed: 2.0.0 (pinned) (installed as dependency)"
+        );
     }
 
     // ========================================================================
@@ -1733,30 +1720,55 @@ mod tests {
     #[test]
     fn test_determine_search_output_kind_empty() {
         let kind = determine_search_output_kind(false, 0, false);
-        assert_eq!(kind, SearchOutputKind::Empty { installed_only: false });
+        assert_eq!(
+            kind,
+            SearchOutputKind::Empty {
+                installed_only: false
+            }
+        );
     }
 
     #[test]
     fn test_determine_search_output_kind_empty_installed_only() {
         let kind = determine_search_output_kind(false, 0, true);
-        assert_eq!(kind, SearchOutputKind::Empty { installed_only: true });
+        assert_eq!(
+            kind,
+            SearchOutputKind::Empty {
+                installed_only: true
+            }
+        );
     }
 
     #[test]
     fn test_determine_search_output_kind_results() {
         let kind = determine_search_output_kind(false, 15, false);
-        assert_eq!(kind, SearchOutputKind::Results { count: 15, installed_only: false });
+        assert_eq!(
+            kind,
+            SearchOutputKind::Results {
+                count: 15,
+                installed_only: false
+            }
+        );
     }
 
     #[test]
     fn test_determine_search_output_kind_results_installed() {
         let kind = determine_search_output_kind(false, 5, true);
-        assert_eq!(kind, SearchOutputKind::Results { count: 5, installed_only: true });
+        assert_eq!(
+            kind,
+            SearchOutputKind::Results {
+                count: 5,
+                installed_only: true
+            }
+        );
     }
 
     #[test]
     fn test_search_output_kind_debug() {
-        let kind = SearchOutputKind::Results { count: 10, installed_only: false };
+        let kind = SearchOutputKind::Results {
+            count: 10,
+            installed_only: false,
+        };
         let debug_str = format!("{:?}", kind);
         assert!(debug_str.contains("Results"));
         assert!(debug_str.contains("10"));
@@ -1764,7 +1776,9 @@ mod tests {
 
     #[test]
     fn test_search_output_kind_clone() {
-        let original = SearchOutputKind::Empty { installed_only: true };
+        let original = SearchOutputKind::Empty {
+            installed_only: true,
+        };
         let cloned = original.clone();
         assert_eq!(original, cloned);
     }
@@ -1968,7 +1982,10 @@ mod tests {
             false,
         );
         assert_eq!(json.get("dependencies").unwrap(), &serde_json::json!([]));
-        assert_eq!(json.get("build_dependencies").unwrap(), &serde_json::json!([]));
+        assert_eq!(
+            json.get("build_dependencies").unwrap(),
+            &serde_json::json!([])
+        );
     }
 
     #[test]
@@ -2031,8 +2048,13 @@ mod tests {
     #[test]
     fn test_search_output_kind_all_variants_ne() {
         let json = SearchOutputKind::Json;
-        let empty = SearchOutputKind::Empty { installed_only: false };
-        let results = SearchOutputKind::Results { count: 5, installed_only: false };
+        let empty = SearchOutputKind::Empty {
+            installed_only: false,
+        };
+        let results = SearchOutputKind::Results {
+            count: 5,
+            installed_only: false,
+        };
 
         assert_ne!(json, empty);
         assert_ne!(json, results);
@@ -2122,16 +2144,7 @@ mod tests {
     #[test]
     fn test_build_formula_api_json_large_dep_list() {
         let deps: Vec<String> = (0..100).map(|i| format!("dep{}", i)).collect();
-        let json = build_formula_api_json(
-            "1.0",
-            None,
-            None,
-            None,
-            &deps,
-            &[],
-            None,
-            false,
-        );
+        let json = build_formula_api_json("1.0", None, None, None, &deps, &[], None, false);
         let dep_array = json.get("dependencies").unwrap().as_array().unwrap();
         assert_eq!(dep_array.len(), 100);
     }

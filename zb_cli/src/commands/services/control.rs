@@ -4,8 +4,8 @@ use console::style;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use zb_io::install::Installer;
 use zb_io::ServiceManager;
+use zb_io::install::Installer;
 
 // ============================================================================
 // Pure Helper Functions (Extracted for Testability)
@@ -31,10 +31,7 @@ pub(crate) fn format_orphan_count_message(count: usize, dry_run: bool) -> String
 /// Select the appropriate log file to display.
 /// Returns the log file path to use (prefers stdout if it exists).
 /// Extracted for testability.
-pub(crate) fn select_log_file<'a>(
-    stdout_log: &'a Path,
-    stderr_log: &'a Path,
-) -> Option<&'a Path> {
+pub(crate) fn select_log_file<'a>(stdout_log: &'a Path, stderr_log: &'a Path) -> Option<&'a Path> {
     if stdout_log.exists() {
         Some(stdout_log)
     } else if stderr_log.exists() {
@@ -114,7 +111,10 @@ pub(crate) fn format_disabling_message(formula: &str) -> String {
 
 /// Format the "Disabled <formula>" completion message.
 pub(crate) fn format_disabled_message(formula: &str) -> String {
-    format!("Disabled {} - it will no longer start automatically", formula)
+    format!(
+        "Disabled {} - it will no longer start automatically",
+        formula
+    )
 }
 
 /// Format the "already enabled" message.
@@ -187,7 +187,10 @@ pub(crate) fn format_expected_log_files_hint(stdout_path: &Path, stderr_path: &P
 
 /// Format the "start service first" hint for logs.
 pub(crate) fn format_start_service_hint(formula: &str) -> String {
-    format!("Start the service first with: zb services start {}", formula)
+    format!(
+        "Start the service first with: zb services start {}",
+        formula
+    )
 }
 
 /// Format the "start service first" hint for enable.
@@ -228,7 +231,10 @@ pub(crate) fn validate_formula_name(formula: &str) -> Result<(), String> {
         Err("Formula name cannot be empty".to_string())
     } else if formula.contains('/') && !formula.contains('@') {
         // Looks like a tap path without version
-        Err(format!("Invalid formula name '{}': use the formula name, not the tap path", formula))
+        Err(format!(
+            "Invalid formula name '{}': use the formula name, not the tap path",
+            formula
+        ))
     } else {
         Ok(())
     }
@@ -251,7 +257,9 @@ pub(crate) fn validate_log_lines(lines: usize) -> Result<(), String> {
 
 /// Determine if a service needs setup based on service info.
 /// Returns true if service file doesn't exist or if there was an error getting info.
-pub(crate) fn needs_service_setup(service_info: &Result<zb_io::ServiceInfo, zb_core::Error>) -> bool {
+pub(crate) fn needs_service_setup(
+    service_info: &Result<zb_io::ServiceInfo, zb_core::Error>,
+) -> bool {
     match service_info {
         Ok(info) => !info.file_path.exists(),
         Err(_) => true,
@@ -265,7 +273,9 @@ pub(crate) fn compute_keg_path(prefix: &Path, formula: &str, version: &str) -> P
 
 /// Format a list of orphaned services for display.
 /// Returns a Vec of (name, path_display) tuples.
-pub(crate) fn format_orphaned_service_list(services: &[zb_io::ServiceInfo]) -> Vec<(String, String)> {
+pub(crate) fn format_orphaned_service_list(
+    services: &[zb_io::ServiceInfo],
+) -> Vec<(String, String)> {
     services
         .iter()
         .map(|s| (s.name.clone(), s.file_path.display().to_string()))
@@ -318,7 +328,10 @@ pub(crate) fn determine_disable_action(info: &zb_io::ServiceInfo) -> DisableActi
 
 /// Determine which log file to read for the log command.
 /// Returns None if neither file exists.
-pub(crate) fn determine_log_file(stdout_exists: bool, stderr_exists: bool) -> Option<LogFileChoice> {
+pub(crate) fn determine_log_file(
+    stdout_exists: bool,
+    stderr_exists: bool,
+) -> Option<LogFileChoice> {
     if !stdout_exists && !stderr_exists {
         None
     } else if stdout_exists {
@@ -365,11 +378,11 @@ pub fn run_start(
     let needs_setup = needs_service_setup(&service_info);
 
     if needs_setup {
-        let keg = installer.get_installed(formula).ok_or_else(|| {
-            zb_core::Error::NotInstalled {
+        let keg = installer
+            .get_installed(formula)
+            .ok_or_else(|| zb_core::Error::NotInstalled {
                 name: formula.to_string(),
-            }
-        })?;
+            })?;
         let keg_path = compute_keg_path(prefix, formula, &keg.version);
 
         if let Some(config) = service_manager.detect_service_config(formula, &keg_path) {
@@ -453,7 +466,7 @@ pub fn run_restart(service_manager: &ServiceManager, formula: &str) -> Result<()
 /// Enable a service to start automatically.
 pub fn run_enable(service_manager: &ServiceManager, formula: &str) -> Result<(), zb_core::Error> {
     let info = service_manager.get_service_info(formula)?;
-    
+
     match determine_enable_action(&info) {
         EnableAction::NoServiceFile => {
             eprintln!(
@@ -496,7 +509,7 @@ pub fn run_enable(service_manager: &ServiceManager, formula: &str) -> Result<(),
 /// Disable a service from starting automatically.
 pub fn run_disable(service_manager: &ServiceManager, formula: &str) -> Result<(), zb_core::Error> {
     let info = service_manager.get_service_info(formula)?;
-    
+
     match determine_disable_action(&info) {
         DisableAction::NoServiceFile => {
             eprintln!(
@@ -550,11 +563,11 @@ pub fn run_foreground(
         std::process::exit(1);
     }
 
-    let keg = installer.get_installed(formula).ok_or_else(|| {
-        zb_core::Error::NotInstalled {
+    let keg = installer
+        .get_installed(formula)
+        .ok_or_else(|| zb_core::Error::NotInstalled {
             name: formula.to_string(),
-        }
-    })?;
+        })?;
     let keg_path = compute_keg_path(prefix, formula, &keg.version);
 
     if let Some(config) = service_manager.detect_service_config(formula, &keg_path) {
@@ -632,7 +645,10 @@ pub fn run_log(
                 format_no_log_files_error(formula)
             );
             eprintln!();
-            eprintln!("    {}", format_expected_log_files_hint(&stdout_log, &stderr_log));
+            eprintln!(
+                "    {}",
+                format_expected_log_files_hint(&stdout_log, &stderr_log)
+            );
             eprintln!();
             eprintln!("    {}", format_start_service_hint(formula));
             std::process::exit(1);
@@ -710,7 +726,11 @@ pub fn run_cleanup(
     let orphaned = service_manager.find_orphaned_services(&installed)?;
 
     if orphaned.is_empty() {
-        println!("{} {}", style("==>").cyan().bold(), format_no_orphaned_services_message());
+        println!(
+            "{} {}",
+            style("==>").cyan().bold(),
+            format_no_orphaned_services_message()
+        );
         return Ok(());
     }
 
@@ -1017,7 +1037,10 @@ mod tests {
     #[test]
     fn test_format_starting_message() {
         assert_eq!(format_starting_message("redis"), "Starting redis...");
-        assert_eq!(format_starting_message("postgresql@14"), "Starting postgresql@14...");
+        assert_eq!(
+            format_starting_message("postgresql@14"),
+            "Starting postgresql@14..."
+        );
     }
 
     #[test]
@@ -1212,10 +1235,22 @@ mod tests {
 
     #[test]
     fn test_format_service_exited_message() {
-        assert_eq!(format_service_exited_message(0), "Service exited with status: 0");
-        assert_eq!(format_service_exited_message(1), "Service exited with status: 1");
-        assert_eq!(format_service_exited_message(-1), "Service exited with status: -1");
-        assert_eq!(format_service_exited_message(137), "Service exited with status: 137");
+        assert_eq!(
+            format_service_exited_message(0),
+            "Service exited with status: 0"
+        );
+        assert_eq!(
+            format_service_exited_message(1),
+            "Service exited with status: 1"
+        );
+        assert_eq!(
+            format_service_exited_message(-1),
+            "Service exited with status: -1"
+        );
+        assert_eq!(
+            format_service_exited_message(137),
+            "Service exited with status: 137"
+        );
     }
 
     #[test]
@@ -1343,11 +1378,17 @@ mod tests {
 
         // Only stderr
         fs::write(&stderr_log, "err").unwrap();
-        assert_eq!(select_log_file(&stdout_log, &stderr_log), Some(stderr_log.as_path()));
+        assert_eq!(
+            select_log_file(&stdout_log, &stderr_log),
+            Some(stderr_log.as_path())
+        );
 
         // Both exist - stdout wins
         fs::write(&stdout_log, "out").unwrap();
-        assert_eq!(select_log_file(&stdout_log, &stderr_log), Some(stdout_log.as_path()));
+        assert_eq!(
+            select_log_file(&stdout_log, &stderr_log),
+            Some(stdout_log.as_path())
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1356,7 +1397,7 @@ mod tests {
     fn test_action_messages_include_formula_name() {
         // All action messages should include the formula name
         let formula = "test-formula";
-        
+
         assert!(format_starting_message(formula).contains(formula));
         assert!(format_started_message(formula).contains(formula));
         assert!(format_stopping_message(formula).contains(formula));
@@ -1437,9 +1478,10 @@ mod tests {
     #[test]
     fn test_needs_service_setup_error() {
         // When there's an error getting service info, setup is needed
-        let result: Result<zb_io::ServiceInfo, zb_core::Error> = Err(zb_core::Error::NotInstalled {
-            name: "test".to_string(),
-        });
+        let result: Result<zb_io::ServiceInfo, zb_core::Error> =
+            Err(zb_core::Error::NotInstalled {
+                name: "test".to_string(),
+            });
         assert!(needs_service_setup(&result));
     }
 
@@ -1497,7 +1539,10 @@ mod tests {
     fn test_compute_keg_path_versioned_formula() {
         let prefix = PathBuf::from("/home/user/.zerobrew");
         let path = compute_keg_path(&prefix, "postgresql@14", "14.10");
-        assert_eq!(path, PathBuf::from("/home/user/.zerobrew/Cellar/postgresql@14/14.10"));
+        assert_eq!(
+            path,
+            PathBuf::from("/home/user/.zerobrew/Cellar/postgresql@14/14.10")
+        );
     }
 
     #[test]
@@ -1639,7 +1684,10 @@ mod tests {
             file_path: PathBuf::from("/nonexistent/path"),
             auto_start: false,
         };
-        assert_eq!(determine_disable_action(&info), DisableAction::NoServiceFile);
+        assert_eq!(
+            determine_disable_action(&info),
+            DisableAction::NoServiceFile
+        );
     }
 
     #[test]
@@ -1683,7 +1731,10 @@ mod tests {
             file_path: service_file,
             auto_start: true,
         };
-        assert_eq!(determine_disable_action(&info), DisableAction::NeedToDisable);
+        assert_eq!(
+            determine_disable_action(&info),
+            DisableAction::NeedToDisable
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1822,7 +1873,10 @@ mod tests {
     #[test]
     fn test_format_foreground_command_special_chars() {
         let program = PathBuf::from("/path/with spaces/program");
-        let args = vec!["--arg=value with spaces".to_string(), "\"quoted\"".to_string()];
+        let args = vec![
+            "--arg=value with spaces".to_string(),
+            "\"quoted\"".to_string(),
+        ];
         let msg = format_foreground_command(&program, &args);
         assert!(msg.contains("/path/with spaces/program"));
         assert!(msg.contains("--arg=value with spaces"));
@@ -1919,10 +1973,13 @@ mod tests {
             file_path: PathBuf::from("/path/to/service"),
             auto_start: false,
         };
-        
+
         // Should still be able to determine actions
         assert_eq!(determine_enable_action(&info), EnableAction::NoServiceFile);
-        assert_eq!(determine_disable_action(&info), DisableAction::NoServiceFile);
+        assert_eq!(
+            determine_disable_action(&info),
+            DisableAction::NoServiceFile
+        );
     }
 
     #[test]
@@ -1934,7 +1991,7 @@ mod tests {
             file_path: PathBuf::from("/nonexistent"),
             auto_start: false,
         };
-        
+
         assert_eq!(determine_enable_action(&info), EnableAction::NoServiceFile);
     }
 
@@ -1956,7 +2013,7 @@ mod tests {
                 auto_start: false,
             },
         ];
-        
+
         let result = format_orphaned_service_list(&services);
         // Should preserve input order, not sort
         assert_eq!(result[0].0, "zz-last");
@@ -1978,13 +2035,20 @@ mod tests {
     fn test_compute_keg_path_special_characters_in_version() {
         let prefix = PathBuf::from("/opt/zb");
         let path = compute_keg_path(&prefix, "package", "1.0-beta+build.123");
-        assert_eq!(path, PathBuf::from("/opt/zb/Cellar/package/1.0-beta+build.123"));
+        assert_eq!(
+            path,
+            PathBuf::from("/opt/zb/Cellar/package/1.0-beta+build.123")
+        );
     }
 
     #[test]
     fn test_format_expected_log_files_hint_long_paths() {
-        let stdout = PathBuf::from("/very/long/path/to/a/deeply/nested/directory/structure/for/testing/purposes/stdout.log");
-        let stderr = PathBuf::from("/very/long/path/to/a/deeply/nested/directory/structure/for/testing/purposes/stderr.log");
+        let stdout = PathBuf::from(
+            "/very/long/path/to/a/deeply/nested/directory/structure/for/testing/purposes/stdout.log",
+        );
+        let stderr = PathBuf::from(
+            "/very/long/path/to/a/deeply/nested/directory/structure/for/testing/purposes/stderr.log",
+        );
         let msg = format_expected_log_files_hint(&stdout, &stderr);
         assert!(msg.contains("stdout.log"));
         assert!(msg.contains("stderr.log"));

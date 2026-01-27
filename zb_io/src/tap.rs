@@ -1729,11 +1729,7 @@ end
         let manager = TapManager::new(tmp.path());
 
         // Create taps in non-alphabetical order
-        let taps_to_create = [
-            ("zebra", "zoo"),
-            ("alpha", "aardvark"),
-            ("mike", "middle"),
-        ];
+        let taps_to_create = [("zebra", "zoo"), ("alpha", "aardvark"), ("mike", "middle")];
 
         for (user, repo) in &taps_to_create {
             let formula_dir = manager.formula_dir(user, repo);

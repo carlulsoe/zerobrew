@@ -141,9 +141,7 @@ pub fn mock_formula_json_with_bottles(
 
     let files_json: Vec<String> = bottles
         .iter()
-        .map(|(tag, url, sha)| {
-            format!(r#""{tag}": {{ "url": "{url}", "sha256": "{sha}" }}"#)
-        })
+        .map(|(tag, url, sha)| format!(r#""{tag}": {{ "url": "{url}", "sha256": "{sha}" }}"#))
         .collect();
 
     format!(
@@ -176,8 +174,8 @@ pub fn mock_bottle_tarball(formula_name: &str) -> Vec<u8> {
 
 /// Create a bottle tarball with a specific version.
 pub fn mock_bottle_tarball_with_version(formula_name: &str, version: &str) -> Vec<u8> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use std::io::Write;
     use tar::Builder;
 
@@ -216,8 +214,8 @@ pub fn mock_bottle_tarball_with_files(
     version: &str,
     files: &[(&str, &[u8], u32)],
 ) -> Vec<u8> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use std::io::Write;
     use tar::Builder;
 
@@ -327,7 +325,7 @@ pub fn mock_truncated_download(data: &[u8], claimed_length: usize) -> ResponseTe
 pub fn create_readonly_dir(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
     let dir = parent.join(name);
     fs::create_dir_all(&dir)?;
-    
+
     // Set permissions to read-only (no write for owner, group, or others)
     #[cfg(unix)]
     {
@@ -335,14 +333,14 @@ pub fn create_readonly_dir(parent: &Path, name: &str) -> std::io::Result<PathBuf
         let perms = fs::Permissions::from_mode(0o555);
         fs::set_permissions(&dir, perms)?;
     }
-    
+
     #[cfg(not(unix))]
     {
         let mut perms = fs::metadata(&dir)?.permissions();
         perms.set_readonly(true);
         fs::set_permissions(&dir, perms)?;
     }
-    
+
     Ok(dir)
 }
 
@@ -354,14 +352,14 @@ pub fn restore_write_permissions(path: &Path) -> std::io::Result<()> {
         let perms = fs::Permissions::from_mode(0o755);
         fs::set_permissions(path, perms)?;
     }
-    
+
     #[cfg(not(unix))]
     {
         let mut perms = fs::metadata(path)?.permissions();
         perms.set_readonly(false);
         fs::set_permissions(path, perms)?;
     }
-    
+
     Ok(())
 }
 
@@ -369,38 +367,38 @@ pub fn restore_write_permissions(path: &Path) -> std::io::Result<()> {
 /// Useful for testing file overwrite failures.
 pub fn create_readonly_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     fs::write(path, content)?;
-    
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = fs::Permissions::from_mode(0o444);
         fs::set_permissions(path, perms)?;
     }
-    
+
     #[cfg(not(unix))]
     {
         let mut perms = fs::metadata(path)?.permissions();
         perms.set_readonly(true);
         fs::set_permissions(path, perms)?;
     }
-    
+
     Ok(())
 }
 
 /// Note on full disk simulation:
-/// 
+///
 /// Simulating a full disk is platform-specific and often requires root privileges
 /// or special setup (e.g., creating a small loopback filesystem). For practical
 /// testing purposes, we recommend:
-/// 
+///
 /// 1. Using a small ramdisk/tmpfs with limited size
 /// 2. Mocking at the IO layer
 /// 3. Testing with readonly directories instead (simpler, covers similar paths)
-/// 
+///
 /// A true full-disk simulation would require:
 /// - Linux: `dd if=/dev/zero of=disk.img bs=1M count=1 && mkfs.ext4 disk.img && mount -o loop disk.img /mnt/test`
 /// - macOS: `hdiutil create -size 1m -fs HFS+ -volname Test disk.dmg && hdiutil attach disk.dmg`
-/// 
+///
 /// These are not portable or easily automated in tests.
 
 // ============================================================================
@@ -418,10 +416,10 @@ pub fn create_readonly_file(path: &Path, content: &[u8]) -> std::io::Result<()> 
 ///
 /// ```ignore
 /// let ctx = TestContext::new().await;
-/// 
+///
 /// // Mount mock responses
 /// ctx.mount_formula("wget", "1.0.0", &[]).await;
-/// 
+///
 /// // Use the installer
 /// ctx.installer_mut().install("wget", true).await.unwrap();
 /// ```
@@ -437,44 +435,44 @@ impl TestContext {
         let mock_server = MockServer::start().await;
         let tmp = TempDir::new().expect("failed to create temp dir");
         let installer = create_test_installer(&mock_server, &tmp);
-        
+
         Self {
             tmp,
             mock_server,
             installer,
         }
     }
-    
+
     /// Get a reference to the installer.
     pub fn installer(&self) -> &Installer {
         &self.installer
     }
-    
+
     /// Get a mutable reference to the installer.
     pub fn installer_mut(&mut self) -> &mut Installer {
         &mut self.installer
     }
-    
+
     /// Get the root path (zerobrew data directory).
     pub fn root(&self) -> PathBuf {
         self.tmp.path().join("zerobrew")
     }
-    
+
     /// Get the prefix path (homebrew-compatible prefix).
     pub fn prefix(&self) -> PathBuf {
         self.tmp.path().join("homebrew")
     }
-    
+
     /// Get the cellar path.
     pub fn cellar(&self) -> PathBuf {
         self.root().join("cellar")
     }
-    
+
     /// Get the store path.
     pub fn store(&self) -> PathBuf {
         self.root().join("store")
     }
-    
+
     /// Mount a formula API mock with auto-generated bottle.
     ///
     /// This is a convenience method that:
@@ -487,16 +485,16 @@ impl TestContext {
         let bottle = mock_bottle_tarball_with_version(name, version);
         let sha = sha256_hex(&bottle);
         let tag = platform_bottle_tag();
-        
+
         let formula_json = mock_formula_json(name, version, deps, &self.mock_server.uri(), &sha);
-        
+
         // Mount formula API
         Mock::given(method("GET"))
             .and(path(format!("/{}.json", name)))
             .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
             .mount(&self.mock_server)
             .await;
-        
+
         // Mount bottle download
         let bottle_path = format!("/bottles/{}-{}.{}.bottle.tar.gz", name, version, tag);
         Mock::given(method("GET"))
@@ -504,10 +502,10 @@ impl TestContext {
             .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
             .mount(&self.mock_server)
             .await;
-        
+
         sha
     }
-    
+
     /// Mount a formula with a custom bottle response.
     /// Useful for testing error conditions.
     pub async fn mount_formula_with_bottle_response(
@@ -519,15 +517,16 @@ impl TestContext {
         bottle_sha: &str,
     ) {
         let tag = platform_bottle_tag();
-        let formula_json = mock_formula_json(name, version, deps, &self.mock_server.uri(), bottle_sha);
-        
+        let formula_json =
+            mock_formula_json(name, version, deps, &self.mock_server.uri(), bottle_sha);
+
         // Mount formula API
         Mock::given(method("GET"))
             .and(path(format!("/{}.json", name)))
             .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
             .mount(&self.mock_server)
             .await;
-        
+
         // Mount bottle with custom response
         let bottle_path = format!("/bottles/{}-{}.{}.bottle.tar.gz", name, version, tag);
         Mock::given(method("GET"))
@@ -536,14 +535,14 @@ impl TestContext {
             .mount(&self.mock_server)
             .await;
     }
-    
+
     /// Mount a formula API that returns an error.
     pub async fn mount_formula_error(&self, name: &str, status: u16, body: Option<&str>) {
         let mut response = ResponseTemplate::new(status);
         if let Some(msg) = body {
             response = response.set_body_string(msg);
         }
-        
+
         Mock::given(method("GET"))
             .and(path(format!("/{}.json", name)))
             .respond_with(response)
@@ -607,7 +606,13 @@ mod tests {
 
     #[test]
     fn test_mock_formula_json_with_deps() {
-        let json = mock_formula_json("curl", "2.0.0", &["openssl", "zlib"], "http://test.com", "def456");
+        let json = mock_formula_json(
+            "curl",
+            "2.0.0",
+            &["openssl", "zlib"],
+            "http://test.com",
+            "def456",
+        );
         assert!(json.contains("\"name\": \"curl\""));
         assert!(json.contains("\"openssl\""));
         assert!(json.contains("\"zlib\""));
@@ -617,7 +622,7 @@ mod tests {
     fn test_mock_bottle_tarball() {
         let tarball = mock_bottle_tarball("testpkg");
         assert!(!tarball.is_empty());
-        
+
         // Should be valid gzip
         assert_eq!(tarball[0], 0x1f);
         assert_eq!(tarball[1], 0x8b);

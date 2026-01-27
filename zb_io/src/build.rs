@@ -1587,7 +1587,8 @@ mod tests {
             let builder = Builder::new(env);
 
             // This should capture both stdout
-            let result = builder.run_command("sh", &["-c", "echo stdout; echo stderr >&2"], tmp.path());
+            let result =
+                builder.run_command("sh", &["-c", "echo stdout; echo stderr >&2"], tmp.path());
             assert!(result.is_ok());
             let output = result.unwrap();
             assert!(output.contains("stdout"));
@@ -1814,10 +1815,8 @@ mod tests {
             let env = make_test_env_in(&tmp);
             let builder = Builder::new(env);
 
-            let result = builder.build_meson(&[
-                "-Dtests=false".to_string(),
-                "-Ddocs=false".to_string(),
-            ]);
+            let result =
+                builder.build_meson(&["-Dtests=false".to_string(), "-Ddocs=false".to_string()]);
             assert!(result.is_err()); // Will fail but tests arg passing
         }
 
@@ -1830,10 +1829,7 @@ mod tests {
             let env = make_test_env_in(&tmp);
             let builder = Builder::new(env);
 
-            let result = builder.build_make(&[
-                "CC=gcc".to_string(),
-                "CFLAGS=-O2".to_string(),
-            ]);
+            let result = builder.build_make(&["CC=gcc".to_string(), "CFLAGS=-O2".to_string()]);
             assert!(result.is_err()); // Will fail but tests arg passing
         }
     }

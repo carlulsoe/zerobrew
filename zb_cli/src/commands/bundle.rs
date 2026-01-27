@@ -42,17 +42,14 @@ async fn run_install(
     let brewfile_path = match file {
         Some(path) => {
             // Validate explicit path exists
-            validate_brewfile_path(Some(path), cwd).map_err(|e| {
-                zb_core::Error::StoreCorruption { message: e }
-            })?
+            validate_brewfile_path(Some(path), cwd)
+                .map_err(|e| zb_core::Error::StoreCorruption { message: e })?
         }
-        None => {
-            installer.find_brewfile(cwd).ok_or_else(|| {
-                zb_core::Error::StoreCorruption {
-                    message: format_no_brewfile_error(),
-                }
-            })?
-        }
+        None => installer
+            .find_brewfile(cwd)
+            .ok_or_else(|| zb_core::Error::StoreCorruption {
+                message: format_no_brewfile_error(),
+            })?,
     };
 
     println!(
@@ -111,17 +108,14 @@ fn run_check(
     let brewfile_path = match file {
         Some(path) => {
             // Validate explicit path exists
-            validate_brewfile_path(Some(path), cwd).map_err(|e| {
-                zb_core::Error::StoreCorruption { message: e }
-            })?
+            validate_brewfile_path(Some(path), cwd)
+                .map_err(|e| zb_core::Error::StoreCorruption { message: e })?
         }
-        None => {
-            installer.find_brewfile(cwd).ok_or_else(|| {
-                zb_core::Error::StoreCorruption {
-                    message: format_no_brewfile_error(),
-                }
-            })?
-        }
+        None => installer
+            .find_brewfile(cwd)
+            .ok_or_else(|| zb_core::Error::StoreCorruption {
+                message: format_no_brewfile_error(),
+            })?,
     };
 
     println!(
@@ -149,17 +143,14 @@ fn run_list(
     let brewfile_path = match file {
         Some(path) => {
             // Validate explicit path exists
-            validate_brewfile_path(Some(path), cwd).map_err(|e| {
-                zb_core::Error::StoreCorruption { message: e }
-            })?
+            validate_brewfile_path(Some(path), cwd)
+                .map_err(|e| zb_core::Error::StoreCorruption { message: e })?
         }
-        None => {
-            installer.find_brewfile(cwd).ok_or_else(|| {
-                zb_core::Error::StoreCorruption {
-                    message: format_no_brewfile_error(),
-                }
-            })?
-        }
+        None => installer
+            .find_brewfile(cwd)
+            .ok_or_else(|| zb_core::Error::StoreCorruption {
+                message: format_no_brewfile_error(),
+            })?,
     };
 
     let entries = installer.parse_brewfile(&brewfile_path)?;
@@ -238,7 +229,7 @@ pub(crate) fn validate_brewfile_path(
                         return Err(
                             "No Brewfile found in current directory or parent directories"
                                 .to_string(),
-                        )
+                        );
                     }
                 }
             }
@@ -306,10 +297,7 @@ fn format_install_result(result: &BundleInstallResult) -> String {
     let mut output = String::new();
 
     if !result.taps_added.is_empty() {
-        output.push_str(&format!(
-            "\n{} Taps added:\n",
-            style("==>").cyan().bold()
-        ));
+        output.push_str(&format!("\n{} Taps added:\n", style("==>").cyan().bold()));
         for tap in &result.taps_added {
             output.push_str(&format!("    {} {}\n", style("✓").green(), tap));
         }
@@ -397,8 +385,9 @@ pub(crate) fn format_check_result_plain(result: &BundleCheckResult) -> String {
 fn format_check_result(result: &BundleCheckResult) -> String {
     let mut output = String::new();
 
-    let (_missing_taps_count, _missing_formulas_count, all_satisfied) = compute_check_summary(result);
-    
+    let (_missing_taps_count, _missing_formulas_count, all_satisfied) =
+        compute_check_summary(result);
+
     if all_satisfied {
         output.push_str(&format!(
             "\n{} All entries are satisfied!\n",
@@ -455,7 +444,10 @@ pub(crate) fn format_list_output_plain(entries: &[BrewfileEntry]) -> String {
     }
 
     let (tap_count, brew_count) = count_brewfile_entries(entries);
-    output.push_str(&format!("\n==> {} taps, {} formulas\n", tap_count, brew_count));
+    output.push_str(&format!(
+        "\n==> {} taps, {} formulas\n",
+        tap_count, brew_count
+    ));
 
     output
 }
@@ -469,10 +461,7 @@ fn format_list_output(entries: &[BrewfileEntry]) -> String {
         match entry {
             BrewfileEntry::Tap { name } => {
                 // Use format_tap_entry pattern but with colors
-                output.push_str(&format!(
-                    "tap  {}\n",
-                    style(name).cyan()
-                ));
+                output.push_str(&format!("tap  {}\n", style(name).cyan()));
             }
             BrewfileEntry::Brew { name, args } => {
                 // Use format_brew_entry pattern but with colors
@@ -696,7 +685,10 @@ mod tests {
             "--with-baz".to_string(),
         ];
         let result = format_brew_entry("complex", &args);
-        assert_eq!(result, "brew complex (--HEAD, --with-foo, --with-bar, --with-baz)");
+        assert_eq!(
+            result,
+            "brew complex (--HEAD, --with-foo, --with-bar, --with-baz)"
+        );
     }
 
     // ========================================================================

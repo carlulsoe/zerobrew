@@ -951,22 +951,34 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn system_interpreter() -> &'static str {
         #[cfg(target_arch = "aarch64")]
-        { "/lib/ld-linux-aarch64.so.1" }
+        {
+            "/lib/ld-linux-aarch64.so.1"
+        }
         #[cfg(target_arch = "x86_64")]
-        { "/lib64/ld-linux-x86-64.so.2" }
+        {
+            "/lib64/ld-linux-x86-64.so.2"
+        }
         #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-        { "/lib/ld-linux.so.2" }
+        {
+            "/lib/ld-linux.so.2"
+        }
     }
 
     /// Returns system library paths for the current architecture.
     #[cfg(target_os = "linux")]
     fn system_lib_paths() -> &'static str {
         #[cfg(target_arch = "aarch64")]
-        { "/lib:/usr/lib:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu" }
+        {
+            "/lib:/usr/lib:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu"
+        }
         #[cfg(target_arch = "x86_64")]
-        { "/lib64:/usr/lib64:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu" }
+        {
+            "/lib64:/usr/lib64:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu"
+        }
         #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-        { "/lib:/usr/lib" }
+        {
+            "/lib:/usr/lib"
+        }
     }
 
     fn setup_store_entry(tmp: &TempDir) -> PathBuf {
@@ -1500,7 +1512,8 @@ mod tests {
         // patch_homebrew_placeholders_linux should return Ok even if patchelf
         // isn't installed - it gracefully skips patching
         let zerobrew_root = tmp.path();
-        let result = patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
+        let result =
+            patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
         assert!(result.is_ok(), "Should not fail when patchelf is missing");
     }
 
@@ -1567,7 +1580,8 @@ mod tests {
 
         // Patching should succeed (skip files without RPATH)
         let zerobrew_root = tmp.path();
-        let result = patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
+        let result =
+            patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
         assert!(result.is_ok(), "Should handle ELF without RPATH gracefully");
     }
 
@@ -1598,7 +1612,8 @@ mod tests {
 
         // Patching should handle this (might fail on write, but shouldn't panic)
         let zerobrew_root = tmp.path();
-        let result = patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
+        let result =
+            patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
         // Result may be Ok (skipped) or Err (can't write), but shouldn't panic
 
         // Restore permissions for cleanup
@@ -1634,7 +1649,8 @@ mod tests {
 
         // Patching should follow symlinks or skip them appropriately
         let zerobrew_root = tmp.path();
-        let result = patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
+        let result =
+            patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
         assert!(result.is_ok(), "Should handle ELF symlinks");
     }
 
@@ -2227,7 +2243,9 @@ int main() {
         if is_compiled_or_linuxbrew_binary(&test_binary) {
             let exec_result = Command::new(&test_binary).output();
             if exec_result.is_err() {
-                eprintln!("Note: Patched binary couldn't execute (likely missing libs), but ELF structure is valid");
+                eprintln!(
+                    "Note: Patched binary couldn't execute (likely missing libs), but ELF structure is valid"
+                );
             }
         }
     }
@@ -2328,7 +2346,10 @@ int main() {
             .unwrap_or_default();
 
         let expected_rpath = if orig_rpath.is_empty() {
-            format!("/opt/zerobrew/test/lib:/opt/zerobrew/prefix/lib:{}", system_lib_paths())
+            format!(
+                "/opt/zerobrew/test/lib:/opt/zerobrew/prefix/lib:{}",
+                system_lib_paths()
+            )
         } else {
             format!(
                 "/opt/zerobrew/test/lib:/opt/zerobrew/prefix/lib:{}",
@@ -2383,7 +2404,9 @@ int main() {
         if is_compiled_or_linuxbrew_binary(&test_binary) {
             let exec_result = Command::new(&test_binary).output();
             if exec_result.is_err() {
-                eprintln!("Note: Patched binary couldn't execute (likely missing libs), but ELF structure is valid");
+                eprintln!(
+                    "Note: Patched binary couldn't execute (likely missing libs), but ELF structure is valid"
+                );
             }
         }
     }
@@ -2422,8 +2445,7 @@ int main() {
 
         // Create ld.so symlink (simulating zerobrew prefix)
         fs::create_dir_all(prefix.join("lib")).unwrap();
-        std::os::unix::fs::symlink(system_interpreter(), prefix.join("lib/ld.so"))
-            .unwrap();
+        std::os::unix::fs::symlink(system_interpreter(), prefix.join("lib/ld.so")).unwrap();
 
         // Create or find a test binary directly in the keg/bin directory
         let test_binary = match create_or_find_patchable_binary(&keg.join("bin")) {
@@ -2462,7 +2484,9 @@ int main() {
         if is_compiled_or_linuxbrew_binary(&test_binary) {
             let exec_result = Command::new(&test_binary).output();
             if exec_result.is_err() {
-                eprintln!("Note: Patched binary couldn't execute (likely missing libs), but ELF structure is valid");
+                eprintln!(
+                    "Note: Patched binary couldn't execute (likely missing libs), but ELF structure is valid"
+                );
             }
         }
     }
@@ -2583,7 +2607,9 @@ int main() {
         if is_compiled_or_linuxbrew_binary(&test_binary) {
             let exec_result = Command::new(&test_binary).output();
             if exec_result.is_err() {
-                eprintln!("Note: Patched binary couldn't execute (likely missing libs), but ELF structure is valid");
+                eprintln!(
+                    "Note: Patched binary couldn't execute (likely missing libs), but ELF structure is valid"
+                );
             }
         }
     }

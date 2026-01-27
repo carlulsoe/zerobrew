@@ -74,9 +74,8 @@ impl Linker {
                 // Check if it's our own link (compare canonical paths to handle relative symlinks)
                 if let Ok(existing_target) = fs::read_link(&link_path) {
                     // Resolve relative symlinks
-                    let resolved_existing =
-                        resolve_symlink_target(&link_path, &existing_target)
-                            .unwrap_or_else(|| existing_target.clone());
+                    let resolved_existing = resolve_symlink_target(&link_path, &existing_target)
+                        .unwrap_or_else(|| existing_target.clone());
 
                     // Canonicalize both to compare actual filesystem locations
                     let existing_canonical = fs::canonicalize(&resolved_existing).ok();
@@ -170,9 +169,8 @@ impl Linker {
             // Only remove if it's a symlink pointing to our keg
             if let Ok(existing_target) = fs::read_link(&link_path) {
                 // Resolve relative symlinks
-                let resolved_existing =
-                    resolve_symlink_target(&link_path, &existing_target)
-                        .unwrap_or_else(|| existing_target.clone());
+                let resolved_existing = resolve_symlink_target(&link_path, &existing_target)
+                    .unwrap_or_else(|| existing_target.clone());
 
                 // Canonicalize both to compare actual filesystem locations
                 let existing_canonical = fs::canonicalize(&resolved_existing).ok();
@@ -201,8 +199,8 @@ impl Linker {
             let opt_link = self.opt_dir.join(name);
             if let Ok(target) = fs::read_link(&opt_link) {
                 // Resolve relative symlinks
-                let resolved = resolve_symlink_target(&opt_link, &target)
-                    .unwrap_or_else(|| target.clone());
+                let resolved =
+                    resolve_symlink_target(&opt_link, &target).unwrap_or_else(|| target.clone());
 
                 // Compare canonical paths
                 let resolved_canonical = fs::canonicalize(&resolved).ok();
@@ -232,8 +230,8 @@ impl Linker {
         if opt_link.symlink_metadata().is_ok() {
             if let Ok(target) = fs::read_link(&opt_link) {
                 // Resolve relative symlinks
-                let resolved = resolve_symlink_target(&opt_link, &target)
-                    .unwrap_or_else(|| target.clone());
+                let resolved =
+                    resolve_symlink_target(&opt_link, &target).unwrap_or_else(|| target.clone());
 
                 // Compare canonical paths
                 let resolved_canonical = fs::canonicalize(&resolved).ok();
@@ -271,9 +269,8 @@ impl Linker {
 
                 if let Ok(existing_target) = fs::read_link(&link_path) {
                     // Resolve relative symlinks
-                    let resolved_existing =
-                        resolve_symlink_target(&link_path, &existing_target)
-                            .unwrap_or_else(|| existing_target.clone());
+                    let resolved_existing = resolve_symlink_target(&link_path, &existing_target)
+                        .unwrap_or_else(|| existing_target.clone());
 
                     // Canonicalize both to compare actual filesystem locations
                     let existing_canonical = fs::canonicalize(&resolved_existing).ok();

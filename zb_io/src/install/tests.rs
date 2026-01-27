@@ -3353,9 +3353,9 @@ fn source_build_result_head_build() {
 mod error_path_tests {
     use super::*;
     use crate::test_utils::{
-        TestContext, mock_500_error, mock_timeout_response, mock_formula_json,
-        mock_bottle_tarball_with_version, sha256_hex, platform_bottle_tag,
-        create_readonly_dir, restore_write_permissions, create_test_installer,
+        TestContext, create_readonly_dir, create_test_installer, mock_500_error,
+        mock_bottle_tarball_with_version, mock_formula_json, mock_timeout_response,
+        platform_bottle_tag, restore_write_permissions, sha256_hex,
     };
     use std::time::Duration;
     use tempfile::TempDir;
@@ -3369,29 +3369,25 @@ mod error_path_tests {
     async fn test_network_timeout_handling() {
         let mut ctx = TestContext::new().await;
         let _tag = platform_bottle_tag();
-        
+
         // Create a valid bottle for SHA calculation
         let bottle = mock_bottle_tarball_with_version("slowpkg", "1.0.0");
         let sha = sha256_hex(&bottle);
-        
+
         // Mount formula with a bottle that will timeout
         // Use a 30-second delay which should exceed any reasonable timeout
         let timeout_response = mock_timeout_response(Duration::from_secs(30), Some(bottle));
-        ctx.mount_formula_with_bottle_response(
-            "slowpkg",
-            "1.0.0",
-            &[],
-            timeout_response,
-            &sha,
-        ).await;
-        
+        ctx.mount_formula_with_bottle_response("slowpkg", "1.0.0", &[], timeout_response, &sha)
+            .await;
+
         // Attempt install - this may timeout or fail depending on client settings
         // The key is that it should fail gracefully, not hang forever
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             ctx.installer_mut().install("slowpkg", true),
-        ).await;
-        
+        )
+        .await;
+
         // Should either timeout or return an error, not succeed
         match result {
             Ok(Ok(_)) => {
@@ -3420,13 +3416,14 @@ mod error_path_tests {
     #[tokio::test]
     async fn test_500_error_handling() {
         let mut ctx = TestContext::new().await;
-        
+
         // Mount formula API that returns 500
-        ctx.mount_formula_error("brokenpkg", 500, Some("Internal Server Error")).await;
-        
+        ctx.mount_formula_error("brokenpkg", 500, Some("Internal Server Error"))
+            .await;
+
         // Attempt install
         let result = ctx.installer_mut().install("brokenpkg", true).await;
-        
+
         // Should fail
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -3443,13 +3440,14 @@ mod error_path_tests {
     #[tokio::test]
     async fn test_404_missing_formula_handling() {
         let mut ctx = TestContext::new().await;
-        
+
         // Mount formula API that returns 404
-        ctx.mount_formula_error("nonexistent", 404, Some("Not Found")).await;
-        
+        ctx.mount_formula_error("nonexistent", 404, Some("Not Found"))
+            .await;
+
         // Attempt install
         let result = ctx.installer_mut().install("nonexistent", true).await;
-        
+
         // Should fail with MissingFormula
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -3462,7 +3460,10 @@ mod error_path_tests {
                 assert!(message.contains("404") || message.contains("nonexistent"));
             }
             other => {
-                panic!("Expected MissingFormula or NetworkFailure, got: {:?}", other);
+                panic!(
+                    "Expected MissingFormula or NetworkFailure, got: {:?}",
+                    other
+                );
             }
         }
     }
@@ -3471,7 +3472,7 @@ mod error_path_tests {
     #[tokio::test]
     async fn test_bottle_download_500_error() {
         let mut ctx = TestContext::new().await;
-        
+
         // Mount formula API successfully, but bottle returns 500
         // Use a fake SHA since the download will fail anyway
         let fake_sha = "0".repeat(64);
@@ -3481,11 +3482,12 @@ mod error_path_tests {
             &[],
             mock_500_error(Some("Bottle server error")),
             &fake_sha,
-        ).await;
-        
+        )
+        .await;
+
         // Attempt install
         let result = ctx.installer_mut().install("bottlefail", true).await;
-        
+
         // Should fail
         assert!(result.is_err());
     }
@@ -3497,28 +3499,23 @@ mod error_path_tests {
     async fn test_checksum_mismatch_handling() {
         let mut ctx = TestContext::new().await;
         let tag = platform_bottle_tag();
-        
+
         // Create a bottle
         let bottle = mock_bottle_tarball_with_version("badsha", "1.0.0");
-        
+
         // Use a different SHA than what the bottle actually hashes to
         let wrong_sha = "a".repeat(64);
-        
+
         // Mount formula with wrong SHA
-        let formula_json = mock_formula_json(
-            "badsha",
-            "1.0.0",
-            &[],
-            &ctx.mock_server.uri(),
-            &wrong_sha,
-        );
-        
+        let formula_json =
+            mock_formula_json("badsha", "1.0.0", &[], &ctx.mock_server.uri(), &wrong_sha);
+
         Mock::given(method("GET"))
             .and(path("/badsha.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
             .mount(&ctx.mock_server)
             .await;
-        
+
         // Mount the actual bottle (which will have different SHA)
         let bottle_path = format!("/bottles/badsha-1.0.0.{}.bottle.tar.gz", tag);
         Mock::given(method("GET"))
@@ -3526,15 +3523,17 @@ mod error_path_tests {
             .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
             .mount(&ctx.mock_server)
             .await;
-        
+
         // Attempt install
         let result = ctx.installer_mut().install("badsha", true).await;
-        
+
         // Should fail with checksum mismatch
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
-            zb_core::Error::ChecksumMismatch { expected, actual, .. } => {
+            zb_core::Error::ChecksumMismatch {
+                expected, actual, ..
+            } => {
                 assert_eq!(expected, wrong_sha);
                 assert_ne!(actual, wrong_sha);
             }
@@ -3558,40 +3557,40 @@ mod error_path_tests {
                 return;
             }
         }
-        
+
         let mock_server = MockServer::start().await;
         let tmp = TempDir::new().unwrap();
         let tag = platform_bottle_tag();
-        
+
         // Create bottle
         let bottle = mock_bottle_tarball_with_version("noperm", "1.0.0");
         let sha = sha256_hex(&bottle);
-        
+
         let formula_json = mock_formula_json("noperm", "1.0.0", &[], &mock_server.uri(), &sha);
-        
+
         Mock::given(method("GET"))
             .and(path("/noperm.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
             .mount(&mock_server)
             .await;
-        
+
         let bottle_path = format!("/bottles/noperm-1.0.0.{}.bottle.tar.gz", tag);
         Mock::given(method("GET"))
             .and(path(bottle_path))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
             .mount(&mock_server)
             .await;
-        
+
         // Set up directories
         let root = tmp.path().join("zerobrew");
         let prefix = tmp.path().join("homebrew");
         fs::create_dir_all(root.join("db")).unwrap();
         fs::create_dir_all(&prefix).unwrap();
-        
+
         // Create the cellar directory as readonly
         let cellar_path = root.join("cellar");
         let _ = create_readonly_dir(&root, "cellar");
-        
+
         // Ensure we clean up readonly dir even if test fails
         struct Cleanup(PathBuf);
         impl Drop for Cleanup {
@@ -3600,7 +3599,7 @@ mod error_path_tests {
             }
         }
         let _cleanup = Cleanup(cellar_path.clone());
-        
+
         // Create installer
         let api_client = ApiClient::with_base_url(mock_server.uri());
         let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
@@ -3611,7 +3610,7 @@ mod error_path_tests {
         let taps_dir = root.join("taps");
         fs::create_dir_all(&taps_dir).unwrap();
         let tap_manager = TapManager::new(&taps_dir);
-        
+
         let mut installer = Installer::new(
             api_client,
             blob_cache,
@@ -3624,19 +3623,21 @@ mod error_path_tests {
             prefix.join("Cellar"),
             4,
         );
-        
+
         // Attempt install - should fail due to permission denied
         let result = installer.install("noperm", true).await;
-        
+
         // May succeed (if cellar writes elsewhere) or fail
         // The key test is that it doesn't panic
         if let Err(e) = result {
             let msg = format!("{:?}", e);
             // Should be permission-related or store corruption message
             assert!(
-                msg.contains("permission") || msg.contains("Permission") 
-                || msg.contains("denied") || msg.contains("Store")
-                || msg.contains("failed"),
+                msg.contains("permission")
+                    || msg.contains("Permission")
+                    || msg.contains("denied")
+                    || msg.contains("Store")
+                    || msg.contains("failed"),
                 "Expected permission error, got: {}",
                 msg
             );
@@ -3648,42 +3649,39 @@ mod error_path_tests {
     async fn test_corrupted_tarball_handling() {
         let mut ctx = TestContext::new().await;
         let tag = platform_bottle_tag();
-        
+
         // Create invalid tarball data (not valid gzip)
         let corrupted_data = vec![0x00, 0x01, 0x02, 0x03, 0xFF, 0xFE];
         let sha = sha256_hex(&corrupted_data);
-        
-        let formula_json = mock_formula_json(
-            "corrupt",
-            "1.0.0",
-            &[],
-            &ctx.mock_server.uri(),
-            &sha,
-        );
-        
+
+        let formula_json = mock_formula_json("corrupt", "1.0.0", &[], &ctx.mock_server.uri(), &sha);
+
         Mock::given(method("GET"))
             .and(path("/corrupt.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
             .mount(&ctx.mock_server)
             .await;
-        
+
         let bottle_path = format!("/bottles/corrupt-1.0.0.{}.bottle.tar.gz", tag);
         Mock::given(method("GET"))
             .and(path(bottle_path))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(corrupted_data))
             .mount(&ctx.mock_server)
             .await;
-        
+
         // Attempt install
         let result = ctx.installer_mut().install("corrupt", true).await;
-        
+
         // Should fail with store corruption (tarball extraction fails)
         assert!(result.is_err());
         let err = result.unwrap_err();
         let msg = format!("{:?}", err);
         assert!(
-            msg.contains("Store") || msg.contains("corrupt") || msg.contains("extraction")
-            || msg.contains("gzip") || msg.contains("invalid"),
+            msg.contains("Store")
+                || msg.contains("corrupt")
+                || msg.contains("extraction")
+                || msg.contains("gzip")
+                || msg.contains("invalid"),
             "Expected corruption/extraction error, got: {}",
             msg
         );
@@ -3693,12 +3691,12 @@ mod error_path_tests {
     #[tokio::test]
     async fn test_missing_dependency_handling() {
         let mut ctx = TestContext::new().await;
-        
+
         // Mount main package that depends on a non-existent package
         let bottle = mock_bottle_tarball_with_version("hasdep", "1.0.0");
         let sha = sha256_hex(&bottle);
         let _tag = platform_bottle_tag();
-        
+
         let formula_json = mock_formula_json(
             "hasdep",
             "1.0.0",
@@ -3706,19 +3704,20 @@ mod error_path_tests {
             &ctx.mock_server.uri(),
             &sha,
         );
-        
+
         Mock::given(method("GET"))
             .and(path("/hasdep.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
             .mount(&ctx.mock_server)
             .await;
-        
+
         // missingdep returns 404
-        ctx.mount_formula_error("missingdep", 404, Some("Not Found")).await;
-        
+        ctx.mount_formula_error("missingdep", 404, Some("Not Found"))
+            .await;
+
         // Attempt install
         let result = ctx.installer_mut().install("hasdep", true).await;
-        
+
         // Should fail because dependency is missing
         assert!(result.is_err());
     }
@@ -3727,9 +3726,9 @@ mod error_path_tests {
     #[tokio::test]
     async fn test_uninstall_not_installed() {
         let mut ctx = TestContext::new().await;
-        
+
         let result = ctx.installer_mut().uninstall("nothere");
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             zb_core::Error::NotInstalled { name } => {
@@ -3745,9 +3744,12 @@ mod error_path_tests {
     #[tokio::test]
     async fn test_upgrade_not_installed() {
         let mut ctx = TestContext::new().await;
-        
-        let result = ctx.installer_mut().upgrade_one("notinstalled", true, None).await;
-        
+
+        let result = ctx
+            .installer_mut()
+            .upgrade_one("notinstalled", true, None)
+            .await;
+
         assert!(result.is_err());
         match result.unwrap_err() {
             zb_core::Error::NotInstalled { name } => {
@@ -3768,9 +3770,9 @@ mod error_path_tests {
     /// should detect the corruption and fail with a ChecksumMismatch error.
     #[tokio::test]
     async fn test_checksum_mismatch_detection() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
-        
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         let mock_server = MockServer::start().await;
         let tmp = TempDir::new().unwrap();
         let tag = platform_bottle_tag();
@@ -3778,17 +3780,12 @@ mod error_path_tests {
         // Create a valid bottle
         let bottle = mock_bottle_tarball_with_version("checksumpkg", "1.0.0");
         let _correct_sha = sha256_hex(&bottle);
-        
+
         // Use a WRONG sha256 in the formula (simulates corrupted download expectation)
         let wrong_sha = "0000000000000000000000000000000000000000000000000000000000000000";
 
-        let formula_json = mock_formula_json(
-            "checksumpkg",
-            "1.0.0",
-            &[],
-            &mock_server.uri(),
-            wrong_sha,
-        );
+        let formula_json =
+            mock_formula_json("checksumpkg", "1.0.0", &[], &mock_server.uri(), wrong_sha);
 
         Mock::given(method("GET"))
             .and(path("/checksumpkg.json"))
@@ -3836,13 +3833,8 @@ mod error_path_tests {
         let corrupted_data = vec![0x1f, 0x8b, 0x00, 0x00, 0xff, 0xff, 0xff];
         let sha = sha256_hex(&corrupted_data);
 
-        let formula_json = mock_formula_json(
-            "corruptpkg",
-            "1.0.0",
-            &[],
-            &ctx.mock_server.uri(),
-            &sha,
-        );
+        let formula_json =
+            mock_formula_json("corruptpkg", "1.0.0", &[], &ctx.mock_server.uri(), &sha);
 
         Mock::given(method("GET"))
             .and(path("/corruptpkg.json"))
@@ -3891,22 +3883,18 @@ mod error_path_tests {
         let tag = platform_bottle_tag();
 
         // Create a valid gzip but invalid tar content
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::io::Write;
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(b"this is not a valid tar archive").unwrap();
+        encoder
+            .write_all(b"this is not a valid tar archive")
+            .unwrap();
         let invalid_tar = encoder.finish().unwrap();
         let sha = sha256_hex(&invalid_tar);
 
-        let formula_json = mock_formula_json(
-            "badtar",
-            "1.0.0",
-            &[],
-            &ctx.mock_server.uri(),
-            &sha,
-        );
+        let formula_json = mock_formula_json("badtar", "1.0.0", &[], &ctx.mock_server.uri(), &sha);
 
         Mock::given(method("GET"))
             .and(path("/badtar.json"))
@@ -3962,24 +3950,12 @@ mod error_path_tests {
         let good_sha = sha256_hex(&good_bottle);
 
         // Good package formula
-        let good_json = mock_formula_json(
-            "goodpkg",
-            "1.0.0",
-            &[],
-            &mock_server.uri(),
-            &good_sha,
-        );
+        let good_json = mock_formula_json("goodpkg", "1.0.0", &[], &mock_server.uri(), &good_sha);
 
         // Bad package formula with wrong sha (will cause checksum mismatch)
         let bad_bottle = mock_bottle_tarball_with_version("badpkg", "1.0.0");
         let wrong_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let bad_json = mock_formula_json(
-            "badpkg",
-            "1.0.0",
-            &[],
-            &mock_server.uri(),
-            wrong_sha,
-        );
+        let bad_json = mock_formula_json("badpkg", "1.0.0", &[], &mock_server.uri(), wrong_sha);
 
         // Mount formula mocks
         Mock::given(method("GET"))
@@ -4013,7 +3989,11 @@ mod error_path_tests {
 
         // Install good package first - should succeed
         let result = installer.install("goodpkg", true).await;
-        assert!(result.is_ok(), "Good package should install: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Good package should install: {:?}",
+            result.err()
+        );
         assert!(installer.is_installed("goodpkg"));
 
         // Install bad package - should fail
@@ -4040,13 +4020,7 @@ mod error_path_tests {
         let bottle = mock_bottle_tarball_with_version("partialpkg", "1.0.0");
         let sha = sha256_hex(&bottle);
 
-        let formula_json = mock_formula_json(
-            "partialpkg",
-            "1.0.0",
-            &[],
-            &mock_server.uri(),
-            &sha,
-        );
+        let formula_json = mock_formula_json("partialpkg", "1.0.0", &[], &mock_server.uri(), &sha);
 
         Mock::given(method("GET"))
             .and(path("/partialpkg.json"))
@@ -4118,7 +4092,10 @@ mod error_path_tests {
         // Verify temp dirs were removed
         assert!(!stale_temp1.exists(), "Stale temp dir 1 should be removed");
         assert!(!stale_temp2.exists(), "Stale temp dir 2 should be removed");
-        assert!(result.temp_files_removed >= 2, "Should report temp files removed");
+        assert!(
+            result.temp_files_removed >= 2,
+            "Should report temp files removed"
+        );
     }
 
     /// Test that a failed install doesn't leave database entries.
@@ -4133,13 +4110,7 @@ mod error_path_tests {
         let corrupted = vec![0x1f, 0x8b, 0x08, 0x00, 0xff, 0xff];
         let sha = sha256_hex(&corrupted);
 
-        let formula_json = mock_formula_json(
-            "faildb",
-            "1.0.0",
-            &[],
-            &ctx.mock_server.uri(),
-            &sha,
-        );
+        let formula_json = mock_formula_json("faildb", "1.0.0", &[], &ctx.mock_server.uri(), &sha);
 
         Mock::given(method("GET"))
             .and(path("/faildb.json"))
@@ -4172,8 +4143,8 @@ mod error_path_tests {
     /// The download mechanism should handle transient server errors gracefully.
     #[tokio::test]
     async fn test_server_error_handling() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let mock_server = MockServer::start().await;
         let tmp = TempDir::new().unwrap();
@@ -4183,13 +4154,7 @@ mod error_path_tests {
         let bottle = mock_bottle_tarball_with_version("retrypkg", "1.0.0");
         let sha = sha256_hex(&bottle);
 
-        let formula_json = mock_formula_json(
-            "retrypkg",
-            "1.0.0",
-            &[],
-            &mock_server.uri(),
-            &sha,
-        );
+        let formula_json = mock_formula_json("retrypkg", "1.0.0", &[], &mock_server.uri(), &sha);
 
         Mock::given(method("GET"))
             .and(path("/retrypkg.json"))
@@ -4241,38 +4206,38 @@ mod error_path_tests {
 
 mod orphan_tests {
     use crate::test_utils::{
-        TestContext, mock_formula_json, mock_bottle_tarball_with_version, 
-        sha256_hex, platform_bottle_tag,
+        TestContext, mock_bottle_tarball_with_version, mock_formula_json, platform_bottle_tag,
+        sha256_hex,
     };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, ResponseTemplate};
 
     /// Helper to mount a formula with dependencies.
     async fn mount_formula_with_deps(
-        ctx: &TestContext, 
-        name: &str, 
-        version: &str, 
-        deps: &[&str]
+        ctx: &TestContext,
+        name: &str,
+        version: &str,
+        deps: &[&str],
     ) -> String {
         let bottle = mock_bottle_tarball_with_version(name, version);
         let sha = sha256_hex(&bottle);
         let tag = platform_bottle_tag();
-        
+
         let formula_json = mock_formula_json(name, version, deps, &ctx.mock_server.uri(), &sha);
-        
+
         Mock::given(method("GET"))
             .and(path(format!("/{}.json", name)))
             .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
             .mount(&ctx.mock_server)
             .await;
-        
+
         let bottle_path = format!("/bottles/{}-{}.{}.bottle.tar.gz", name, version, tag);
         Mock::given(method("GET"))
             .and(path(bottle_path))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
             .mount(&ctx.mock_server)
             .await;
-        
+
         sha
     }
 
@@ -4288,7 +4253,7 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_diamond_dependency_graph_orphans() {
         let mut ctx = TestContext::new().await;
-        
+
         // Mount all formulas:
         // D has no dependencies
         mount_formula_with_deps(&ctx, "dep_d", "1.0.0", &[]).await;
@@ -4298,29 +4263,33 @@ mod orphan_tests {
         mount_formula_with_deps(&ctx, "dep_c", "1.0.0", &["dep_d"]).await;
         // A depends on B and C
         mount_formula_with_deps(&ctx, "pkg_a", "1.0.0", &["dep_b", "dep_c"]).await;
-        
+
         // Install A (should install B, C, D as dependencies)
         ctx.installer_mut().install("pkg_a", true).await.unwrap();
-        
+
         // Verify all are installed
         assert!(ctx.installer().is_installed("pkg_a"));
         assert!(ctx.installer().is_installed("dep_b"));
         assert!(ctx.installer().is_installed("dep_c"));
         assert!(ctx.installer().is_installed("dep_d"));
-        
+
         // Verify explicit vs dependency marking
         assert!(ctx.installer().is_explicit("pkg_a"));
         assert!(!ctx.installer().is_explicit("dep_b"));
         assert!(!ctx.installer().is_explicit("dep_c"));
         assert!(!ctx.installer().is_explicit("dep_d"));
-        
+
         // No orphans while A is installed
         let orphans = ctx.installer().find_orphans().await.unwrap();
-        assert!(orphans.is_empty(), "Expected no orphans, got: {:?}", orphans);
-        
+        assert!(
+            orphans.is_empty(),
+            "Expected no orphans, got: {:?}",
+            orphans
+        );
+
         // Uninstall A
         ctx.installer_mut().uninstall("pkg_a").unwrap();
-        
+
         // Now B, C, and D should all be orphans
         let mut orphans = ctx.installer().find_orphans().await.unwrap();
         orphans.sort();
@@ -4341,38 +4310,48 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_cascade_autoremove() {
         let mut ctx = TestContext::new().await;
-        
+
         // Create a dependency chain: A -> B -> C -> D
         mount_formula_with_deps(&ctx, "deep_d", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "deep_c", "1.0.0", &["deep_d"]).await;
         mount_formula_with_deps(&ctx, "deep_b", "1.0.0", &["deep_c"]).await;
         mount_formula_with_deps(&ctx, "deep_a", "1.0.0", &["deep_b"]).await;
-        
+
         // Install A
         ctx.installer_mut().install("deep_a", true).await.unwrap();
-        
+
         // Verify all installed
         assert!(ctx.installer().is_installed("deep_a"));
         assert!(ctx.installer().is_installed("deep_b"));
         assert!(ctx.installer().is_installed("deep_c"));
         assert!(ctx.installer().is_installed("deep_d"));
-        
+
         // Uninstall A
         ctx.installer_mut().uninstall("deep_a").unwrap();
-        
+
         // All of B, C, D should be detected as orphans in one call
         let orphans = ctx.installer().find_orphans().await.unwrap();
-        assert_eq!(orphans.len(), 3, "Expected 3 orphans in chain, got: {:?}", orphans);
-        
+        assert_eq!(
+            orphans.len(),
+            3,
+            "Expected 3 orphans in chain, got: {:?}",
+            orphans
+        );
+
         // Autoremove should remove all of them
         let removed = ctx.installer_mut().autoremove().await.unwrap();
-        assert_eq!(removed.len(), 3, "Expected to remove 3 orphans, removed: {:?}", removed);
-        
+        assert_eq!(
+            removed.len(),
+            3,
+            "Expected to remove 3 orphans, removed: {:?}",
+            removed
+        );
+
         // Verify all removed
         assert!(!ctx.installer().is_installed("deep_b"));
         assert!(!ctx.installer().is_installed("deep_c"));
         assert!(!ctx.installer().is_installed("deep_d"));
-        
+
         // No more orphans
         let remaining_orphans = ctx.installer().find_orphans().await.unwrap();
         assert!(remaining_orphans.is_empty());
@@ -4383,24 +4362,32 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_no_explicit_packages_all_orphans() {
         let mut ctx = TestContext::new().await;
-        
+
         // Mount formulas
         mount_formula_with_deps(&ctx, "orphan_lib", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "orphan_app", "1.0.0", &["orphan_lib"]).await;
-        
+
         // Install the app (explicit)
-        ctx.installer_mut().install("orphan_app", true).await.unwrap();
-        
+        ctx.installer_mut()
+            .install("orphan_app", true)
+            .await
+            .unwrap();
+
         // Verify both installed, app is explicit, lib is dependency
         assert!(ctx.installer().is_explicit("orphan_app"));
         assert!(!ctx.installer().is_explicit("orphan_lib"));
-        
+
         // Mark the app as a dependency (simulating broken state or testing edge case)
         ctx.installer().mark_dependency("orphan_app").unwrap();
-        
+
         // Now nothing is explicit - both should be orphans
         let orphans = ctx.installer().find_orphans().await.unwrap();
-        assert_eq!(orphans.len(), 2, "Expected 2 orphans when nothing is explicit, got: {:?}", orphans);
+        assert_eq!(
+            orphans.len(),
+            2,
+            "Expected 2 orphans when nothing is explicit, got: {:?}",
+            orphans
+        );
         assert!(orphans.contains(&"orphan_app".to_string()));
         assert!(orphans.contains(&"orphan_lib".to_string()));
     }
@@ -4410,35 +4397,39 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_mixed_explicit_dependency_packages() {
         let mut ctx = TestContext::new().await;
-        
+
         // Mount formulas
         mount_formula_with_deps(&ctx, "standalone_lib", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "app_one", "1.0.0", &["standalone_lib"]).await;
         mount_formula_with_deps(&ctx, "app_two", "1.0.0", &["standalone_lib"]).await;
-        
+
         // Install app_one (standalone_lib becomes dependency)
         ctx.installer_mut().install("app_one", true).await.unwrap();
-        
+
         // Install app_two separately (standalone_lib already installed)
         ctx.installer_mut().install("app_two", true).await.unwrap();
-        
+
         // Also install standalone_lib explicitly (user wants to keep it)
         // Since it's already installed, we just mark it explicit
         ctx.installer().mark_explicit("standalone_lib").unwrap();
-        
+
         // Verify all are explicit now
         assert!(ctx.installer().is_explicit("app_one"));
         assert!(ctx.installer().is_explicit("app_two"));
         assert!(ctx.installer().is_explicit("standalone_lib"));
-        
+
         // Uninstall both apps
         ctx.installer_mut().uninstall("app_one").unwrap();
         ctx.installer_mut().uninstall("app_two").unwrap();
-        
+
         // standalone_lib should NOT be an orphan because it's marked explicit
         let orphans = ctx.installer().find_orphans().await.unwrap();
-        assert!(orphans.is_empty(), "Explicit packages should never be orphans, got: {:?}", orphans);
-        
+        assert!(
+            orphans.is_empty(),
+            "Explicit packages should never be orphans, got: {:?}",
+            orphans
+        );
+
         // standalone_lib should still be installed
         assert!(ctx.installer().is_installed("standalone_lib"));
     }
@@ -4454,7 +4445,7 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_partial_dependency_chains() {
         let mut ctx = TestContext::new().await;
-        
+
         // D has no deps
         mount_formula_with_deps(&ctx, "shared_d", "1.0.0", &[]).await;
         // B depends on D
@@ -4463,36 +4454,45 @@ mod orphan_tests {
         mount_formula_with_deps(&ctx, "app_a", "1.0.0", &["shared_b"]).await;
         // C depends on B (which depends on D)
         mount_formula_with_deps(&ctx, "app_c", "1.0.0", &["shared_b"]).await;
-        
+
         // Install both A and C
         ctx.installer_mut().install("app_a", true).await.unwrap();
         ctx.installer_mut().install("app_c", true).await.unwrap();
-        
+
         // Verify setup
         assert!(ctx.installer().is_installed("app_a"));
         assert!(ctx.installer().is_installed("app_c"));
         assert!(ctx.installer().is_installed("shared_b"));
         assert!(ctx.installer().is_installed("shared_d"));
-        
+
         // No orphans yet
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert!(orphans.is_empty());
-        
+
         // Uninstall C
         ctx.installer_mut().uninstall("app_c").unwrap();
-        
+
         // B should NOT be orphan (A still needs it)
         // D should NOT be orphan (A needs B which needs D)
         let orphans = ctx.installer().find_orphans().await.unwrap();
-        assert!(orphans.is_empty(), "B and D should still be needed by A, got orphans: {:?}", orphans);
-        
+        assert!(
+            orphans.is_empty(),
+            "B and D should still be needed by A, got orphans: {:?}",
+            orphans
+        );
+
         // Now uninstall A too
         ctx.installer_mut().uninstall("app_a").unwrap();
-        
+
         // Now B and D should both be orphans
         let mut orphans = ctx.installer().find_orphans().await.unwrap();
         orphans.sort();
-        assert_eq!(orphans.len(), 2, "Expected 2 orphans after uninstalling A, got: {:?}", orphans);
+        assert_eq!(
+            orphans.len(),
+            2,
+            "Expected 2 orphans after uninstalling A, got: {:?}",
+            orphans
+        );
         assert!(orphans.contains(&"shared_b".to_string()));
         assert!(orphans.contains(&"shared_d".to_string()));
     }
@@ -4501,19 +4501,22 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_autoremove_no_orphans() {
         let mut ctx = TestContext::new().await;
-        
+
         // Mount and install a standalone package (no deps)
         mount_formula_with_deps(&ctx, "standalone", "1.0.0", &[]).await;
-        ctx.installer_mut().install("standalone", true).await.unwrap();
-        
+        ctx.installer_mut()
+            .install("standalone", true)
+            .await
+            .unwrap();
+
         // No orphans expected
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert!(orphans.is_empty());
-        
+
         // Autoremove should do nothing
         let removed = ctx.installer_mut().autoremove().await.unwrap();
         assert!(removed.is_empty());
-        
+
         // Package still installed
         assert!(ctx.installer().is_installed("standalone"));
     }
@@ -4522,7 +4525,7 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_find_orphans_empty_database() {
         let ctx = TestContext::new().await;
-        
+
         // No packages installed
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert!(orphans.is_empty());
@@ -4541,43 +4544,52 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_complex_shared_dependencies() {
         let mut ctx = TestContext::new().await;
-        
+
         // Build graph
         mount_formula_with_deps(&ctx, "lib_y", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "lib_x", "1.0.0", &["lib_y"]).await;
         mount_formula_with_deps(&ctx, "main_a", "1.0.0", &["lib_x"]).await;
         mount_formula_with_deps(&ctx, "main_b", "1.0.0", &["lib_x"]).await;
         mount_formula_with_deps(&ctx, "main_c", "1.0.0", &["lib_y"]).await;
-        
+
         // Install all three main packages
         ctx.installer_mut().install("main_a", true).await.unwrap();
         ctx.installer_mut().install("main_b", true).await.unwrap();
         ctx.installer_mut().install("main_c", true).await.unwrap();
-        
+
         // Verify setup
         assert!(ctx.installer().is_explicit("main_a"));
         assert!(ctx.installer().is_explicit("main_b"));
         assert!(ctx.installer().is_explicit("main_c"));
         assert!(!ctx.installer().is_explicit("lib_x"));
         assert!(!ctx.installer().is_explicit("lib_y"));
-        
+
         // Uninstall A - B still needs X (which needs Y), C still needs Y
         ctx.installer_mut().uninstall("main_a").unwrap();
         let orphans = ctx.installer().find_orphans().await.unwrap();
-        assert!(orphans.is_empty(), "After removing A, B and C still need deps, got: {:?}", orphans);
-        
+        assert!(
+            orphans.is_empty(),
+            "After removing A, B and C still need deps, got: {:?}",
+            orphans
+        );
+
         // Uninstall B - A is gone, C still needs Y, but X is no longer needed
         ctx.installer_mut().uninstall("main_b").unwrap();
         let orphans = ctx.installer().find_orphans().await.unwrap();
         // X should be orphan (only A and B needed it, both gone)
         // Y should NOT be orphan (C still needs it)
-        assert_eq!(orphans.len(), 1, "Expected only X to be orphan, got: {:?}", orphans);
+        assert_eq!(
+            orphans.len(),
+            1,
+            "Expected only X to be orphan, got: {:?}",
+            orphans
+        );
         assert!(orphans.contains(&"lib_x".to_string()));
-        
+
         // Autoremove X
         let removed = ctx.installer_mut().autoremove().await.unwrap();
         assert_eq!(removed, vec!["lib_x".to_string()]);
-        
+
         // Uninstall C - now Y is orphan
         ctx.installer_mut().uninstall("main_c").unwrap();
         let orphans = ctx.installer().find_orphans().await.unwrap();
@@ -4588,29 +4600,32 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_toggle_explicit_dependency_status() {
         let mut ctx = TestContext::new().await;
-        
+
         // Install app with lib dependency
         mount_formula_with_deps(&ctx, "toggle_lib", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "toggle_app", "1.0.0", &["toggle_lib"]).await;
-        
-        ctx.installer_mut().install("toggle_app", true).await.unwrap();
-        
+
+        ctx.installer_mut()
+            .install("toggle_app", true)
+            .await
+            .unwrap();
+
         // lib is a dependency
         assert!(!ctx.installer().is_explicit("toggle_lib"));
-        
+
         // Mark as explicit
         ctx.installer().mark_explicit("toggle_lib").unwrap();
         assert!(ctx.installer().is_explicit("toggle_lib"));
-        
+
         // Uninstall app - lib should NOT be orphan (it's explicit)
         ctx.installer_mut().uninstall("toggle_app").unwrap();
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert!(orphans.is_empty());
-        
+
         // Mark lib back as dependency
         ctx.installer().mark_dependency("toggle_lib").unwrap();
         assert!(!ctx.installer().is_explicit("toggle_lib"));
-        
+
         // Now lib should be orphan (dependency with no dependents)
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert_eq!(orphans, vec!["toggle_lib".to_string()]);
@@ -4620,7 +4635,7 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_mark_dependency_not_installed_returns_error() {
         let ctx = TestContext::new().await;
-        
+
         // Marking a non-installed package as dependency should fail
         let result = ctx.installer().mark_dependency("nonexistent");
         assert!(result.is_err());
@@ -4637,7 +4652,7 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_is_explicit_nonexistent_package() {
         let ctx = TestContext::new().await;
-        
+
         // is_explicit should return false for packages that don't exist
         assert!(!ctx.installer().is_explicit("doesnotexist"));
     }
@@ -4646,22 +4661,28 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_list_dependencies_filters_correctly() {
         let mut ctx = TestContext::new().await;
-        
+
         // Install a package with a dependency
         mount_formula_with_deps(&ctx, "dep_only", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "explicit_pkg", "1.0.0", &["dep_only"]).await;
         mount_formula_with_deps(&ctx, "standalone", "1.0.0", &[]).await;
-        
+
         // Install both - explicit_pkg pulls in dep_only as dependency
-        ctx.installer_mut().install("explicit_pkg", true).await.unwrap();
+        ctx.installer_mut()
+            .install("explicit_pkg", true)
+            .await
+            .unwrap();
         // Install standalone separately (explicit)
-        ctx.installer_mut().install("standalone", true).await.unwrap();
-        
+        ctx.installer_mut()
+            .install("standalone", true)
+            .await
+            .unwrap();
+
         // Verify setup
         assert!(ctx.installer().is_explicit("explicit_pkg"));
         assert!(ctx.installer().is_explicit("standalone"));
         assert!(!ctx.installer().is_explicit("dep_only"));
-        
+
         // list_dependencies should only return dep_only
         let deps = ctx.installer().list_dependencies().unwrap();
         assert_eq!(deps.len(), 1);
@@ -4674,15 +4695,15 @@ mod orphan_tests {
     async fn test_find_orphans_api_failure_graceful() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, ResponseTemplate};
-        
+
         let mut ctx = TestContext::new().await;
-        
+
         // Install a package with a dependency
         mount_formula_with_deps(&ctx, "api_dep", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "api_app", "1.0.0", &["api_dep"]).await;
-        
+
         ctx.installer_mut().install("api_app", true).await.unwrap();
-        
+
         // Now unmount/reset the formula endpoint to simulate API failure
         // Note: wiremock doesn't support unmounting, so we mount a 500 error on top
         Mock::given(method("GET"))
@@ -4690,13 +4711,17 @@ mod orphan_tests {
             .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
             .mount(&ctx.mock_server)
             .await;
-        
+
         // find_orphans should handle the API error gracefully
         // When API fails, it continues to next package (keeping it safe)
         let orphans = ctx.installer().find_orphans().await.unwrap();
         // api_dep should NOT be an orphan because we couldn't determine deps
         // (safe behavior: when unsure, keep the package)
-        assert!(orphans.is_empty(), "Expected no orphans due to API failure safety, got: {:?}", orphans);
+        assert!(
+            orphans.is_empty(),
+            "Expected no orphans due to API failure safety, got: {:?}",
+            orphans
+        );
     }
 
     /// Test autoremove continues when one package fails to uninstall.
@@ -4704,35 +4729,35 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_autoremove_continues_on_partial_failure() {
         let mut ctx = TestContext::new().await;
-        
+
         // Install multiple packages that will become orphans
         mount_formula_with_deps(&ctx, "orphan_a", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "orphan_b", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "main_pkg", "1.0.0", &["orphan_a", "orphan_b"]).await;
-        
+
         ctx.installer_mut().install("main_pkg", true).await.unwrap();
-        
+
         // Verify all installed
         assert!(ctx.installer().is_installed("main_pkg"));
         assert!(ctx.installer().is_installed("orphan_a"));
         assert!(ctx.installer().is_installed("orphan_b"));
-        
+
         // Uninstall main to make orphans
         ctx.installer_mut().uninstall("main_pkg").unwrap();
-        
+
         // Verify orphans detected
         let mut orphans = ctx.installer().find_orphans().await.unwrap();
         orphans.sort();
         assert_eq!(orphans.len(), 2);
         assert!(orphans.contains(&"orphan_a".to_string()));
         assert!(orphans.contains(&"orphan_b".to_string()));
-        
+
         // Autoremove should remove both orphans
         // Note: This tests the success path. Testing actual failure would require
         // making the filesystem readonly, which is complex.
         let removed = ctx.installer_mut().autoremove().await.unwrap();
         assert_eq!(removed.len(), 2);
-        
+
         // Verify both removed
         assert!(!ctx.installer().is_installed("orphan_a"));
         assert!(!ctx.installer().is_installed("orphan_b"));
@@ -4743,27 +4768,32 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_find_orphans_all_dependencies_no_explicit() {
         let mut ctx = TestContext::new().await;
-        
+
         // Install packages
         mount_formula_with_deps(&ctx, "leaf", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "middle", "1.0.0", &["leaf"]).await;
         mount_formula_with_deps(&ctx, "top", "1.0.0", &["middle"]).await;
-        
+
         ctx.installer_mut().install("top", true).await.unwrap();
-        
+
         // Verify all installed
         assert!(ctx.installer().is_installed("top"));
         assert!(ctx.installer().is_installed("middle"));
         assert!(ctx.installer().is_installed("leaf"));
-        
+
         // Mark top as dependency (simulating a broken state or manual intervention)
         ctx.installer().mark_dependency("top").unwrap();
-        
+
         // Now all packages are dependencies with no explicit packages
         // All three should be orphans
         let mut orphans = ctx.installer().find_orphans().await.unwrap();
         orphans.sort();
-        assert_eq!(orphans.len(), 3, "All packages should be orphans when no explicit, got: {:?}", orphans);
+        assert_eq!(
+            orphans.len(),
+            3,
+            "All packages should be orphans when no explicit, got: {:?}",
+            orphans
+        );
         assert!(orphans.contains(&"leaf".to_string()));
         assert!(orphans.contains(&"middle".to_string()));
         assert!(orphans.contains(&"top".to_string()));
@@ -4774,22 +4804,22 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_find_orphans_no_dependencies() {
         let mut ctx = TestContext::new().await;
-        
+
         // Install packages explicitly (no dependencies)
         mount_formula_with_deps(&ctx, "app1", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "app2", "1.0.0", &[]).await;
-        
+
         ctx.installer_mut().install("app1", true).await.unwrap();
         ctx.installer_mut().install("app2", true).await.unwrap();
-        
+
         // Both are explicit, so there are no dependency packages
         assert!(ctx.installer().is_explicit("app1"));
         assert!(ctx.installer().is_explicit("app2"));
-        
+
         // list_dependencies should be empty
         let deps = ctx.installer().list_dependencies().unwrap();
         assert!(deps.is_empty());
-        
+
         // find_orphans should return empty (no dependency packages to be orphans)
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert!(orphans.is_empty());
@@ -4799,23 +4829,35 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_is_explicit_accuracy() {
         let mut ctx = TestContext::new().await;
-        
+
         mount_formula_with_deps(&ctx, "my_lib", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "my_app", "1.0.0", &["my_lib"]).await;
-        
+
         ctx.installer_mut().install("my_app", true).await.unwrap();
-        
+
         // Verify correct is_explicit values
-        assert!(ctx.installer().is_explicit("my_app"), "my_app should be explicit");
-        assert!(!ctx.installer().is_explicit("my_lib"), "my_lib should not be explicit");
-        
+        assert!(
+            ctx.installer().is_explicit("my_app"),
+            "my_app should be explicit"
+        );
+        assert!(
+            !ctx.installer().is_explicit("my_lib"),
+            "my_lib should not be explicit"
+        );
+
         // Mark lib as explicit
         ctx.installer().mark_explicit("my_lib").unwrap();
-        assert!(ctx.installer().is_explicit("my_lib"), "my_lib should now be explicit");
-        
+        assert!(
+            ctx.installer().is_explicit("my_lib"),
+            "my_lib should now be explicit"
+        );
+
         // Mark it back as dependency
         ctx.installer().mark_dependency("my_lib").unwrap();
-        assert!(!ctx.installer().is_explicit("my_lib"), "my_lib should be dependency again");
+        assert!(
+            !ctx.installer().is_explicit("my_lib"),
+            "my_lib should be dependency again"
+        );
     }
 
     /// Test autoremove on empty orphan list (different from find_orphans_empty_database).
@@ -4823,19 +4865,19 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_autoremove_returns_empty_when_no_orphans_exist() {
         let mut ctx = TestContext::new().await;
-        
+
         // Install an explicit package with no dependencies
         mount_formula_with_deps(&ctx, "solo", "1.0.0", &[]).await;
         ctx.installer_mut().install("solo", true).await.unwrap();
-        
+
         // No orphans should exist
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert!(orphans.is_empty());
-        
+
         // autoremove should return empty vec without doing anything
         let removed = ctx.installer_mut().autoremove().await.unwrap();
         assert!(removed.is_empty());
-        
+
         // Package should still be installed
         assert!(ctx.installer().is_installed("solo"));
     }
@@ -4849,34 +4891,38 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_deep_chain_with_explicit_middle() {
         let mut ctx = TestContext::new().await;
-        
+
         mount_formula_with_deps(&ctx, "chain_d", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "chain_c", "1.0.0", &["chain_d"]).await;
         mount_formula_with_deps(&ctx, "chain_b", "1.0.0", &["chain_c"]).await;
         mount_formula_with_deps(&ctx, "chain_a", "1.0.0", &["chain_b"]).await;
-        
+
         ctx.installer_mut().install("chain_a", true).await.unwrap();
-        
+
         // Verify all installed
         assert!(ctx.installer().is_installed("chain_a"));
         assert!(ctx.installer().is_installed("chain_b"));
         assert!(ctx.installer().is_installed("chain_c"));
         assert!(ctx.installer().is_installed("chain_d"));
-        
+
         // Mark B as explicit
         ctx.installer().mark_explicit("chain_b").unwrap();
-        
+
         // Uninstall A
         ctx.installer_mut().uninstall("chain_a").unwrap();
-        
+
         // B is explicit, so C and D are still needed by B
         // No orphans should exist
         let orphans = ctx.installer().find_orphans().await.unwrap();
-        assert!(orphans.is_empty(), "With B explicit, C and D should still be needed, got: {:?}", orphans);
-        
+        assert!(
+            orphans.is_empty(),
+            "With B explicit, C and D should still be needed, got: {:?}",
+            orphans
+        );
+
         // Now uninstall B
         ctx.installer_mut().uninstall("chain_b").unwrap();
-        
+
         // C and D should now be orphans
         let mut orphans = ctx.installer().find_orphans().await.unwrap();
         orphans.sort();
@@ -4890,27 +4936,33 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_mark_idempotent_safety() {
         let mut ctx = TestContext::new().await;
-        
+
         mount_formula_with_deps(&ctx, "idem_lib", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "idem_app", "1.0.0", &["idem_lib"]).await;
-        
+
         ctx.installer_mut().install("idem_app", true).await.unwrap();
-        
+
         // idem_app is already explicit - marking it again should succeed
         let result = ctx.installer().mark_explicit("idem_app").unwrap();
-        assert!(result, "mark_explicit on installed package should return true");
+        assert!(
+            result,
+            "mark_explicit on installed package should return true"
+        );
         assert!(ctx.installer().is_explicit("idem_app"));
-        
+
         // idem_lib is already a dependency - marking it again should succeed
         let result = ctx.installer().mark_dependency("idem_lib").unwrap();
-        assert!(result, "mark_dependency on installed package should return true");
+        assert!(
+            result,
+            "mark_dependency on installed package should return true"
+        );
         assert!(!ctx.installer().is_explicit("idem_lib"));
-        
+
         // Multiple calls should be safe and maintain state
         ctx.installer().mark_explicit("idem_lib").unwrap();
         ctx.installer().mark_explicit("idem_lib").unwrap();
         assert!(ctx.installer().is_explicit("idem_lib"));
-        
+
         ctx.installer().mark_dependency("idem_lib").unwrap();
         ctx.installer().mark_dependency("idem_lib").unwrap();
         assert!(!ctx.installer().is_explicit("idem_lib"));
@@ -4924,27 +4976,27 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_find_orphans_with_fetch_issues() {
         let mut ctx = TestContext::new().await;
-        
+
         // Mount formulas: C has no deps, B depends on C, A depends on B
         mount_formula_with_deps(&ctx, "fetch_c", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "fetch_b", "1.0.0", &["fetch_c"]).await;
         mount_formula_with_deps(&ctx, "fetch_a", "1.0.0", &["fetch_b"]).await;
-        
+
         // Install A (pulls in B and C)
         ctx.installer_mut().install("fetch_a", true).await.unwrap();
-        
+
         // Verify all installed
         assert!(ctx.installer().is_installed("fetch_a"));
         assert!(ctx.installer().is_installed("fetch_b"));
         assert!(ctx.installer().is_installed("fetch_c"));
-        
+
         // Uninstall A
         ctx.installer_mut().uninstall("fetch_a").unwrap();
-        
+
         // Find orphans - B and C are both orphans since A is gone
         let mut orphans = ctx.installer().find_orphans().await.unwrap();
         orphans.sort();
-        
+
         // Both B and C should be orphans
         assert_eq!(orphans.len(), 2, "Expected 2 orphans, got: {:?}", orphans);
         assert!(orphans.contains(&"fetch_b".to_string()));
@@ -4957,26 +5009,33 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_find_orphans_handles_formula_errors() {
         let mut ctx = TestContext::new().await;
-        
+
         // Install a package with a dependency
         mount_formula_with_deps(&ctx, "error_dep", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "error_app", "1.0.0", &["error_dep"]).await;
-        
-        ctx.installer_mut().install("error_app", true).await.unwrap();
-        
+
+        ctx.installer_mut()
+            .install("error_app", true)
+            .await
+            .unwrap();
+
         // Both should be installed
         assert!(ctx.installer().is_installed("error_app"));
         assert!(ctx.installer().is_installed("error_dep"));
-        
+
         // Find orphans should work normally here
         let orphans = ctx.installer().find_orphans().await.unwrap();
-        
+
         // No orphans since error_app is explicit and error_dep is its dependency
-        assert!(orphans.is_empty(), "Expected no orphans, got: {:?}", orphans);
-        
+        assert!(
+            orphans.is_empty(),
+            "Expected no orphans, got: {:?}",
+            orphans
+        );
+
         // Now uninstall error_app
         ctx.installer_mut().uninstall("error_app").unwrap();
-        
+
         // error_dep should now be an orphan
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert_eq!(orphans.len(), 1);
@@ -4992,35 +5051,43 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_autoremove_handles_mixed_success_failure() {
         let mut ctx = TestContext::new().await;
-        
+
         // Install multiple packages that will become orphans
         mount_formula_with_deps(&ctx, "auto_orphan_1", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "auto_orphan_2", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "auto_orphan_3", "1.0.0", &[]).await;
-        mount_formula_with_deps(&ctx, "auto_main", "1.0.0", 
-            &["auto_orphan_1", "auto_orphan_2", "auto_orphan_3"]).await;
-        
-        ctx.installer_mut().install("auto_main", true).await.unwrap();
-        
+        mount_formula_with_deps(
+            &ctx,
+            "auto_main",
+            "1.0.0",
+            &["auto_orphan_1", "auto_orphan_2", "auto_orphan_3"],
+        )
+        .await;
+
+        ctx.installer_mut()
+            .install("auto_main", true)
+            .await
+            .unwrap();
+
         // Verify all installed
         assert!(ctx.installer().is_installed("auto_main"));
         assert!(ctx.installer().is_installed("auto_orphan_1"));
         assert!(ctx.installer().is_installed("auto_orphan_2"));
         assert!(ctx.installer().is_installed("auto_orphan_3"));
-        
+
         // Uninstall main to make orphans
         ctx.installer_mut().uninstall("auto_main").unwrap();
-        
+
         // All three should be orphans
         let mut orphans = ctx.installer().find_orphans().await.unwrap();
         orphans.sort();
         assert_eq!(orphans.len(), 3);
-        
+
         // Autoremove should successfully remove all orphans
         // (This tests the success path; failure path requires FS manipulation)
         let removed = ctx.installer_mut().autoremove().await.unwrap();
         assert_eq!(removed.len(), 3);
-        
+
         // Verify all removed
         assert!(!ctx.installer().is_installed("auto_orphan_1"));
         assert!(!ctx.installer().is_installed("auto_orphan_2"));
@@ -5031,7 +5098,7 @@ mod orphan_tests {
     #[test]
     fn test_source_build_result_debug() {
         use super::super::SourceBuildResult;
-        
+
         let result = SourceBuildResult {
             name: "test-pkg".to_string(),
             version: "1.2.3".to_string(),
@@ -5039,9 +5106,9 @@ mod orphan_tests {
             files_linked: 10,
             head: false,
         };
-        
+
         let debug_str = format!("{:?}", result);
-        
+
         // Verify Debug output contains expected fields
         assert!(debug_str.contains("test-pkg"));
         assert!(debug_str.contains("1.2.3"));
@@ -5054,7 +5121,7 @@ mod orphan_tests {
     #[test]
     fn test_source_build_result_clone() {
         use super::super::SourceBuildResult;
-        
+
         let original = SourceBuildResult {
             name: "clone-test".to_string(),
             version: "2.0.0".to_string(),
@@ -5062,16 +5129,16 @@ mod orphan_tests {
             files_linked: 25,
             head: true,
         };
-        
+
         let cloned = original.clone();
-        
+
         // Verify cloned values match original
         assert_eq!(cloned.name, "clone-test");
         assert_eq!(cloned.version, "2.0.0");
         assert_eq!(cloned.files_installed, 100);
         assert_eq!(cloned.files_linked, 25);
         assert!(cloned.head);
-        
+
         // Verify they are separate instances
         assert_eq!(original.name, cloned.name);
     }
@@ -5080,7 +5147,7 @@ mod orphan_tests {
     /// This tests that the transitive dependency resolution correctly
     /// identifies all required packages.
     ///
-    /// Graph: 
+    /// Graph:
     ///   A (explicit) -> X -> Z
     ///   B (explicit) -> Y -> Z
     ///
@@ -5089,45 +5156,55 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_find_orphans_multilevel_shared_deps() {
         let mut ctx = TestContext::new().await;
-        
+
         // Z is a leaf dependency shared by X and Y
         mount_formula_with_deps(&ctx, "multi_z", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "multi_x", "1.0.0", &["multi_z"]).await;
         mount_formula_with_deps(&ctx, "multi_y", "1.0.0", &["multi_z"]).await;
         mount_formula_with_deps(&ctx, "multi_a", "1.0.0", &["multi_x"]).await;
         mount_formula_with_deps(&ctx, "multi_b", "1.0.0", &["multi_y"]).await;
-        
+
         // Install both A and B
         ctx.installer_mut().install("multi_a", true).await.unwrap();
         ctx.installer_mut().install("multi_b", true).await.unwrap();
-        
+
         // Verify all 5 packages installed
         assert!(ctx.installer().is_installed("multi_a"));
         assert!(ctx.installer().is_installed("multi_b"));
         assert!(ctx.installer().is_installed("multi_x"));
         assert!(ctx.installer().is_installed("multi_y"));
         assert!(ctx.installer().is_installed("multi_z"));
-        
+
         // Uninstall A
         ctx.installer_mut().uninstall("multi_a").unwrap();
-        
+
         // Find orphans - only X should be orphan
         // Z is still needed by B->Y
         let orphans = ctx.installer().find_orphans().await.unwrap();
-        assert_eq!(orphans.len(), 1, "Expected only X as orphan, got: {:?}", orphans);
+        assert_eq!(
+            orphans.len(),
+            1,
+            "Expected only X as orphan, got: {:?}",
+            orphans
+        );
         assert!(orphans.contains(&"multi_x".to_string()));
-        
+
         // Remove orphan X first
         ctx.installer_mut().autoremove().await.unwrap();
         assert!(!ctx.installer().is_installed("multi_x"));
-        
+
         // Uninstall B too
         ctx.installer_mut().uninstall("multi_b").unwrap();
-        
+
         // Now Y and Z should be orphans
         let mut orphans = ctx.installer().find_orphans().await.unwrap();
         orphans.sort();
-        assert_eq!(orphans.len(), 2, "Expected Y and Z as orphans, got: {:?}", orphans);
+        assert_eq!(
+            orphans.len(),
+            2,
+            "Expected Y and Z as orphans, got: {:?}",
+            orphans
+        );
         assert!(orphans.contains(&"multi_y".to_string()));
         assert!(orphans.contains(&"multi_z".to_string()));
     }
@@ -5137,24 +5214,27 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_find_orphans_explicit_with_no_deps() {
         let mut ctx = TestContext::new().await;
-        
+
         // Install an explicit package with no deps
         mount_formula_with_deps(&ctx, "nodeps", "1.0.0", &[]).await;
         ctx.installer_mut().install("nodeps", true).await.unwrap();
-        
+
         // Install another package as dependency only
         mount_formula_with_deps(&ctx, "orphan_pkg", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "main_with_dep", "1.0.0", &["orphan_pkg"]).await;
-        ctx.installer_mut().install("main_with_dep", true).await.unwrap();
-        
+        ctx.installer_mut()
+            .install("main_with_dep", true)
+            .await
+            .unwrap();
+
         // Uninstall main_with_dep
         ctx.installer_mut().uninstall("main_with_dep").unwrap();
-        
+
         // orphan_pkg should be orphan, nodeps should NOT be
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert_eq!(orphans.len(), 1);
         assert!(orphans.contains(&"orphan_pkg".to_string()));
-        
+
         // nodeps is explicit, so even though nothing depends on it, it's not an orphan
         assert!(!orphans.contains(&"nodeps".to_string()));
     }
@@ -5163,27 +5243,35 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_list_dependencies_count_accuracy() {
         let mut ctx = TestContext::new().await;
-        
+
         // Create a chain: main -> dep1 -> dep2 -> dep3 -> dep4
         mount_formula_with_deps(&ctx, "count_dep4", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "count_dep3", "1.0.0", &["count_dep4"]).await;
         mount_formula_with_deps(&ctx, "count_dep2", "1.0.0", &["count_dep3"]).await;
         mount_formula_with_deps(&ctx, "count_dep1", "1.0.0", &["count_dep2"]).await;
         mount_formula_with_deps(&ctx, "count_main", "1.0.0", &["count_dep1"]).await;
-        
-        ctx.installer_mut().install("count_main", true).await.unwrap();
-        
+
+        ctx.installer_mut()
+            .install("count_main", true)
+            .await
+            .unwrap();
+
         // All deps should be installed
         assert!(ctx.installer().is_installed("count_main"));
         assert!(ctx.installer().is_installed("count_dep1"));
         assert!(ctx.installer().is_installed("count_dep2"));
         assert!(ctx.installer().is_installed("count_dep3"));
         assert!(ctx.installer().is_installed("count_dep4"));
-        
+
         // list_dependencies should return 4 (all except count_main which is explicit)
         let deps = ctx.installer().list_dependencies().unwrap();
-        assert_eq!(deps.len(), 4, "Expected 4 dependencies, got: {:?}", deps.iter().map(|d| &d.name).collect::<Vec<_>>());
-        
+        assert_eq!(
+            deps.len(),
+            4,
+            "Expected 4 dependencies, got: {:?}",
+            deps.iter().map(|d| &d.name).collect::<Vec<_>>()
+        );
+
         // Verify all dependency names
         let dep_names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
         assert!(dep_names.contains(&"count_dep1"));
@@ -5206,21 +5294,21 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_autoremove_multiple_chains() {
         let mut ctx = TestContext::new().await;
-        
+
         // Chain 1: A -> X -> Y
         mount_formula_with_deps(&ctx, "chain1_y", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "chain1_x", "1.0.0", &["chain1_y"]).await;
         mount_formula_with_deps(&ctx, "chain1_a", "1.0.0", &["chain1_x"]).await;
-        
+
         // Chain 2: B -> P -> Q
         mount_formula_with_deps(&ctx, "chain2_q", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "chain2_p", "1.0.0", &["chain2_q"]).await;
         mount_formula_with_deps(&ctx, "chain2_b", "1.0.0", &["chain2_p"]).await;
-        
+
         // Install both chains
         ctx.installer_mut().install("chain1_a", true).await.unwrap();
         ctx.installer_mut().install("chain2_b", true).await.unwrap();
-        
+
         // Verify all 6 packages installed
         assert!(ctx.installer().is_installed("chain1_a"));
         assert!(ctx.installer().is_installed("chain1_x"));
@@ -5228,20 +5316,20 @@ mod orphan_tests {
         assert!(ctx.installer().is_installed("chain2_b"));
         assert!(ctx.installer().is_installed("chain2_p"));
         assert!(ctx.installer().is_installed("chain2_q"));
-        
+
         // Uninstall both explicit packages
         ctx.installer_mut().uninstall("chain1_a").unwrap();
         ctx.installer_mut().uninstall("chain2_b").unwrap();
-        
+
         // All 4 deps should be orphans
         let mut orphans = ctx.installer().find_orphans().await.unwrap();
         orphans.sort();
         assert_eq!(orphans.len(), 4);
-        
+
         // Autoremove should clean up all
         let removed = ctx.installer_mut().autoremove().await.unwrap();
         assert_eq!(removed.len(), 4);
-        
+
         // Verify all gone
         assert!(!ctx.installer().is_installed("chain1_x"));
         assert!(!ctx.installer().is_installed("chain1_y"));
@@ -5254,32 +5342,39 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_find_orphans_many_dependencies() {
         let mut ctx = TestContext::new().await;
-        
+
         // Create 10 independent dependencies
         let dep_names: Vec<String> = (0..10).map(|i| format!("many_dep_{}", i)).collect();
         for name in &dep_names {
             mount_formula_with_deps(&ctx, name, "1.0.0", &[]).await;
         }
-        
+
         // Create main package depending on all 10
         let dep_refs: Vec<&str> = dep_names.iter().map(|s| s.as_str()).collect();
         mount_formula_with_deps(&ctx, "many_main", "1.0.0", &dep_refs).await;
-        
-        ctx.installer_mut().install("many_main", true).await.unwrap();
-        
+
+        ctx.installer_mut()
+            .install("many_main", true)
+            .await
+            .unwrap();
+
         // Verify all 11 installed
         assert!(ctx.installer().is_installed("many_main"));
         for name in &dep_names {
-            assert!(ctx.installer().is_installed(name), "{} should be installed", name);
+            assert!(
+                ctx.installer().is_installed(name),
+                "{} should be installed",
+                name
+            );
         }
-        
+
         // Uninstall main
         ctx.installer_mut().uninstall("many_main").unwrap();
-        
+
         // All 10 deps should be orphans
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert_eq!(orphans.len(), 10, "Expected 10 orphans, got: {:?}", orphans);
-        
+
         // Autoremove all
         let removed = ctx.installer_mut().autoremove().await.unwrap();
         assert_eq!(removed.len(), 10);
@@ -5290,17 +5385,20 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_mark_explicit_already_explicit() {
         let mut ctx = TestContext::new().await;
-        
+
         mount_formula_with_deps(&ctx, "already_explicit", "1.0.0", &[]).await;
-        ctx.installer_mut().install("already_explicit", true).await.unwrap();
-        
+        ctx.installer_mut()
+            .install("already_explicit", true)
+            .await
+            .unwrap();
+
         // It's already explicit
         assert!(ctx.installer().is_explicit("already_explicit"));
-        
+
         // Mark it explicit again - should succeed
         let result = ctx.installer().mark_explicit("already_explicit").unwrap();
         assert!(result);
-        
+
         // Still explicit
         assert!(ctx.installer().is_explicit("already_explicit"));
     }
@@ -5310,19 +5408,22 @@ mod orphan_tests {
     #[tokio::test]
     async fn test_mark_dependency_already_dependency() {
         let mut ctx = TestContext::new().await;
-        
+
         mount_formula_with_deps(&ctx, "already_dep", "1.0.0", &[]).await;
         mount_formula_with_deps(&ctx, "needs_dep", "1.0.0", &["already_dep"]).await;
-        
-        ctx.installer_mut().install("needs_dep", true).await.unwrap();
-        
+
+        ctx.installer_mut()
+            .install("needs_dep", true)
+            .await
+            .unwrap();
+
         // already_dep is a dependency
         assert!(!ctx.installer().is_explicit("already_dep"));
-        
+
         // Mark it dependency again - should succeed
         let result = ctx.installer().mark_dependency("already_dep").unwrap();
         assert!(result);
-        
+
         // Still a dependency
         assert!(!ctx.installer().is_explicit("already_dep"));
     }
@@ -5336,12 +5437,12 @@ mod tap_and_dependency_tests {
     use super::*;
     use crate::tap::{TapFormula, TapInfo, TapManager};
     use crate::test_utils::{
-        mock_formula_json, mock_bottle_tarball_with_version,
-        sha256_hex, platform_bottle_tag, create_test_installer,
+        create_test_installer, mock_bottle_tarball_with_version, mock_formula_json,
+        platform_bottle_tag, sha256_hex,
     };
     use std::collections::BTreeMap;
-    use zb_core::{Formula, resolve_closure};
     use zb_core::formula::{Bottle, BottleFile, BottleStable, Versions};
+    use zb_core::{Formula, resolve_closure};
 
     // ========================================================================
     // TapFormula::parse tests
@@ -5434,7 +5535,8 @@ mod tap_and_dependency_tests {
         fs::write(
             taps_dir.join("customuser/customrepo/.tap_info"),
             serde_json::to_string(&tap_info).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Cache a formula in the tap
         let tap_formula_json = format!(
@@ -5467,7 +5569,11 @@ mod tap_and_dependency_tests {
         let db_path = root.join("db/zb.sqlite3");
         {
             let db = Database::open(&db_path).unwrap();
-            db.add_tap("customuser/customrepo", "https://github.com/customuser/homebrew-customrepo").unwrap();
+            db.add_tap(
+                "customuser/customrepo",
+                "https://github.com/customuser/homebrew-customrepo",
+            )
+            .unwrap();
         }
 
         // Create installer
@@ -5494,7 +5600,11 @@ mod tap_and_dependency_tests {
 
         // Fetch formula - should fall back to tap
         let result = installer.fetch_formula("taponly").await;
-        assert!(result.is_ok(), "Expected formula from tap, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Expected formula from tap, got: {:?}",
+            result.err()
+        );
         let formula = result.unwrap();
         assert_eq!(formula.name, "taponly");
         assert_eq!(formula.versions.stable, "1.0.0");
@@ -5526,7 +5636,8 @@ mod tap_and_dependency_tests {
         fs::write(
             taps_dir.join("myuser/myrepo/.tap_info"),
             serde_json::to_string(&tap_info).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Cache formula
         let formula_json = format!(
@@ -5572,7 +5683,11 @@ mod tap_and_dependency_tests {
 
         // Fetch with explicit tap reference (user/repo/formula format)
         let result = installer.fetch_formula("myuser/myrepo/specialpkg").await;
-        assert!(result.is_ok(), "Expected formula from explicit tap ref, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Expected formula from explicit tap ref, got: {:?}",
+            result.err()
+        );
         let formula = result.unwrap();
         assert_eq!(formula.name, "specialpkg");
         assert_eq!(formula.versions.stable, "2.5.0");
@@ -5615,7 +5730,7 @@ mod tap_and_dependency_tests {
 
         let result = resolve_closure("pkga", &formulas);
         assert!(result.is_err(), "Expected cycle detection error");
-        
+
         match result.unwrap_err() {
             zb_core::Error::DependencyCycle { cycle } => {
                 assert!(!cycle.is_empty(), "Cycle should contain package names");
@@ -5636,7 +5751,7 @@ mod tap_and_dependency_tests {
 
         let result = resolve_closure("alpha", &formulas);
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             zb_core::Error::DependencyCycle { cycle } => {
                 // All three should be in the cycle
@@ -5657,7 +5772,7 @@ mod tap_and_dependency_tests {
 
         let result = resolve_closure("selfdep", &formulas);
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             zb_core::Error::DependencyCycle { cycle } => {
                 assert!(cycle.contains(&"selfdep".to_string()));
@@ -5678,7 +5793,7 @@ mod tap_and_dependency_tests {
 
         let result = resolve_closure("root", &formulas);
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             zb_core::Error::DependencyCycle { cycle } => {
                 // Only the cycling nodes should be in the error
@@ -5701,11 +5816,15 @@ mod tap_and_dependency_tests {
 
         let result = resolve_closure("root", &formulas);
         assert!(result.is_ok(), "Diamond dependency should not be a cycle");
-        
+
         let order = result.unwrap();
         assert_eq!(order.len(), 4);
         // c must come before a and b, which must come before root
-        let pos: BTreeMap<_, _> = order.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
+        let pos: BTreeMap<_, _> = order
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i))
+            .collect();
         assert!(pos["c"] < pos["a"]);
         assert!(pos["c"] < pos["b"]);
         assert!(pos["a"] < pos["root"]);
@@ -5734,7 +5853,13 @@ mod tap_and_dependency_tests {
         let c_sha = sha256_hex(&c_bottle);
 
         // Mount formula mocks with expectation tracking
-        let root_json = mock_formula_json("root", "1.0.0", &["a", "b", "c"], &mock_server.uri(), &root_sha);
+        let root_json = mock_formula_json(
+            "root",
+            "1.0.0",
+            &["a", "b", "c"],
+            &mock_server.uri(),
+            &root_sha,
+        );
         let a_json = mock_formula_json("a", "1.0.0", &[], &mock_server.uri(), &a_sha);
         let b_json = mock_formula_json("b", "1.0.0", &[], &mock_server.uri(), &b_sha);
         let c_json = mock_formula_json("c", "1.0.0", &[], &mock_server.uri(), &c_sha);
@@ -5804,43 +5929,67 @@ mod tap_and_dependency_tests {
 
         Mock::given(method("GET"))
             .and(path("/root.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("root", "1.0.0", &["mid1"], &mock_server.uri(), &root_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "root",
+                    "1.0.0",
+                    &["mid1"],
+                    &mock_server.uri(),
+                    &root_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/mid1.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("mid1", "1.0.0", &["mid2"], &mock_server.uri(), &mid1_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "mid1",
+                    "1.0.0",
+                    &["mid2"],
+                    &mock_server.uri(),
+                    &mid1_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/mid2.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("mid2", "1.0.0", &["leaf"], &mock_server.uri(), &mid2_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "mid2",
+                    "1.0.0",
+                    &["leaf"],
+                    &mock_server.uri(),
+                    &mid2_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/leaf.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("leaf", "1.0.0", &[], &mock_server.uri(), &leaf_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "leaf",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &leaf_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         let installer = create_test_installer(&mock_server, &tmp);
         let result = installer.fetch_all_formulas("root").await;
-        
+
         assert!(result.is_ok());
         let formulas = result.unwrap();
         assert_eq!(formulas.len(), 4);
-        
+
         // Verify correct dependency relationships
         assert!(formulas["root"].dependencies.contains(&"mid1".to_string()));
         assert!(formulas["mid1"].dependencies.contains(&"mid2".to_string()));
@@ -5866,35 +6015,59 @@ mod tap_and_dependency_tests {
 
         Mock::given(method("GET"))
             .and(path("/root.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("root", "1.0.0", &["a", "b"], &mock_server.uri(), &root_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "root",
+                    "1.0.0",
+                    &["a", "b"],
+                    &mock_server.uri(),
+                    &root_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/a.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("a", "1.0.0", &["shared"], &mock_server.uri(), &a_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "a",
+                    "1.0.0",
+                    &["shared"],
+                    &mock_server.uri(),
+                    &a_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/b.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("b", "1.0.0", &["shared"], &mock_server.uri(), &b_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "b",
+                    "1.0.0",
+                    &["shared"],
+                    &mock_server.uri(),
+                    &b_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         // 'shared' should only be fetched once despite being dep of both a and b
         Mock::given(method("GET"))
             .and(path("/shared.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("shared", "1.0.0", &[], &mock_server.uri(), &shared_sha)
-            ))
-            .expect(1)  // Exactly once!
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "shared",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &shared_sha,
+                )),
+            )
+            .expect(1) // Exactly once!
             .mount(&mock_server)
             .await;
 
@@ -5921,17 +6094,29 @@ mod tap_and_dependency_tests {
 
         Mock::given(method("GET"))
             .and(path("/root.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("root", "1.0.0", &["exists", "missing"], &mock_server.uri(), &root_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "root",
+                    "1.0.0",
+                    &["exists", "missing"],
+                    &mock_server.uri(),
+                    &root_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/exists.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("exists", "1.0.0", &[], &mock_server.uri(), &exists_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "exists",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &exists_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -5987,8 +6172,8 @@ mod orchestration_tests {
     use super::*;
     use crate::progress::InstallProgress;
     use crate::test_utils::{
-        mock_formula_json, mock_bottle_tarball_with_version, 
-        sha256_hex, platform_bottle_tag, create_test_installer,
+        create_test_installer, mock_bottle_tarball_with_version, mock_formula_json,
+        platform_bottle_tag, sha256_hex,
     };
     use std::sync::{Arc, Mutex};
     use wiremock::matchers::{method, path};
@@ -6028,7 +6213,7 @@ mod orchestration_tests {
     // ========================================================================
 
     /// Test that install emits progress events in correct order.
-    /// The callback should receive: DownloadStarted -> DownloadCompleted -> 
+    /// The callback should receive: DownloadStarted -> DownloadCompleted ->
     /// UnpackStarted -> UnpackCompleted -> LinkStarted -> LinkCompleted
     #[tokio::test]
     async fn install_emits_progress_events_in_order() {
@@ -6060,23 +6245,36 @@ mod orchestration_tests {
         let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let events_clone = events.clone();
 
-        let callback: Arc<crate::progress::ProgressCallback> = Arc::new(Box::new(move |event: InstallProgress| {
-            let event_name = match &event {
-                InstallProgress::DownloadStarted { name, .. } => format!("DownloadStarted:{}", name),
-                InstallProgress::DownloadProgress { name, .. } => format!("DownloadProgress:{}", name),
-                InstallProgress::DownloadCompleted { name, .. } => format!("DownloadCompleted:{}", name),
-                InstallProgress::UnpackStarted { name } => format!("UnpackStarted:{}", name),
-                InstallProgress::UnpackCompleted { name } => format!("UnpackCompleted:{}", name),
-                InstallProgress::LinkStarted { name } => format!("LinkStarted:{}", name),
-                InstallProgress::LinkCompleted { name } => format!("LinkCompleted:{}", name),
-                InstallProgress::InstallCompleted { name } => format!("InstallCompleted:{}", name),
-            };
-            events_clone.lock().unwrap().push(event_name);
-        }));
+        let callback: Arc<crate::progress::ProgressCallback> =
+            Arc::new(Box::new(move |event: InstallProgress| {
+                let event_name = match &event {
+                    InstallProgress::DownloadStarted { name, .. } => {
+                        format!("DownloadStarted:{}", name)
+                    }
+                    InstallProgress::DownloadProgress { name, .. } => {
+                        format!("DownloadProgress:{}", name)
+                    }
+                    InstallProgress::DownloadCompleted { name, .. } => {
+                        format!("DownloadCompleted:{}", name)
+                    }
+                    InstallProgress::UnpackStarted { name } => format!("UnpackStarted:{}", name),
+                    InstallProgress::UnpackCompleted { name } => {
+                        format!("UnpackCompleted:{}", name)
+                    }
+                    InstallProgress::LinkStarted { name } => format!("LinkStarted:{}", name),
+                    InstallProgress::LinkCompleted { name } => format!("LinkCompleted:{}", name),
+                    InstallProgress::InstallCompleted { name } => {
+                        format!("InstallCompleted:{}", name)
+                    }
+                };
+                events_clone.lock().unwrap().push(event_name);
+            }));
 
         // Plan and execute with progress
         let plan = installer.plan("progresspkg").await.unwrap();
-        let result = installer.execute_with_progress(plan, true, Some(callback)).await;
+        let result = installer
+            .execute_with_progress(plan, true, Some(callback))
+            .await;
 
         assert!(result.is_ok(), "Install failed: {:?}", result.err());
 
@@ -6085,7 +6283,8 @@ mod orchestration_tests {
         assert!(!recorded.is_empty(), "Should have recorded progress events");
 
         // Find key events (ignoring progress updates)
-        let key_events: Vec<&String> = recorded.iter()
+        let key_events: Vec<&String> = recorded
+            .iter()
             .filter(|e| !e.starts_with("DownloadProgress"))
             .collect();
 
@@ -6100,15 +6299,24 @@ mod orchestration_tests {
                 saw_download_complete = true;
             }
             if event.starts_with("UnpackStarted") {
-                assert!(saw_download_complete, "Unpack should start after download completes");
+                assert!(
+                    saw_download_complete,
+                    "Unpack should start after download completes"
+                );
                 saw_unpack_start = true;
             }
             if event.starts_with("UnpackCompleted") {
-                assert!(saw_unpack_start, "Unpack complete should follow unpack start");
+                assert!(
+                    saw_unpack_start,
+                    "Unpack complete should follow unpack start"
+                );
                 saw_unpack_complete = true;
             }
             if event.starts_with("LinkStarted") {
-                assert!(saw_unpack_complete, "Link should start after unpack completes");
+                assert!(
+                    saw_unpack_complete,
+                    "Link should start after unpack completes"
+                );
                 saw_link_start = true;
             }
             if event.starts_with("LinkCompleted") {
@@ -6133,22 +6341,33 @@ mod orchestration_tests {
         let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let events_clone = events.clone();
 
-        let callback: Arc<crate::progress::ProgressCallback> = Arc::new(Box::new(move |event: InstallProgress| {
-            let event_name = match &event {
-                InstallProgress::DownloadStarted { name, .. } => format!("DownloadStarted:{}", name),
-                InstallProgress::DownloadProgress { .. } => return, // Skip progress
-                InstallProgress::DownloadCompleted { name, .. } => format!("DownloadCompleted:{}", name),
-                InstallProgress::UnpackStarted { name } => format!("UnpackStarted:{}", name),
-                InstallProgress::UnpackCompleted { name } => format!("UnpackCompleted:{}", name),
-                InstallProgress::LinkStarted { name } => format!("LinkStarted:{}", name),
-                InstallProgress::LinkCompleted { name } => format!("LinkCompleted:{}", name),
-                InstallProgress::InstallCompleted { name } => format!("InstallCompleted:{}", name),
-            };
-            events_clone.lock().unwrap().push(event_name);
-        }));
+        let callback: Arc<crate::progress::ProgressCallback> =
+            Arc::new(Box::new(move |event: InstallProgress| {
+                let event_name = match &event {
+                    InstallProgress::DownloadStarted { name, .. } => {
+                        format!("DownloadStarted:{}", name)
+                    }
+                    InstallProgress::DownloadProgress { .. } => return, // Skip progress
+                    InstallProgress::DownloadCompleted { name, .. } => {
+                        format!("DownloadCompleted:{}", name)
+                    }
+                    InstallProgress::UnpackStarted { name } => format!("UnpackStarted:{}", name),
+                    InstallProgress::UnpackCompleted { name } => {
+                        format!("UnpackCompleted:{}", name)
+                    }
+                    InstallProgress::LinkStarted { name } => format!("LinkStarted:{}", name),
+                    InstallProgress::LinkCompleted { name } => format!("LinkCompleted:{}", name),
+                    InstallProgress::InstallCompleted { name } => {
+                        format!("InstallCompleted:{}", name)
+                    }
+                };
+                events_clone.lock().unwrap().push(event_name);
+            }));
 
         let plan = installer.plan("progmain").await.unwrap();
-        let result = installer.execute_with_progress(plan, true, Some(callback)).await;
+        let result = installer
+            .execute_with_progress(plan, true, Some(callback))
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap().installed, 2);
@@ -6160,7 +6379,10 @@ mod orchestration_tests {
         let main_events: Vec<_> = recorded.iter().filter(|e| e.contains("progmain")).collect();
 
         assert!(!dep_events.is_empty(), "Should have events for dependency");
-        assert!(!main_events.is_empty(), "Should have events for main package");
+        assert!(
+            !main_events.is_empty(),
+            "Should have events for main package"
+        );
     }
 
     // ========================================================================
@@ -6182,15 +6404,21 @@ mod orchestration_tests {
         let result1 = installer.install("reinstallme", true).await;
         assert!(result1.is_ok());
         assert!(installer.is_installed("reinstallme"));
-        assert_eq!(installer.get_installed("reinstallme").unwrap().version, "1.0.0");
+        assert_eq!(
+            installer.get_installed("reinstallme").unwrap().version,
+            "1.0.0"
+        );
 
         // Install again (reinstall)
         let result2 = installer.install("reinstallme", true).await;
         assert!(result2.is_ok());
-        
+
         // Should still be installed with same version
         assert!(installer.is_installed("reinstallme"));
-        assert_eq!(installer.get_installed("reinstallme").unwrap().version, "1.0.0");
+        assert_eq!(
+            installer.get_installed("reinstallme").unwrap().version,
+            "1.0.0"
+        );
     }
 
     /// Test force reinstall by uninstalling and reinstalling.
@@ -6300,7 +6528,8 @@ mod orchestration_tests {
         let bottle = mock_bottle_tarball_with_version("faildownload", "1.0.0");
         let sha = sha256_hex(&bottle);
 
-        let formula_json = mock_formula_json("faildownload", "1.0.0", &[], &mock_server.uri(), &sha);
+        let formula_json =
+            mock_formula_json("faildownload", "1.0.0", &[], &mock_server.uri(), &sha);
 
         Mock::given(method("GET"))
             .and(path("/faildownload.json"))
@@ -6338,8 +6567,8 @@ mod orchestration_tests {
         let tag = platform_bottle_tag();
 
         // Create corrupted tarball (valid gzip, invalid tar)
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::io::Write;
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -6444,7 +6673,8 @@ mod orchestration_tests {
         let dep2_bottle = mock_bottle_tarball_with_version("chaindep2", "1.0.0");
         let dep2_sha = sha256_hex(&dep2_bottle);
 
-        let dep2_formula = mock_formula_json("chaindep2", "1.0.0", &[], &mock_server.uri(), &dep2_sha);
+        let dep2_formula =
+            mock_formula_json("chaindep2", "1.0.0", &[], &mock_server.uri(), &dep2_sha);
         Mock::given(method("GET"))
             .and(path("/chaindep2.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(&dep2_formula))
@@ -6532,7 +6762,13 @@ mod orchestration_tests {
 
         // No database records
         assert!(installer.db.get_installed("dbfailpkg").is_none());
-        assert!(installer.db.get_linked_files("dbfailpkg").unwrap().is_empty());
+        assert!(
+            installer
+                .db
+                .get_linked_files("dbfailpkg")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // ========================================================================
@@ -6577,7 +6813,13 @@ mod orchestration_tests {
         mount_formula(&mock_server, "diamondshared", "1.0.0", &[]).await;
         mount_formula(&mock_server, "diamondleft", "1.0.0", &["diamondshared"]).await;
         mount_formula(&mock_server, "diamondright", "1.0.0", &["diamondshared"]).await;
-        mount_formula(&mock_server, "diamondmain", "1.0.0", &["diamondleft", "diamondright"]).await;
+        mount_formula(
+            &mock_server,
+            "diamondmain",
+            "1.0.0",
+            &["diamondleft", "diamondright"],
+        )
+        .await;
 
         let mut installer = create_test_installer(&mock_server, &tmp);
 
@@ -6632,7 +6874,10 @@ mod orchestration_tests {
         assert!(result.is_ok());
 
         let execute_result = result.unwrap();
-        assert_eq!(execute_result.installed, 3, "Should report 3 packages installed");
+        assert_eq!(
+            execute_result.installed, 3,
+            "Should report 3 packages installed"
+        );
     }
 
     // ========================================================================
@@ -6662,7 +6907,9 @@ mod orchestration_tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let perms = fs::metadata(keg_path.join("bin/kegpkg")).unwrap().permissions();
+            let perms = fs::metadata(keg_path.join("bin/kegpkg"))
+                .unwrap()
+                .permissions();
             assert!(perms.mode() & 0o111 != 0, "Should be executable");
         }
     }
@@ -6685,7 +6932,11 @@ mod orchestration_tests {
 
         // Store entry should exist
         let store_entry = root.join("store").join(&sha);
-        assert!(store_entry.exists(), "Store entry should exist at {}", store_entry.display());
+        assert!(
+            store_entry.exists(),
+            "Store entry should exist at {}",
+            store_entry.display()
+        );
     }
 }
 
@@ -6695,8 +6946,8 @@ mod orchestration_tests {
 
 mod mod_rs_coverage_tests {
     use crate::test_utils::{
-        mock_formula_json, mock_bottle_tarball_with_version,
-        sha256_hex, platform_bottle_tag, create_test_installer,
+        create_test_installer, mock_bottle_tarball_with_version, mock_formula_json,
+        platform_bottle_tag, sha256_hex,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -6724,25 +6975,43 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/tree_a.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("tree_a", "1.0.0", &["tree_b"], &mock_server.uri(), &a_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "tree_a",
+                    "1.0.0",
+                    &["tree_b"],
+                    &mock_server.uri(),
+                    &a_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/tree_b.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("tree_b", "1.0.0", &["tree_c"], &mock_server.uri(), &b_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "tree_b",
+                    "1.0.0",
+                    &["tree_c"],
+                    &mock_server.uri(),
+                    &b_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/tree_c.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("tree_c", "1.0.0", &[], &mock_server.uri(), &c_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "tree_c",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &c_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -6778,25 +7047,43 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/treea.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("treea", "1.0.0", &["treeb", "treec"], &mock_server.uri(), &a_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "treea",
+                    "1.0.0",
+                    &["treeb", "treec"],
+                    &mock_server.uri(),
+                    &a_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/treeb.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("treeb", "1.0.0", &[], &mock_server.uri(), &b_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "treeb",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &b_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/treec.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("treec", "1.0.0", &[], &mock_server.uri(), &c_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "treec",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &c_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -6841,33 +7128,57 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/droot.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("droot", "1.0.0", &["dleft", "dright"], &mock_server.uri(), &root_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "droot",
+                    "1.0.0",
+                    &["dleft", "dright"],
+                    &mock_server.uri(),
+                    &root_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/dleft.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("dleft", "1.0.0", &["dshared"], &mock_server.uri(), &left_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "dleft",
+                    "1.0.0",
+                    &["dshared"],
+                    &mock_server.uri(),
+                    &left_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/dright.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("dright", "1.0.0", &["dshared"], &mock_server.uri(), &right_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "dright",
+                    "1.0.0",
+                    &["dshared"],
+                    &mock_server.uri(),
+                    &right_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/dshared.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("dshared", "1.0.0", &[], &mock_server.uri(), &shared_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "dshared",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &shared_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -6908,25 +7219,43 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/useslib.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("useslib", "1.0.0", &[], &mock_server.uri(), &lib_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "useslib",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &lib_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/usesapp1.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("usesapp1", "1.0.0", &["useslib"], &mock_server.uri(), &app1_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "usesapp1",
+                    "1.0.0",
+                    &["useslib"],
+                    &mock_server.uri(),
+                    &app1_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/usesapp2.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("usesapp2", "1.0.0", &["useslib"], &mock_server.uri(), &app2_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "usesapp2",
+                    "1.0.0",
+                    &["useslib"],
+                    &mock_server.uri(),
+                    &app2_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -6975,25 +7304,43 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/recleaf.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("recleaf", "1.0.0", &[], &mock_server.uri(), &leaf_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "recleaf",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &leaf_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/recmid.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("recmid", "1.0.0", &["recleaf"], &mock_server.uri(), &mid_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "recmid",
+                    "1.0.0",
+                    &["recleaf"],
+                    &mock_server.uri(),
+                    &mid_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/rectop.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("rectop", "1.0.0", &["recmid"], &mock_server.uri(), &top_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "rectop",
+                    "1.0.0",
+                    &["recmid"],
+                    &mock_server.uri(),
+                    &top_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -7037,17 +7384,29 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/deptest.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("deptest", "1.0.0", &[], &mock_server.uri(), &dep_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "deptest",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &dep_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/maintest.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("maintest", "1.0.0", &["deptest"], &mock_server.uri(), &main_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "maintest",
+                    "1.0.0",
+                    &["deptest"],
+                    &mock_server.uri(),
+                    &main_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -7084,9 +7443,15 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/kegpathpkg.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("kegpathpkg", "2.5.0", &[], &mock_server.uri(), &sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "kegpathpkg",
+                    "2.5.0",
+                    &[],
+                    &mock_server.uri(),
+                    &sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -7136,9 +7501,15 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/linkover.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("linkover", "1.0.0", &[], &mock_server.uri(), &v1_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "linkover",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &v1_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -7183,9 +7554,15 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/conflictpkg.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("conflictpkg", "1.0.0", &[], &mock_server.uri(), &sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "conflictpkg",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -7228,9 +7605,15 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/forcepkg.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("forcepkg", "1.0.0", &[], &mock_server.uri(), &sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "forcepkg",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -7270,17 +7653,29 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/dumpkg1.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("dumpkg1", "1.0.0", &[], &mock_server.uri(), &pkg1_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "dumpkg1",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &pkg1_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/dumpkg2.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("dumpkg2", "1.0.0", &[], &mock_server.uri(), &pkg2_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "dumpkg2",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &pkg2_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -7322,9 +7717,15 @@ mod mod_rs_coverage_tests {
 
         Mock::given(method("GET"))
             .and(path("/checkpkg.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("checkpkg", "1.0.0", &[], &mock_server.uri(), &sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "checkpkg",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -7377,8 +7778,12 @@ brew "curl", args: ["--HEAD"]
         assert!(entries.len() >= 2);
 
         // Find the tap and brew entries
-        let has_tap = entries.iter().any(|e| matches!(e, crate::bundle::BrewfileEntry::Tap { name } if name == "homebrew/core"));
-        let has_wget = entries.iter().any(|e| matches!(e, crate::bundle::BrewfileEntry::Brew { name, .. } if name == "wget"));
+        let has_tap = entries.iter().any(
+            |e| matches!(e, crate::bundle::BrewfileEntry::Tap { name } if name == "homebrew/core"),
+        );
+        let has_wget = entries.iter().any(
+            |e| matches!(e, crate::bundle::BrewfileEntry::Brew { name, .. } if name == "wget"),
+        );
 
         assert!(has_tap || has_wget); // At least some entries parsed
     }
@@ -7473,7 +7878,10 @@ brew "curl", args: ["--HEAD"]
         assert!(dst.path().join("a/file3.txt").exists());
 
         // Verify content
-        assert_eq!(fs::read_to_string(dst.path().join("a/b/c/file.txt")).unwrap(), "content");
+        assert_eq!(
+            fs::read_to_string(dst.path().join("a/b/c/file.txt")).unwrap(),
+            "content"
+        );
     }
 
     /// Test copy_dir_recursive handles empty directories.
@@ -7521,17 +7929,29 @@ brew "curl", args: ["--HEAD"]
 
         Mock::given(method("GET"))
             .and(path("/leaf1.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("leaf1", "1.0.0", &[], &mock_server.uri(), &pkg1_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "leaf1",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &pkg1_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/leaf2.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("leaf2", "1.0.0", &[], &mock_server.uri(), &pkg2_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "leaf2",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &pkg2_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
@@ -7647,25 +8067,43 @@ brew "curl", args: ["--HEAD"]
 
         Mock::given(method("GET"))
             .and(path("/depa.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("depa", "1.0.0", &["depb", "depc"], &mock_server.uri(), &a_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "depa",
+                    "1.0.0",
+                    &["depb", "depc"],
+                    &mock_server.uri(),
+                    &a_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/depb.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("depb", "1.0.0", &[], &mock_server.uri(), &b_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "depb",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &b_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/depc.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                &mock_formula_json("depc", "1.0.0", &[], &mock_server.uri(), &c_sha)
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(&mock_formula_json(
+                    "depc",
+                    "1.0.0",
+                    &[],
+                    &mock_server.uri(),
+                    &c_sha,
+                )),
+            )
             .mount(&mock_server)
             .await;
 

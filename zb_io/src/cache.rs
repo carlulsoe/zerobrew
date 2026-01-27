@@ -282,7 +282,8 @@ impl ApiCache {
             )?;
 
             for (idx, f) in formulas.iter().enumerate() {
-                let aliases_json = serde_json::to_string(&f.aliases).unwrap_or_else(|_| "[]".to_string());
+                let aliases_json =
+                    serde_json::to_string(&f.aliases).unwrap_or_else(|_| "[]".to_string());
                 // Join aliases with spaces for FTS searchability
                 let aliases_text = f.aliases.join(" ");
 
@@ -333,9 +334,10 @@ impl ApiCache {
 
     /// Get formula count in cache
     pub fn formula_count(&self) -> Result<usize, rusqlite::Error> {
-        self.conn.query_row("SELECT COUNT(*) FROM formulas", [], |row| {
-            row.get::<_, i64>(0).map(|n| n as usize)
-        })
+        self.conn
+            .query_row("SELECT COUNT(*) FROM formulas", [], |row| {
+                row.get::<_, i64>(0).map(|n| n as usize)
+            })
     }
 
     // ========================================================================

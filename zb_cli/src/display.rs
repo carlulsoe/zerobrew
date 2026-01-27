@@ -39,7 +39,10 @@ pub fn create_progress_callback(
     multi: MultiProgress,
     styles: ProgressStyles,
     completion_message: &'static str,
-) -> (Arc<ProgressCallback>, Arc<Mutex<HashMap<String, ProgressBar>>>) {
+) -> (
+    Arc<ProgressCallback>,
+    Arc<Mutex<HashMap<String, ProgressBar>>>,
+) {
     let bars: Arc<Mutex<HashMap<String, ProgressBar>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let bars_clone = bars.clone();
@@ -200,11 +203,21 @@ pub fn format_deps_tree_lines(tree: &DepsTree, prefix: &str, is_last: bool) -> V
     lines
 }
 
-fn format_deps_tree_recursive(tree: &DepsTree, prefix: &str, is_last: bool, lines: &mut Vec<String>) {
-    lines.push(format_tree_line(&tree.name, tree.installed, prefix, is_last));
-    
+fn format_deps_tree_recursive(
+    tree: &DepsTree,
+    prefix: &str,
+    is_last: bool,
+    lines: &mut Vec<String>,
+) {
+    lines.push(format_tree_line(
+        &tree.name,
+        tree.installed,
+        prefix,
+        is_last,
+    ));
+
     let new_prefix = tree_child_prefix(prefix, is_last);
-    
+
     for (i, child) in tree.children.iter().enumerate() {
         let is_last_child = i == tree.children.len() - 1;
         format_deps_tree_recursive(child, &new_prefix, is_last_child, lines);
@@ -327,9 +340,11 @@ mod tests {
 
         assert!(output.contains("export HOMEBREW_PREFIX=\"/opt/zerobrew/prefix\""));
         assert!(output.contains("export HOMEBREW_CELLAR=\"/opt/zerobrew/prefix/Cellar\""));
-        assert!(output.contains(
-            "export PATH=\"/opt/zerobrew/prefix/bin:/opt/zerobrew/prefix/sbin:$PATH\""
-        ));
+        assert!(
+            output.contains(
+                "export PATH=\"/opt/zerobrew/prefix/bin:/opt/zerobrew/prefix/sbin:$PATH\""
+            )
+        );
         assert!(output.contains("export MANPATH=\"/opt/zerobrew/prefix/share/man:${MANPATH:-}\""));
         assert!(
             output.contains("export INFOPATH=\"/opt/zerobrew/prefix/share/info:${INFOPATH:-}\"")
@@ -595,7 +610,7 @@ mod tests {
         };
         let lines = format_deps_tree_lines(&tree, "", true);
         assert_eq!(lines.len(), 4);
-        
+
         // Check install markers
         assert!(lines[0].contains("✓")); // python installed
         assert!(lines[1].contains("✓")); // openssl installed
@@ -630,13 +645,13 @@ mod tests {
         };
         let lines = format_deps_tree_lines(&tree, "", true);
         assert_eq!(lines.len(), 4);
-        
+
         // Verify all names are present
         assert!(lines[0].contains("neovim"));
         assert!(lines[1].contains("luajit"));
         assert!(lines[2].contains("libgit2"));
         assert!(lines[3].contains("libuv"));
-        
+
         // Verify install markers
         assert!(lines[0].contains("✓")); // neovim installed
         assert!(lines[1].contains("✓")); // luajit installed
@@ -680,7 +695,7 @@ mod tests {
         };
         let lines = format_deps_tree_lines(&tree, "", true);
         assert_eq!(lines.len(), 6);
-        
+
         // Verify all names present in order
         assert!(lines[0].contains("cmake"));
         assert!(lines[1].contains("curl"));
@@ -688,7 +703,7 @@ mod tests {
         assert!(lines[3].contains("libuv"));
         assert!(lines[4].contains("ncurses"));
         assert!(lines[5].contains("zlib"));
-        
+
         // All should be marked as installed
         for line in &lines {
             assert!(line.contains("✓"));
@@ -717,11 +732,11 @@ mod tests {
         };
         // Call with non-empty prefix to simulate being a child node
         let lines = format_deps_tree_lines(&tree, "  ", false);
-        
+
         // First line should have middle-child connector
         assert!(lines[0].contains("├── "));
         assert!(lines[0].contains("openssl"));
-        
+
         // Children should have proper tree indentation
         assert!(lines[1].contains("│   ")); // continuation from non-last parent
         assert!(lines[1].contains("├── ")); // first child (not last)

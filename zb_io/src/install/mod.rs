@@ -690,7 +690,10 @@ impl Installer {
 }
 
 /// Recursively copy a directory
-pub(crate) fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Error> {
+pub(crate) fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> Result<(), Error> {
     if !dst.exists() {
         std::fs::create_dir_all(dst).map_err(|e| Error::StoreCorruption {
             message: format!("failed to create directory '{}': {}", dst.display(), e),

@@ -9,7 +9,7 @@ use zb_core::formula::KegOnlyReason;
 use zb_io::install::Installer;
 
 use crate::display::{
-    create_progress_callback, finish_progress_bars, suggest_homebrew, ProgressStyles,
+    ProgressStyles, create_progress_callback, finish_progress_bars, suggest_homebrew,
 };
 
 /// Run the install command.
@@ -59,10 +59,7 @@ async fn run_source_install(
         format_downloading_message()
     );
 
-    let result = match installer
-        .install_from_source(formula, !no_link, head)
-        .await
-    {
+    let result = match installer.install_from_source(formula, !no_link, head).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("{}", format_install_error_context(formula, true));
@@ -181,7 +178,12 @@ async fn run_bottle_install(
     );
 
     // Display keg-only and caveats info if present
-    print_keg_only_info(root_keg_only, root_keg_only_reason.as_ref(), prefix, formula);
+    print_keg_only_info(
+        root_keg_only,
+        root_keg_only_reason.as_ref(),
+        prefix,
+        formula,
+    );
     print_caveats(root_caveats.as_ref(), prefix);
 
     Ok(())
@@ -200,10 +202,7 @@ fn print_keg_only_info(
 
     println!();
     println!("{}", style("==> Keg-only").yellow().bold());
-    println!(
-        "{}",
-        format_keg_only_base_message(formula, prefix)
-    );
+    println!("{}", format_keg_only_base_message(formula, prefix));
     if should_show_keg_only_explanation(keg_only_reason) {
         println!();
         println!("{}", keg_only_reason.unwrap().explanation);
@@ -291,7 +290,10 @@ pub(crate) fn format_files_linked_message(count: usize) -> String {
 /// Format bottle install summary.
 /// Extracted for testability.
 pub(crate) fn format_bottle_install_summary(package_count: usize, elapsed_secs: f64) -> String {
-    format!("Installed {} packages in {:.2}s", package_count, elapsed_secs)
+    format!(
+        "Installed {} packages in {:.2}s",
+        package_count, elapsed_secs
+    )
 }
 
 /// Format dependency resolution message.
@@ -343,9 +345,7 @@ pub(crate) fn format_keg_only_base_message(formula: &str, prefix: &Path) -> Stri
 /// Check if keg-only explanation should be shown.
 /// Extracted for testability.
 pub(crate) fn should_show_keg_only_explanation(reason: Option<&KegOnlyReason>) -> bool {
-    reason
-        .map(|r| !r.explanation.is_empty())
-        .unwrap_or(false)
+    reason.map(|r| !r.explanation.is_empty()).unwrap_or(false)
 }
 
 /// Format the dependency list entry.
@@ -572,13 +572,19 @@ mod tests {
     #[test]
     fn test_format_install_complete_message() {
         let result = format_install_complete_message("git", "2.44.0", 150, 5.5);
-        assert_eq!(result, "Built and installed git 2.44.0 (150 files) in 5.50s");
+        assert_eq!(
+            result,
+            "Built and installed git 2.44.0 (150 files) in 5.50s"
+        );
     }
 
     #[test]
     fn test_format_install_complete_message_zero_files() {
         let result = format_install_complete_message("empty-pkg", "1.0", 0, 0.1);
-        assert_eq!(result, "Built and installed empty-pkg 1.0 (0 files) in 0.10s");
+        assert_eq!(
+            result,
+            "Built and installed empty-pkg 1.0 (0 files) in 0.10s"
+        );
     }
 
     #[test]
@@ -814,7 +820,8 @@ mod tests {
     #[test]
     fn test_process_caveats_lines_multiline() {
         let prefix = PathBuf::from("/usr/local");
-        let caveats = "Line 1: $HOMEBREW_PREFIX/bin\nLine 2: check docs\nLine 3: $HOMEBREW_PREFIX/lib";
+        let caveats =
+            "Line 1: $HOMEBREW_PREFIX/bin\nLine 2: check docs\nLine 3: $HOMEBREW_PREFIX/lib";
         let result = process_caveats_lines(caveats, &prefix);
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], "Line 1: /usr/local/bin");

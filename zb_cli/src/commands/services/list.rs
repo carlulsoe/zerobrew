@@ -19,7 +19,8 @@ pub(crate) fn format_status_display(status: &ServiceStatus) -> String {
 /// Format a PID for display (number or dash if None).
 /// Extracted for testability.
 pub(crate) fn format_pid_display(pid: Option<u32>) -> String {
-    pid.map(|p| p.to_string()).unwrap_or_else(|| "-".to_string())
+    pid.map(|p| p.to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 /// Convert a ServiceStatus to its JSON string representation.
@@ -306,7 +307,10 @@ mod tests {
     #[test]
     fn test_extract_status_error_error() {
         let status = ServiceStatus::Error("failed to start".to_string());
-        assert_eq!(extract_status_error(&status), Some("failed to start".to_string()));
+        assert_eq!(
+            extract_status_error(&status),
+            Some("failed to start".to_string())
+        );
     }
 
     #[test]
@@ -342,7 +346,10 @@ mod tests {
         assert_eq!(json["name"], "redis");
         assert_eq!(json["status"], "running");
         assert_eq!(json["pid"], 12345);
-        assert_eq!(json["file"], "/home/user/.config/systemd/user/zerobrew.redis.service");
+        assert_eq!(
+            json["file"],
+            "/home/user/.config/systemd/user/zerobrew.redis.service"
+        );
         assert_eq!(json["auto_start"], true);
         assert!(json["error"].is_null());
     }
@@ -434,7 +441,7 @@ mod tests {
 
         // Should serialize without error
         let serialized = serde_json::to_string(&json).unwrap();
-        
+
         // Should contain expected fields
         assert!(serialized.contains("\"name\":\"redis\""));
         assert!(serialized.contains("\"status\":\"running\""));
@@ -445,17 +452,35 @@ mod tests {
     #[test]
     fn test_multiple_services_json_array() {
         let services = vec![
-            service_to_json("redis", &ServiceStatus::Running, Some(100), &PathBuf::from("/a"), true),
-            service_to_json("postgres", &ServiceStatus::Stopped, None, &PathBuf::from("/b"), false),
-            service_to_json("nginx", &ServiceStatus::Error("fail".to_string()), None, &PathBuf::from("/c"), true),
+            service_to_json(
+                "redis",
+                &ServiceStatus::Running,
+                Some(100),
+                &PathBuf::from("/a"),
+                true,
+            ),
+            service_to_json(
+                "postgres",
+                &ServiceStatus::Stopped,
+                None,
+                &PathBuf::from("/b"),
+                false,
+            ),
+            service_to_json(
+                "nginx",
+                &ServiceStatus::Error("fail".to_string()),
+                None,
+                &PathBuf::from("/c"),
+                true,
+            ),
         ];
 
         let json_str = serde_json::to_string_pretty(&services).unwrap();
-        
+
         // Verify it's valid JSON array
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
         assert_eq!(parsed.len(), 3);
-        
+
         // Verify order is preserved
         assert_eq!(parsed[0]["name"], "redis");
         assert_eq!(parsed[1]["name"], "postgres");
