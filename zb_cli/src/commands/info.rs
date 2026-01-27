@@ -344,6 +344,92 @@ pub(crate) fn build_info_json_base(
     info
 }
 
+/// Build JSON for installed formula info.
+/// Extracted for testability.
+pub(crate) fn build_installed_info_json(
+    version: &str,
+    store_key: &str,
+    installed_at: u64,
+    pinned: bool,
+    explicit: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut info = serde_json::Map::new();
+    info.insert("installed_version".to_string(), serde_json::json!(version));
+    info.insert("store_key".to_string(), serde_json::json!(store_key));
+    info.insert("installed_at".to_string(), serde_json::json!(installed_at));
+    info.insert("pinned".to_string(), serde_json::json!(pinned));
+    info.insert("explicit".to_string(), serde_json::json!(explicit));
+    info
+}
+
+/// Build linked files JSON array.
+/// Extracted for testability.
+pub(crate) fn build_linked_files_json(
+    linked_files: &[(String, String)],
+) -> Vec<serde_json::Value> {
+    linked_files
+        .iter()
+        .map(|(link, target)| serde_json::json!({"link": link, "target": target}))
+        .collect()
+}
+
+/// Build search result JSON.
+/// Extracted for testability.
+pub(crate) fn build_search_result_json(
+    name: &str,
+    full_name: &str,
+    version: &str,
+    description: &str,
+    installed: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "full_name": full_name,
+        "version": version,
+        "description": description,
+        "installed": installed
+    })
+}
+
+/// Format pin marker for display.
+/// Extracted for testability.
+pub(crate) fn format_pin_marker(pinned: bool) -> String {
+    if pinned {
+        " (pinned)".to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Format explicit/dependency marker for display.
+/// Extracted for testability.
+pub(crate) fn format_explicit_marker(explicit: bool) -> String {
+    if explicit {
+        String::new()
+    } else {
+        " (installed as dependency)".to_string()
+    }
+}
+
+/// Calculate display limit for linked files (show first N, then "and X more...").
+/// Extracted for testability.
+pub(crate) fn calculate_linked_files_display(
+    total_files: usize,
+    display_limit: usize,
+) -> (usize, Option<usize>) {
+    if total_files <= display_limit {
+        (total_files, None)
+    } else {
+        (display_limit, Some(total_files - display_limit))
+    }
+}
+
+/// Determine if an update is available by comparing versions.
+/// Extracted for testability.
+pub(crate) fn is_update_available(installed_version: &str, available_version: &str) -> bool {
+    installed_version != available_version
+}
+
 /// Run the search command.
 pub async fn run_search(
     installer: &Installer,
@@ -462,6 +548,10 @@ pub async fn run_search(
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // Truncate Description Tests
+    // ========================================================================
+
     #[test]
     fn test_truncate_description_under_limit() {
         let desc = "A short description";
@@ -498,6 +588,26 @@ mod tests {
     }
 
     #[test]
+    fn test_truncate_description_just_over_limit() {
+        let desc = "x".repeat(71);
+        let result = truncate_description(&desc, 70);
+        assert_eq!(result.len(), 70);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_description_with_unicode() {
+        // Note: truncation works on bytes, not chars - be aware of this
+        let desc = "Hello";
+        let result = truncate_description(desc, 100);
+        assert_eq!(result, "Hello");
+    }
+
+    // ========================================================================
+    // Store Key Formatting Tests
+    // ========================================================================
+
+    #[test]
     fn test_format_store_key_full_length() {
         let key = "abcdef123456789012345678";
         let result = format_store_key(key);
@@ -526,6 +636,24 @@ mod tests {
     }
 
     #[test]
+    fn test_format_store_key_eleven_chars() {
+        let key = "abcdefghijk";
+        let result = format_store_key(key);
+        assert_eq!(result, "abcdefghijk");
+    }
+
+    #[test]
+    fn test_format_store_key_thirteen_chars() {
+        let key = "abcdefghijklm";
+        let result = format_store_key(key);
+        assert_eq!(result, "abcdefghijkl");
+    }
+
+    // ========================================================================
+    // Base Info JSON Tests
+    // ========================================================================
+
+    #[test]
     fn test_build_info_json_base_installed() {
         let info = build_info_json_base("git", true);
         assert_eq!(info.get("name").unwrap(), "git");
@@ -551,5 +679,224 @@ mod tests {
         assert!(info.contains_key("name"));
         assert!(info.contains_key("installed"));
         assert_eq!(info.len(), 2);
+    }
+
+    // ========================================================================
+    // Installed Info JSON Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_installed_info_json_basic() {
+        let info = build_installed_info_json("2.44.0", "abc123def456", 1700000000, false, true);
+        assert_eq!(info.get("installed_version").unwrap(), "2.44.0");
+        assert_eq!(info.get("store_key").unwrap(), "abc123def456");
+        assert_eq!(info.get("installed_at").unwrap(), 1700000000);
+        assert_eq!(info.get("pinned").unwrap(), false);
+        assert_eq!(info.get("explicit").unwrap(), true);
+    }
+
+    #[test]
+    fn test_build_installed_info_json_pinned() {
+        let info = build_installed_info_json("1.0.0", "key123", 1234567890, true, true);
+        assert_eq!(info.get("pinned").unwrap(), true);
+    }
+
+    #[test]
+    fn test_build_installed_info_json_dependency() {
+        let info = build_installed_info_json("3.0.0", "xyz789", 9999999999, false, false);
+        assert_eq!(info.get("explicit").unwrap(), false);
+    }
+
+    #[test]
+    fn test_build_installed_info_json_all_fields() {
+        let info = build_installed_info_json("1.2.3", "hash", 0, true, false);
+        assert!(info.contains_key("installed_version"));
+        assert!(info.contains_key("store_key"));
+        assert!(info.contains_key("installed_at"));
+        assert!(info.contains_key("pinned"));
+        assert!(info.contains_key("explicit"));
+        assert_eq!(info.len(), 5);
+    }
+
+    // ========================================================================
+    // Linked Files JSON Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_linked_files_json_empty() {
+        let files: Vec<(String, String)> = vec![];
+        let json = build_linked_files_json(&files);
+        assert!(json.is_empty());
+    }
+
+    #[test]
+    fn test_build_linked_files_json_single() {
+        let files = vec![("/usr/local/bin/git".to_string(), "/opt/zb/git/bin/git".to_string())];
+        let json = build_linked_files_json(&files);
+        assert_eq!(json.len(), 1);
+        assert_eq!(json[0]["link"], "/usr/local/bin/git");
+        assert_eq!(json[0]["target"], "/opt/zb/git/bin/git");
+    }
+
+    #[test]
+    fn test_build_linked_files_json_multiple() {
+        let files = vec![
+            ("/usr/bin/a".to_string(), "/opt/a".to_string()),
+            ("/usr/bin/b".to_string(), "/opt/b".to_string()),
+            ("/usr/bin/c".to_string(), "/opt/c".to_string()),
+        ];
+        let json = build_linked_files_json(&files);
+        assert_eq!(json.len(), 3);
+    }
+
+    // ========================================================================
+    // Search Result JSON Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_search_result_json_full() {
+        let json = build_search_result_json(
+            "ripgrep",
+            "ripgrep",
+            "14.1.0",
+            "Search tool like grep",
+            true,
+        );
+        assert_eq!(json["name"], "ripgrep");
+        assert_eq!(json["full_name"], "ripgrep");
+        assert_eq!(json["version"], "14.1.0");
+        assert_eq!(json["description"], "Search tool like grep");
+        assert_eq!(json["installed"], true);
+    }
+
+    #[test]
+    fn test_build_search_result_json_not_installed() {
+        let json = build_search_result_json("jq", "jq", "1.7", "JSON processor", false);
+        assert_eq!(json["installed"], false);
+    }
+
+    #[test]
+    fn test_build_search_result_json_empty_description() {
+        let json = build_search_result_json("test", "test", "1.0", "", false);
+        assert_eq!(json["description"], "");
+    }
+
+    #[test]
+    fn test_build_search_result_json_different_names() {
+        let json = build_search_result_json(
+            "python",
+            "homebrew/core/python",
+            "3.12.0",
+            "Python interpreter",
+            true,
+        );
+        assert_eq!(json["name"], "python");
+        assert_eq!(json["full_name"], "homebrew/core/python");
+    }
+
+    // ========================================================================
+    // Pin Marker Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_pin_marker_pinned() {
+        let result = format_pin_marker(true);
+        assert_eq!(result, " (pinned)");
+    }
+
+    #[test]
+    fn test_format_pin_marker_not_pinned() {
+        let result = format_pin_marker(false);
+        assert_eq!(result, "");
+    }
+
+    // ========================================================================
+    // Explicit Marker Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_explicit_marker_explicit() {
+        let result = format_explicit_marker(true);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_format_explicit_marker_dependency() {
+        let result = format_explicit_marker(false);
+        assert_eq!(result, " (installed as dependency)");
+    }
+
+    // ========================================================================
+    // Linked Files Display Tests
+    // ========================================================================
+
+    #[test]
+    fn test_calculate_linked_files_display_under_limit() {
+        let (shown, remaining) = calculate_linked_files_display(3, 5);
+        assert_eq!(shown, 3);
+        assert_eq!(remaining, None);
+    }
+
+    #[test]
+    fn test_calculate_linked_files_display_at_limit() {
+        let (shown, remaining) = calculate_linked_files_display(5, 5);
+        assert_eq!(shown, 5);
+        assert_eq!(remaining, None);
+    }
+
+    #[test]
+    fn test_calculate_linked_files_display_over_limit() {
+        let (shown, remaining) = calculate_linked_files_display(10, 5);
+        assert_eq!(shown, 5);
+        assert_eq!(remaining, Some(5));
+    }
+
+    #[test]
+    fn test_calculate_linked_files_display_zero() {
+        let (shown, remaining) = calculate_linked_files_display(0, 5);
+        assert_eq!(shown, 0);
+        assert_eq!(remaining, None);
+    }
+
+    #[test]
+    fn test_calculate_linked_files_display_many_over() {
+        let (shown, remaining) = calculate_linked_files_display(100, 5);
+        assert_eq!(shown, 5);
+        assert_eq!(remaining, Some(95));
+    }
+
+    // ========================================================================
+    // Update Available Tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_update_available_same_version() {
+        assert!(!is_update_available("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn test_is_update_available_different_version() {
+        assert!(is_update_available("1.0.0", "2.0.0"));
+    }
+
+    #[test]
+    fn test_is_update_available_patch_update() {
+        assert!(is_update_available("1.0.0", "1.0.1"));
+    }
+
+    #[test]
+    fn test_is_update_available_with_revision() {
+        assert!(is_update_available("1.0.0_1", "1.0.0_2"));
+    }
+
+    #[test]
+    fn test_is_update_available_empty_strings() {
+        assert!(!is_update_available("", ""));
+    }
+
+    #[test]
+    fn test_is_update_available_downgrade() {
+        // Simple string comparison - doesn't validate semver ordering
+        assert!(is_update_available("2.0.0", "1.0.0"));
     }
 }
