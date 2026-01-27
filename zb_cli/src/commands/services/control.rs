@@ -662,7 +662,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    // ==================== pluralize Tests ====================
+    // ============================================================================
+    // pluralize Tests
+    // ============================================================================
 
     #[test]
     fn test_pluralize_zero() {
@@ -697,7 +699,9 @@ mod tests {
         assert_eq!(pluralize(2, "child", "children"), "children");
     }
 
-    // ==================== format_orphan_count_message Tests ====================
+    // ============================================================================
+    // format_orphan_count_message Tests
+    // ============================================================================
 
     #[test]
     fn test_format_orphan_count_message_zero_dry_run() {
@@ -735,7 +739,9 @@ mod tests {
         assert_eq!(msg, "Removing 10 orphaned services");
     }
 
-    // ==================== format_cleanup_complete_message Tests ====================
+    // ============================================================================
+    // format_cleanup_complete_message Tests
+    // ============================================================================
 
     #[test]
     fn test_format_cleanup_complete_message_zero() {
@@ -755,7 +761,9 @@ mod tests {
         assert_eq!(msg, "Removed 7 orphaned services");
     }
 
-    // ==================== select_log_file Tests ====================
+    // ============================================================================
+    // select_log_file Tests
+    // ============================================================================
 
     #[test]
     fn test_select_log_file_both_exist() {
@@ -827,7 +835,9 @@ mod tests {
         assert_eq!(selected, None);
     }
 
-    // ==================== get_last_lines Tests ====================
+    // ============================================================================
+    // get_last_lines Tests
+    // ============================================================================
 
     #[test]
     fn test_get_last_lines_empty() {
@@ -898,29 +908,304 @@ mod tests {
         assert_eq!(result[49], "Log entry 1000");
     }
 
-    // ==================== Error Message Format Tests ====================
+    // ============================================================================
+    // Action Message Formatters Tests
+    // ============================================================================
 
     #[test]
-    fn test_error_messages_are_user_friendly() {
-        // These tests document expected error message patterns
-        // for future reference and to prevent regressions
-
-        // Formula not installed pattern
-        let formula = "redis";
-        let expected = format!("Formula '{}' is not installed.", formula);
-        assert!(expected.contains(formula));
-        assert!(expected.contains("not installed"));
-
-        // No service definition pattern
-        let expected = format!("Formula '{}' does not have a service definition.", formula);
-        assert!(expected.contains("service definition"));
-
-        // No service file pattern
-        let expected = format!("No service file found for '{}'.", formula);
-        assert!(expected.contains("service file"));
+    fn test_format_starting_message() {
+        assert_eq!(format_starting_message("redis"), "Starting redis...");
+        assert_eq!(format_starting_message("postgresql@14"), "Starting postgresql@14...");
     }
 
-    // ==================== Integration-style Logic Tests ====================
+    #[test]
+    fn test_format_started_message() {
+        assert_eq!(format_started_message("redis"), "Started redis");
+        assert_eq!(format_started_message("nginx"), "Started nginx");
+    }
+
+    #[test]
+    fn test_format_stopping_message() {
+        assert_eq!(format_stopping_message("redis"), "Stopping redis...");
+        assert_eq!(format_stopping_message("mongodb"), "Stopping mongodb...");
+    }
+
+    #[test]
+    fn test_format_stopped_message() {
+        assert_eq!(format_stopped_message("redis"), "Stopped redis");
+        assert_eq!(format_stopped_message("mysql"), "Stopped mysql");
+    }
+
+    #[test]
+    fn test_format_restarting_message() {
+        assert_eq!(format_restarting_message("redis"), "Restarting redis...");
+        assert_eq!(format_restarting_message("httpd"), "Restarting httpd...");
+    }
+
+    #[test]
+    fn test_format_restarted_message() {
+        assert_eq!(format_restarted_message("redis"), "Restarted redis");
+        assert_eq!(format_restarted_message("memcached"), "Restarted memcached");
+    }
+
+    #[test]
+    fn test_format_enabling_message() {
+        let msg = format_enabling_message("redis");
+        assert!(msg.contains("redis"));
+        assert!(msg.contains("start automatically"));
+    }
+
+    #[test]
+    fn test_format_enabled_message() {
+        let msg = format_enabled_message("redis");
+        assert!(msg.contains("redis"));
+        assert!(msg.contains("start automatically"));
+        assert!(msg.contains("login"));
+    }
+
+    #[test]
+    fn test_format_disabling_message() {
+        let msg = format_disabling_message("redis");
+        assert!(msg.contains("redis"));
+        assert!(msg.contains("Disabling"));
+        assert!(msg.contains("from starting automatically"));
+    }
+
+    #[test]
+    fn test_format_disabled_message() {
+        let msg = format_disabled_message("redis");
+        assert!(msg.contains("redis"));
+        assert!(msg.contains("no longer start automatically"));
+    }
+
+    #[test]
+    fn test_format_already_enabled_message() {
+        let msg = format_already_enabled_message("postgresql");
+        assert!(msg.contains("postgresql"));
+        assert!(msg.contains("already"));
+        assert!(msg.contains("start automatically"));
+    }
+
+    #[test]
+    fn test_format_not_enabled_message() {
+        let msg = format_not_enabled_message("mongodb");
+        assert!(msg.contains("mongodb"));
+        assert!(msg.contains("not set to start automatically"));
+    }
+
+    #[test]
+    fn test_format_creating_service_message() {
+        let msg = format_creating_service_message("redis");
+        assert!(msg.contains("redis"));
+        assert!(msg.contains("Creating service file"));
+    }
+
+    #[test]
+    fn test_format_foreground_message() {
+        let msg = format_foreground_message("redis");
+        assert!(msg.contains("redis"));
+        assert!(msg.contains("foreground"));
+    }
+
+    #[test]
+    fn test_format_foreground_command() {
+        let program = PathBuf::from("/usr/bin/redis-server");
+        let args = vec!["--port".to_string(), "6379".to_string()];
+        let msg = format_foreground_command(&program, &args);
+        assert!(msg.contains("Command:"));
+        assert!(msg.contains("redis-server"));
+        assert!(msg.contains("--port 6379"));
+    }
+
+    #[test]
+    fn test_format_foreground_command_no_args() {
+        let program = PathBuf::from("/usr/bin/nginx");
+        let args: Vec<String> = vec![];
+        let msg = format_foreground_command(&program, &args);
+        assert!(msg.contains("nginx"));
+        // Args portion should be empty
+        assert!(msg.ends_with(" ") || msg.ends_with("nginx"));
+    }
+
+    #[test]
+    fn test_format_log_header() {
+        let msg = format_log_header("redis", 50);
+        assert!(msg.contains("redis"));
+        assert!(msg.contains("50"));
+        assert!(msg.contains("lines"));
+    }
+
+    #[test]
+    fn test_format_log_header_different_counts() {
+        assert!(format_log_header("nginx", 1).contains("1"));
+        assert!(format_log_header("nginx", 100).contains("100"));
+        assert!(format_log_header("nginx", 1000).contains("1000"));
+    }
+
+    #[test]
+    fn test_format_log_follow_header() {
+        let msg = format_log_follow_header("redis");
+        assert!(msg.contains("redis"));
+        assert!(msg.contains("Following"));
+        assert!(msg.contains("Ctrl+C"));
+    }
+
+    // ============================================================================
+    // Error Message Formatters Tests
+    // ============================================================================
+
+    #[test]
+    fn test_format_not_installed_error() {
+        let msg = format_not_installed_error("redis");
+        assert_eq!(msg, "Formula 'redis' is not installed.");
+    }
+
+    #[test]
+    fn test_format_not_installed_error_versioned() {
+        let msg = format_not_installed_error("postgresql@14");
+        assert!(msg.contains("postgresql@14"));
+        assert!(msg.contains("not installed"));
+    }
+
+    #[test]
+    fn test_format_no_service_definition_error() {
+        let msg = format_no_service_definition_error("git");
+        assert_eq!(msg, "Formula 'git' does not have a service definition.");
+    }
+
+    #[test]
+    fn test_format_no_service_file_error() {
+        let msg = format_no_service_file_error("redis");
+        assert_eq!(msg, "No service file found for 'redis'.");
+    }
+
+    #[test]
+    fn test_format_no_log_files_error() {
+        let msg = format_no_log_files_error("nginx");
+        assert_eq!(msg, "No log files found for 'nginx'.");
+    }
+
+    #[test]
+    fn test_format_expected_log_files_hint() {
+        let stdout = PathBuf::from("/var/log/zerobrew/redis.stdout.log");
+        let stderr = PathBuf::from("/var/log/zerobrew/redis.stderr.log");
+        let msg = format_expected_log_files_hint(&stdout, &stderr);
+        assert!(msg.contains("Expected log files"));
+        assert!(msg.contains("stdout.log"));
+        assert!(msg.contains("stderr.log"));
+    }
+
+    #[test]
+    fn test_format_start_service_hint() {
+        let msg = format_start_service_hint("redis");
+        assert!(msg.contains("zb services start redis"));
+    }
+
+    #[test]
+    fn test_format_start_service_for_enable_hint() {
+        let msg = format_start_service_for_enable_hint("postgresql");
+        assert!(msg.contains("Start the service first"));
+        assert!(msg.contains("zb services start postgresql"));
+    }
+
+    #[test]
+    fn test_format_service_exited_message() {
+        assert_eq!(format_service_exited_message(0), "Service exited with status: 0");
+        assert_eq!(format_service_exited_message(1), "Service exited with status: 1");
+        assert_eq!(format_service_exited_message(-1), "Service exited with status: -1");
+        assert_eq!(format_service_exited_message(137), "Service exited with status: 137");
+    }
+
+    #[test]
+    fn test_format_cleanup_dry_run_prompt() {
+        let msg = format_cleanup_dry_run_prompt();
+        assert!(msg.contains("zb services cleanup"));
+    }
+
+    #[test]
+    fn test_format_no_orphaned_services_message() {
+        let msg = format_no_orphaned_services_message();
+        assert!(msg.contains("No orphaned services"));
+    }
+
+    #[test]
+    fn test_format_check_caveats_hint() {
+        let msg = format_check_caveats_hint("git");
+        assert!(msg.contains("zb info git"));
+        assert!(msg.contains("caveats"));
+    }
+
+    // ============================================================================
+    // Validation Helpers Tests
+    // ============================================================================
+
+    #[test]
+    fn test_validate_formula_name_valid() {
+        assert!(validate_formula_name("redis").is_ok());
+        assert!(validate_formula_name("postgresql@14").is_ok());
+        assert!(validate_formula_name("openssl@3").is_ok());
+        assert!(validate_formula_name("python3").is_ok());
+        assert!(validate_formula_name("node").is_ok());
+    }
+
+    #[test]
+    fn test_validate_formula_name_empty() {
+        let result = validate_formula_name("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_formula_name_tap_path() {
+        // Should reject tap paths like "homebrew/core/git"
+        let result = validate_formula_name("homebrew/core/git");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("tap path"));
+    }
+
+    #[test]
+    fn test_validate_formula_name_versioned_ok() {
+        // Versioned formulas with @ should be ok
+        assert!(validate_formula_name("python@3.11").is_ok());
+        assert!(validate_formula_name("node@18").is_ok());
+    }
+
+    #[test]
+    fn test_validate_log_lines_valid() {
+        assert!(validate_log_lines(1).is_ok());
+        assert!(validate_log_lines(50).is_ok());
+        assert!(validate_log_lines(100).is_ok());
+        assert!(validate_log_lines(1000).is_ok());
+        assert!(validate_log_lines(100_000).is_ok());
+    }
+
+    #[test]
+    fn test_validate_log_lines_zero() {
+        let result = validate_log_lines(0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("greater than 0"));
+    }
+
+    #[test]
+    fn test_validate_log_lines_too_large() {
+        let result = validate_log_lines(100_001);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too large"));
+    }
+
+    #[test]
+    fn test_validate_log_lines_edge_cases() {
+        // Just under the limit
+        assert!(validate_log_lines(99_999).is_ok());
+        // At the limit
+        assert!(validate_log_lines(100_000).is_ok());
+        // Just over
+        assert!(validate_log_lines(100_001).is_err());
+    }
+
+    // ============================================================================
+    // Integration-style Logic Tests
+    // ============================================================================
 
     #[test]
     fn test_cleanup_message_consistency() {
@@ -963,5 +1248,83 @@ mod tests {
         assert_eq!(select_log_file(&stdout_log, &stderr_log), Some(stdout_log.as_path()));
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_action_messages_include_formula_name() {
+        // All action messages should include the formula name
+        let formula = "test-formula";
+        
+        assert!(format_starting_message(formula).contains(formula));
+        assert!(format_started_message(formula).contains(formula));
+        assert!(format_stopping_message(formula).contains(formula));
+        assert!(format_stopped_message(formula).contains(formula));
+        assert!(format_restarting_message(formula).contains(formula));
+        assert!(format_restarted_message(formula).contains(formula));
+        assert!(format_enabling_message(formula).contains(formula));
+        assert!(format_enabled_message(formula).contains(formula));
+        assert!(format_disabling_message(formula).contains(formula));
+        assert!(format_disabled_message(formula).contains(formula));
+        assert!(format_already_enabled_message(formula).contains(formula));
+        assert!(format_not_enabled_message(formula).contains(formula));
+        assert!(format_creating_service_message(formula).contains(formula));
+        assert!(format_foreground_message(formula).contains(formula));
+        assert!(format_log_header(formula, 10).contains(formula));
+        assert!(format_log_follow_header(formula).contains(formula));
+    }
+
+    #[test]
+    fn test_error_messages_include_formula_name() {
+        // All error messages should include the formula name
+        let formula = "error-test";
+
+        assert!(format_not_installed_error(formula).contains(formula));
+        assert!(format_no_service_definition_error(formula).contains(formula));
+        assert!(format_no_service_file_error(formula).contains(formula));
+        assert!(format_no_log_files_error(formula).contains(formula));
+        assert!(format_start_service_hint(formula).contains(formula));
+        assert!(format_start_service_for_enable_hint(formula).contains(formula));
+        assert!(format_check_caveats_hint(formula).contains(formula));
+    }
+
+    #[test]
+    fn test_message_patterns_are_consistent() {
+        // Verify consistent patterns across action messages
+        let formula = "redis";
+
+        // "Starting" messages end with "..."
+        assert!(format_starting_message(formula).ends_with("..."));
+        assert!(format_stopping_message(formula).ends_with("..."));
+        assert!(format_restarting_message(formula).ends_with("..."));
+        assert!(format_enabling_message(formula).ends_with("..."));
+        assert!(format_disabling_message(formula).ends_with("..."));
+        assert!(format_creating_service_message(formula).ends_with("..."));
+
+        // Completed messages don't end with "..."
+        assert!(!format_started_message(formula).ends_with("..."));
+        assert!(!format_stopped_message(formula).ends_with("..."));
+        assert!(!format_restarted_message(formula).ends_with("..."));
+    }
+
+    #[test]
+    fn test_versioned_formula_handling() {
+        // Test that versioned formulas are handled correctly throughout
+        let versioned = "postgresql@14";
+
+        assert!(validate_formula_name(versioned).is_ok());
+        assert!(format_starting_message(versioned).contains("postgresql@14"));
+        assert!(format_not_installed_error(versioned).contains("postgresql@14"));
+    }
+
+    #[test]
+    fn test_special_characters_in_formula() {
+        // Test formula names with special but valid characters
+        let formulas = ["openssl@3", "python@3.11", "node", "cmake"];
+
+        for formula in formulas {
+            assert!(validate_formula_name(formula).is_ok());
+            // Messages should include the formula without escaping
+            assert!(format_starting_message(formula).contains(formula));
+        }
     }
 }
