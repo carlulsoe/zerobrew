@@ -1,7 +1,9 @@
 //! Search functionality for finding formulas
 
 use crate::api::FormulaInfo;
+use rayon::prelude::*;
 use regex::Regex;
+use std::collections::HashSet;
 
 /// Search result with relevance scoring
 #[derive(Debug, Clone)]
@@ -19,6 +21,19 @@ pub struct SearchResult {
 /// - Plain text search (matches name and description)
 /// - Regex search when query is wrapped in /slashes/
 pub fn search_formulas(formulas: &[FormulaInfo], query: &str) -> Vec<SearchResult> {
+    search_formulas_with_candidates(formulas, query, None)
+}
+
+/// Search formulas with optional FTS candidate filtering
+///
+/// When `fts_candidates` is provided, only formulas whose names are in the set
+/// will be searched. This can significantly speed up searches by narrowing the
+/// candidate set using SQLite FTS5 before doing detailed scoring.
+pub fn search_formulas_with_candidates(
+    formulas: &[FormulaInfo],
+    query: &str,
+    fts_candidates: Option<&HashSet<String>>,
+) -> Vec<SearchResult> {
     let query = query.trim();
 
     // Check if it's a regex query (wrapped in //)
@@ -30,11 +45,11 @@ pub fn search_formulas(formulas: &[FormulaInfo], query: &str) -> Vec<SearchResul
             Ok(re) => search_by_regex(formulas, &re),
             Err(_) => {
                 // Invalid regex, fall back to literal search
-                search_by_text(formulas, query)
+                search_by_text_with_candidates(formulas, query, fts_candidates)
             }
         }
     } else {
-        search_by_text(formulas, query)
+        search_by_text_with_candidates(formulas, query, fts_candidates)
     };
 
     // Sort by score (descending), then by name (ascending)
@@ -44,12 +59,18 @@ pub fn search_formulas(formulas: &[FormulaInfo], query: &str) -> Vec<SearchResul
     sorted
 }
 
-fn search_by_text(formulas: &[FormulaInfo], query: &str) -> Vec<SearchResult> {
+fn search_by_text_with_candidates(
+    formulas: &[FormulaInfo],
+    query: &str,
+    fts_candidates: Option<&HashSet<String>>,
+) -> Vec<SearchResult> {
     let query_lower = query.to_lowercase();
 
     formulas
-        .iter()
+        .par_iter()
         .filter(|f| !f.deprecated && !f.disabled)
+        // If FTS candidates provided, filter to only those names
+        .filter(|f| fts_candidates.map_or(true, |c| c.contains(&f.name)))
         .filter_map(|f| {
             let name_lower = f.name.to_lowercase();
             let desc_lower = f.desc.as_deref().unwrap_or("").to_lowercase();
@@ -102,7 +123,7 @@ fn search_by_text(formulas: &[FormulaInfo], query: &str) -> Vec<SearchResult> {
 
 fn search_by_regex(formulas: &[FormulaInfo], re: &Regex) -> Vec<SearchResult> {
     formulas
-        .iter()
+        .par_iter()
         .filter(|f| !f.deprecated && !f.disabled)
         .filter_map(|f| {
             let name_matches = re.is_match(&f.name);

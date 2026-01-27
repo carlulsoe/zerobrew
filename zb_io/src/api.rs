@@ -1,6 +1,9 @@
-use crate::cache::{ApiCache, CacheEntry};
+use crate::cache::{ApiCache, CacheEntry, CachedFormula};
 use serde::Deserialize;
 use zb_core::{Error, Formula};
+
+/// TTL for formula list cache in seconds (5 minutes)
+const FORMULA_LIST_CACHE_TTL_SECS: i64 = 300;
 
 /// Minimal formula info for search results (faster to deserialize than full Formula)
 #[derive(Debug, Clone, Deserialize)]
@@ -128,6 +131,7 @@ impl ApiClient {
                     etag,
                     last_modified,
                     body: body.clone(),
+                    cached_at: 0, // Will be overwritten by put()
                 };
                 if let Err(e) = cache.put(&url, &entry) {
                     eprintln!("    Warning: failed to cache response: {}", e);
@@ -144,20 +148,50 @@ impl ApiClient {
     }
 
     /// Fetch all formula metadata for search
+    ///
+    /// Uses SQLite cache for parsed formulas to avoid JSON parsing overhead.
+    /// Cache freshness is checked with a 5-minute TTL before making network requests.
     pub async fn get_all_formulas(&self) -> Result<Vec<FormulaInfo>, Error> {
+        // Phase 2: Try SQLite formula cache first
+        if let Some(ref cache) = self.cache {
+            // Check if formula cache is fresh (< 5 minutes old)
+            if cache.is_formula_cache_fresh(FORMULA_LIST_CACHE_TTL_SECS) {
+                if let Ok(cached_formulas) = cache.get_formulas() {
+                    if !cached_formulas.is_empty() {
+                        return Ok(cached_formulas
+                            .into_iter()
+                            .map(|f| FormulaInfo {
+                                name: f.name,
+                                full_name: f.full_name,
+                                desc: f.description,
+                                homepage: None,
+                                versions: FormulaVersions {
+                                    stable: f.version,
+                                },
+                                aliases: f.aliases,
+                                deprecated: f.deprecated,
+                                disabled: f.disabled,
+                            })
+                            .collect());
+                    }
+                }
+            }
+        }
+
         // The base_url is like "https://formulae.brew.sh/api/formula"
         // We need "https://formulae.brew.sh/api/formula.json"
         let url = format!("{}.json", self.base_url);
 
-        let cached_entry = self.cache.as_ref().and_then(|c| c.get(&url));
+        // Get cache metadata for conditional requests
+        let cache_meta = self.cache.as_ref().and_then(|c| c.get_formula_cache_meta());
 
         let mut request = self.client.get(&url);
 
-        if let Some(ref entry) = cached_entry {
-            if let Some(ref etag) = entry.etag {
+        if let Some(ref meta) = cache_meta {
+            if let Some(ref etag) = meta.etag {
                 request = request.header("If-None-Match", etag.as_str());
             }
-            if let Some(ref last_modified) = entry.last_modified {
+            if let Some(ref last_modified) = meta.last_modified {
                 request = request.header("If-Modified-Since", last_modified.as_str());
             }
         }
@@ -166,14 +200,29 @@ impl ApiClient {
             message: e.to_string(),
         })?;
 
-        if response.status() == reqwest::StatusCode::NOT_MODIFIED
-            && let Some(entry) = cached_entry
-        {
-            let formulas: Vec<FormulaInfo> =
-                serde_json::from_str(&entry.body).map_err(|e| Error::NetworkFailure {
-                    message: format!("failed to parse cached formula list: {e}"),
-                })?;
-            return Ok(formulas);
+        // 304 Not Modified - use cached formulas from SQLite
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            if let Some(ref cache) = self.cache {
+                if let Ok(cached_formulas) = cache.get_formulas() {
+                    if !cached_formulas.is_empty() {
+                        return Ok(cached_formulas
+                            .into_iter()
+                            .map(|f| FormulaInfo {
+                                name: f.name,
+                                full_name: f.full_name,
+                                desc: f.description,
+                                homepage: None,
+                                versions: FormulaVersions {
+                                    stable: f.version,
+                                },
+                                aliases: f.aliases,
+                                deprecated: f.deprecated,
+                                disabled: f.disabled,
+                            })
+                            .collect());
+                    }
+                }
+            }
         }
 
         if !response.status().is_success() {
@@ -198,21 +247,34 @@ impl ApiClient {
             message: format!("failed to read response body: {e}"),
         })?;
 
-        if let Some(ref cache) = self.cache {
-            let entry = CacheEntry {
-                etag,
-                last_modified,
-                body: body.clone(),
-            };
-            if let Err(e) = cache.put(&url, &entry) {
-                eprintln!("    Warning: failed to cache response: {}", e);
-            }
-        }
-
         let formulas: Vec<FormulaInfo> =
             serde_json::from_str(&body).map_err(|e| Error::NetworkFailure {
                 message: format!("failed to parse formula list: {e}"),
             })?;
+
+        // Store parsed formulas in SQLite cache
+        if let Some(ref cache) = self.cache {
+            let cached_formulas: Vec<CachedFormula> = formulas
+                .iter()
+                .map(|f| CachedFormula {
+                    name: f.name.clone(),
+                    full_name: f.full_name.clone(),
+                    description: f.desc.clone(),
+                    version: f.versions.stable.clone(),
+                    aliases: f.aliases.clone(),
+                    deprecated: f.deprecated,
+                    disabled: f.disabled,
+                })
+                .collect();
+
+            if let Err(e) = cache.put_formulas(
+                &cached_formulas,
+                etag.as_deref(),
+                last_modified.as_deref(),
+            ) {
+                eprintln!("    Warning: failed to cache formulas: {}", e);
+            }
+        }
 
         Ok(formulas)
     }
@@ -667,6 +729,7 @@ mod tests {
             etag: Some("\"badcache\"".to_string()),
             last_modified: None,
             body: "{ not valid json }".to_string(),
+            cached_at: 0,
         };
         cache.put(&cache_url, &entry).unwrap();
 
@@ -1151,38 +1214,57 @@ mod tests {
     // ========================================================================
 
     #[tokio::test]
-    async fn get_all_formulas_handles_cached_invalid_json_after_304() {
+    async fn get_all_formulas_uses_sqlite_cache_on_304() {
         let mock_server = MockServer::start().await;
 
-        // Manually insert invalid JSON into cache
-        let cache = ApiCache::in_memory().unwrap();
-        let base_url = format!("{}/api/formula", mock_server.uri());
-        let cache_url = format!("{}.json", base_url);
+        let formulas_json = r#"[
+            {
+                "name": "cached",
+                "full_name": "homebrew/core/cached",
+                "desc": "Cached formula",
+                "homepage": null,
+                "versions": { "stable": "1.0.0" },
+                "aliases": [],
+                "deprecated": false,
+                "disabled": false
+            }
+        ]"#;
 
-        let entry = CacheEntry {
-            etag: Some("\"listcache\"".to_string()),
-            last_modified: None,
-            body: "not valid json array".to_string(),
-        };
-        cache.put(&cache_url, &entry).unwrap();
-
-        // Request returns 304 (use cached body)
+        // First request returns 200 with ETag
         Mock::given(method("GET"))
             .and(path("/api/formula.json"))
-            .and(header("If-None-Match", "\"listcache\""))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(formulas_json)
+                    .insert_header("ETag", "\"sqlitecache\""),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache = ApiCache::in_memory().unwrap();
+        let base_url = format!("{}/api/formula", mock_server.uri());
+        let client = ApiClient::with_base_url(base_url.clone()).with_cache(cache);
+
+        // First request populates SQLite cache
+        let formulas = client.get_all_formulas().await.unwrap();
+        assert_eq!(formulas.len(), 1);
+        assert_eq!(formulas[0].name, "cached");
+
+        // Reset mock for 304 response
+        mock_server.reset().await;
+
+        // Second request returns 304
+        Mock::given(method("GET"))
+            .and(path("/api/formula.json"))
+            .and(header("If-None-Match", "\"sqlitecache\""))
             .respond_with(ResponseTemplate::new(304))
             .mount(&mock_server)
             .await;
 
-        let client = ApiClient::with_base_url(base_url).with_cache(cache);
-
-        // Should fail when parsing the cached invalid JSON
-        let err = client.get_all_formulas().await.unwrap_err();
-        match err {
-            Error::NetworkFailure { message } => {
-                assert!(message.contains("cached"));
-            }
-            _ => panic!("expected cached parse error, got {:?}", err),
-        }
+        // Should return data from SQLite cache
+        let formulas = client.get_all_formulas().await.unwrap();
+        assert_eq!(formulas.len(), 1);
+        assert_eq!(formulas[0].name, "cached");
     }
 }
