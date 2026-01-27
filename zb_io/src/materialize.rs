@@ -117,16 +117,34 @@ pub enum CopyStrategy {
 
 pub struct Cellar {
     cellar_dir: PathBuf,
+    /// Zerobrew root directory (for patchelf download location on Linux)
+    #[cfg(target_os = "linux")]
+    zerobrew_root: PathBuf,
 }
 
 impl Cellar {
     pub fn new(root: &Path) -> io::Result<Self> {
-        Self::new_at(root.join("cellar"))
+        Self::new_with_root(root.join("cellar"), root.to_path_buf())
     }
 
     pub fn new_at(cellar_dir: PathBuf) -> io::Result<Self> {
+        // Derive root from cellar_dir: cellar_dir is typically prefix/Cellar,
+        // so root is prefix's parent. This is a fallback for tests.
+        let root = cellar_dir
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| cellar_dir.clone());
+        Self::new_with_root(cellar_dir, root)
+    }
+
+    fn new_with_root(cellar_dir: PathBuf, zerobrew_root: PathBuf) -> io::Result<Self> {
         fs::create_dir_all(&cellar_dir)?;
-        Ok(Self { cellar_dir })
+        Ok(Self {
+            cellar_dir,
+            #[cfg(target_os = "linux")]
+            zerobrew_root,
+        })
     }
 
     pub fn keg_path(&self, name: &str, version: &str) -> PathBuf {
@@ -173,7 +191,13 @@ impl Cellar {
 
         // Patch Homebrew placeholders in ELF binaries (Linux)
         #[cfg(target_os = "linux")]
-        patch_homebrew_placeholders_linux(&keg_path, &self.cellar_dir, name, version)?;
+        patch_homebrew_placeholders_linux(
+            &keg_path,
+            &self.cellar_dir,
+            &self.zerobrew_root,
+            name,
+            version,
+        )?;
 
         Ok(keg_path)
     }
@@ -521,26 +545,26 @@ fn codesign_and_strip_xattrs(keg_path: &Path) -> Result<(), Error> {
 fn patch_homebrew_placeholders_linux(
     keg_path: &Path,
     cellar_dir: &Path,
+    zerobrew_root: &Path,
     pkg_name: &str,
     pkg_version: &str,
 ) -> Result<(), Error> {
+    use crate::patchelf;
     use rayon::prelude::*;
     use regex::Regex;
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // Check if patchelf is available
-    if Command::new("patchelf")
-        .arg("--version")
-        .output()
-        .map(|o| !o.status.success())
-        .unwrap_or(true)
-    {
-        // patchelf not available - skip patching but warn user
-        eprintln!("    Warning: patchelf not found, skipping ELF patching");
-        eprintln!("    Install patchelf for full Linux compatibility");
-        return Ok(());
-    }
+    // Get patchelf binary (downloads if not available)
+    let patchelf_path = match patchelf::get_patchelf_path(zerobrew_root) {
+        Some(path) => path,
+        None => {
+            // patchelf not available and couldn't be downloaded - skip patching but warn user
+            eprintln!("    Warning: patchelf not available, skipping ELF patching");
+            eprintln!("    Some packages may not work correctly");
+            return Ok(());
+        }
+    };
 
     // Derive prefix from cellar (cellar_dir is typically prefix/Cellar)
     let prefix = cellar_dir.parent().unwrap_or(Path::new("/opt/homebrew"));
@@ -609,7 +633,7 @@ fn patch_homebrew_placeholders_linux(
         let mut new_interp: Option<String> = None;
 
         // Get current RPATH/RUNPATH using patchelf --print-rpath
-        let rpath_output = Command::new("patchelf")
+        let rpath_output = Command::new(&patchelf_path)
             .args(["--print-rpath", &path.to_string_lossy()])
             .output();
 
@@ -649,7 +673,7 @@ fn patch_homebrew_placeholders_linux(
         let is_shared_lib = path_str.contains(".so") || path_str.ends_with(".so");
 
         if !is_shared_lib {
-            let interp_output = Command::new("patchelf")
+            let interp_output = Command::new(&patchelf_path)
                 .args(["--print-interpreter", &path_str])
                 .output();
 
@@ -698,7 +722,7 @@ fn patch_homebrew_placeholders_linux(
 
             args.push(path.to_string_lossy().to_string());
 
-            let result = Command::new("patchelf").args(&args).output();
+            let result = Command::new(&patchelf_path).args(&args).output();
 
             match result {
                 Ok(output) if !output.status.success() => {
@@ -1475,7 +1499,8 @@ mod tests {
 
         // patch_homebrew_placeholders_linux should return Ok even if patchelf
         // isn't installed - it gracefully skips patching
-        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0.0");
+        let zerobrew_root = tmp.path();
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
         assert!(result.is_ok(), "Should not fail when patchelf is missing");
     }
 
@@ -1541,7 +1566,8 @@ mod tests {
         fs::write(keg.join("bin/no-rpath"), &elf_no_rpath).unwrap();
 
         // Patching should succeed (skip files without RPATH)
-        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0.0");
+        let zerobrew_root = tmp.path();
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
         assert!(result.is_ok(), "Should handle ELF without RPATH gracefully");
     }
 
@@ -1571,7 +1597,8 @@ mod tests {
         fs::set_permissions(&elf_path, perms).unwrap();
 
         // Patching should handle this (might fail on write, but shouldn't panic)
-        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0.0");
+        let zerobrew_root = tmp.path();
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
         // Result may be Ok (skipped) or Err (can't write), but shouldn't panic
 
         // Restore permissions for cleanup
@@ -1606,7 +1633,8 @@ mod tests {
         std::os::unix::fs::symlink("libreal.so.1", keg.join("lib/libreal.so")).unwrap();
 
         // Patching should follow symlinks or skip them appropriately
-        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0.0");
+        let zerobrew_root = tmp.path();
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0.0");
         assert!(result.is_ok(), "Should handle ELF symlinks");
     }
 
@@ -2409,7 +2437,8 @@ int main() {
         fs::set_permissions(&test_binary, perms).unwrap();
 
         // Run our patching function (it will detect if changes are needed)
-        let result = patch_homebrew_placeholders_linux(&keg, &cellar, "test", "1.0");
+        let zerobrew_root = tmp.path();
+        let result = patch_homebrew_placeholders_linux(&keg, &cellar, zerobrew_root, "test", "1.0");
         assert!(result.is_ok(), "Patching should succeed: {:?}", result);
 
         // The key assertion: verify the binary structure is still valid

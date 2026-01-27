@@ -25,6 +25,8 @@ pub mod extract;
 pub mod install;
 pub mod link;
 pub mod materialize;
+#[cfg(target_os = "linux")]
+pub mod patchelf;
 pub mod progress;
 pub mod search;
 pub mod services;
