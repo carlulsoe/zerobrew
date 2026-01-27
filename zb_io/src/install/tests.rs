@@ -3356,7 +3356,6 @@ mod error_path_tests {
         TestContext, mock_500_error, mock_timeout_response, mock_formula_json,
         mock_bottle_tarball_with_version, sha256_hex, platform_bottle_tag,
         create_readonly_dir, restore_write_permissions, create_test_installer,
-        mock_partial_download,
     };
     use std::time::Duration;
     use tempfile::TempDir;
@@ -4615,5 +4614,656 @@ mod orphan_tests {
         // Now lib should be orphan (dependency with no dependents)
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert_eq!(orphans, vec!["toggle_lib".to_string()]);
+    }
+}
+
+// ============================================================================
+// Tap resolution and dependency handling tests
+// ============================================================================
+
+mod tap_and_dependency_tests {
+    use super::*;
+    use crate::tap::{TapFormula, TapInfo, TapManager};
+    use crate::test_utils::{
+        mock_formula_json, mock_bottle_tarball_with_version,
+        sha256_hex, platform_bottle_tag, create_test_installer,
+    };
+    use std::collections::BTreeMap;
+    use zb_core::{Formula, resolve_closure};
+    use zb_core::formula::{Bottle, BottleFile, BottleStable, Versions};
+
+    // ========================================================================
+    // TapFormula::parse tests
+    // ========================================================================
+
+    #[test]
+    fn tap_formula_parse_valid_user_repo_formula() {
+        // Standard format: user/repo/formula
+        let tf = TapFormula::parse("homebrew/cask/firefox").unwrap();
+        assert_eq!(tf.user, "homebrew");
+        assert_eq!(tf.repo, "cask");
+        assert_eq!(tf.formula, "firefox");
+        assert_eq!(tf.tap_name(), "homebrew/cask");
+        assert_eq!(tf.github_repo(), "homebrew-cask");
+    }
+
+    #[test]
+    fn tap_formula_parse_with_hyphens_and_underscores() {
+        // Names with special characters
+        let tf = TapFormula::parse("my-user/my_repo/my-formula_v2").unwrap();
+        assert_eq!(tf.user, "my-user");
+        assert_eq!(tf.repo, "my_repo");
+        assert_eq!(tf.formula, "my-formula_v2");
+    }
+
+    #[test]
+    fn tap_formula_parse_returns_none_for_simple_name() {
+        // Plain formula name should not parse as tap reference
+        assert!(TapFormula::parse("wget").is_none());
+        assert!(TapFormula::parse("openssl@3").is_none());
+    }
+
+    #[test]
+    fn tap_formula_parse_returns_none_for_two_parts() {
+        // Two parts is ambiguous (could be tap/formula or just a path)
+        assert!(TapFormula::parse("user/formula").is_none());
+        assert!(TapFormula::parse("homebrew/wget").is_none());
+    }
+
+    #[test]
+    fn tap_formula_parse_returns_none_for_empty_or_invalid() {
+        assert!(TapFormula::parse("").is_none());
+        assert!(TapFormula::parse("/").is_none());
+        // Note: "//" splits to ["", "", ""] which is 3 parts, so it parses
+        // but results in empty user/repo/formula - edge case
+        assert!(TapFormula::parse("///").is_none());
+        // Four or more parts should fail
+        assert!(TapFormula::parse("a/b/c/d").is_none());
+    }
+
+    #[test]
+    fn tap_formula_parse_preserves_empty_parts() {
+        // Edge case: empty parts in the middle
+        // This parses as three parts with empty middle
+        let tf = TapFormula::parse("user//formula");
+        assert!(tf.is_some());
+        let tf = tf.unwrap();
+        assert_eq!(tf.user, "user");
+        assert_eq!(tf.repo, "");
+        assert_eq!(tf.formula, "formula");
+    }
+
+    // ========================================================================
+    // Tap fallback tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn fetch_formula_falls_back_to_installed_tap() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+        fs::create_dir_all(&prefix).unwrap();
+
+        // Set up taps directory with a cached formula
+        let taps_dir = root.join("taps");
+        let tap_formula_dir = taps_dir.join("customuser/customrepo/Formula");
+        fs::create_dir_all(&tap_formula_dir).unwrap();
+
+        // Write tap info so it's recognized as installed
+        let tap_info = TapInfo {
+            name: "customuser/customrepo".to_string(),
+            url: "https://github.com/customuser/homebrew-customrepo".to_string(),
+            added_at: 12345,
+            updated_at: None,
+        };
+        fs::write(
+            taps_dir.join("customuser/customrepo/.tap_info"),
+            serde_json::to_string(&tap_info).unwrap(),
+        ).unwrap();
+
+        // Cache a formula in the tap
+        let tap_formula_json = format!(
+            r#"{{
+                "name": "taponly",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "https://example.com/taponly.tar.gz",
+                                "sha256": "abc123"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#
+        );
+        fs::write(tap_formula_dir.join("taponly.json"), &tap_formula_json).unwrap();
+
+        // Main API returns 404 for this formula
+        Mock::given(method("GET"))
+            .and(path("/taponly.json"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        // Register the tap in the database (use add_tap on Database, not transaction)
+        let db_path = root.join("db/zb.sqlite3");
+        {
+            let db = Database::open(&db_path).unwrap();
+            db.add_tap("customuser/customrepo", "https://github.com/customuser/homebrew-customrepo").unwrap();
+        }
+
+        // Create installer
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&db_path).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let installer = Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            tap_manager,
+            prefix.clone(),
+            prefix.join("Cellar"),
+            4,
+        );
+
+        // Fetch formula - should fall back to tap
+        let result = installer.fetch_formula("taponly").await;
+        assert!(result.is_ok(), "Expected formula from tap, got: {:?}", result.err());
+        let formula = result.unwrap();
+        assert_eq!(formula.name, "taponly");
+        assert_eq!(formula.versions.stable, "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn fetch_formula_with_explicit_tap_reference() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+        fs::create_dir_all(&prefix).unwrap();
+
+        // Set up tap with cached formula
+        let taps_dir = root.join("taps");
+        let tap_formula_dir = taps_dir.join("myuser/myrepo/Formula");
+        fs::create_dir_all(&tap_formula_dir).unwrap();
+
+        // Write tap info
+        let tap_info = TapInfo {
+            name: "myuser/myrepo".to_string(),
+            url: "https://github.com/myuser/homebrew-myrepo".to_string(),
+            added_at: 12345,
+            updated_at: None,
+        };
+        fs::write(
+            taps_dir.join("myuser/myrepo/.tap_info"),
+            serde_json::to_string(&tap_info).unwrap(),
+        ).unwrap();
+
+        // Cache formula
+        let formula_json = format!(
+            r#"{{
+                "name": "specialpkg",
+                "versions": {{ "stable": "2.5.0" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{tag}": {{
+                                "url": "https://example.com/specialpkg.tar.gz",
+                                "sha256": "def456"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#
+        );
+        fs::write(tap_formula_dir.join("specialpkg.json"), &formula_json).unwrap();
+
+        // Create installer
+        let api_client = ApiClient::with_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let tap_manager = TapManager::new(&taps_dir);
+
+        let installer = Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            tap_manager,
+            prefix.clone(),
+            prefix.join("Cellar"),
+            4,
+        );
+
+        // Fetch with explicit tap reference (user/repo/formula format)
+        let result = installer.fetch_formula("myuser/myrepo/specialpkg").await;
+        assert!(result.is_ok(), "Expected formula from explicit tap ref, got: {:?}", result.err());
+        let formula = result.unwrap();
+        assert_eq!(formula.name, "specialpkg");
+        assert_eq!(formula.versions.stable, "2.5.0");
+    }
+
+    // ========================================================================
+    // Dependency cycle detection tests
+    // ========================================================================
+
+    fn test_formula(name: &str, deps: &[&str]) -> Formula {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "arm64_linux".to_string(),
+            BottleFile {
+                url: format!("https://example.com/{name}.tar.gz"),
+                sha256: "deadbeef".repeat(8),
+            },
+        );
+
+        Formula {
+            name: name.to_string(),
+            versions: Versions {
+                stable: "1.0.0".to_string(),
+            },
+            dependencies: deps.iter().map(|d| d.to_string()).collect(),
+            uses_from_macos: vec![],
+            bottle: Bottle {
+                stable: BottleStable { files, rebuild: 0 },
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dependency_cycle_detection_simple_cycle() {
+        // A -> B -> A (simple 2-node cycle)
+        let mut formulas = BTreeMap::new();
+        formulas.insert("pkga".to_string(), test_formula("pkga", &["pkgb"]));
+        formulas.insert("pkgb".to_string(), test_formula("pkgb", &["pkga"]));
+
+        let result = resolve_closure("pkga", &formulas);
+        assert!(result.is_err(), "Expected cycle detection error");
+        
+        match result.unwrap_err() {
+            zb_core::Error::DependencyCycle { cycle } => {
+                assert!(!cycle.is_empty(), "Cycle should contain package names");
+                // Both packages should be in the cycle
+                assert!(cycle.contains(&"pkga".to_string()) || cycle.contains(&"pkgb".to_string()));
+            }
+            other => panic!("Expected DependencyCycle error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dependency_cycle_detection_three_node_cycle() {
+        // A -> B -> C -> A (3-node cycle)
+        let mut formulas = BTreeMap::new();
+        formulas.insert("alpha".to_string(), test_formula("alpha", &["beta"]));
+        formulas.insert("beta".to_string(), test_formula("beta", &["gamma"]));
+        formulas.insert("gamma".to_string(), test_formula("gamma", &["alpha"]));
+
+        let result = resolve_closure("alpha", &formulas);
+        assert!(result.is_err());
+        
+        match result.unwrap_err() {
+            zb_core::Error::DependencyCycle { cycle } => {
+                // All three should be in the cycle
+                assert_eq!(cycle.len(), 3);
+                assert!(cycle.contains(&"alpha".to_string()));
+                assert!(cycle.contains(&"beta".to_string()));
+                assert!(cycle.contains(&"gamma".to_string()));
+            }
+            other => panic!("Expected DependencyCycle, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dependency_cycle_detection_self_reference() {
+        // Package depends on itself
+        let mut formulas = BTreeMap::new();
+        formulas.insert("selfdep".to_string(), test_formula("selfdep", &["selfdep"]));
+
+        let result = resolve_closure("selfdep", &formulas);
+        assert!(result.is_err());
+        
+        match result.unwrap_err() {
+            zb_core::Error::DependencyCycle { cycle } => {
+                assert!(cycle.contains(&"selfdep".to_string()));
+            }
+            other => panic!("Expected DependencyCycle, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dependency_cycle_detection_partial_cycle() {
+        // root -> middle -> cycleA -> cycleB -> cycleA
+        // The cycle is in a subtree, not involving root directly
+        let mut formulas = BTreeMap::new();
+        formulas.insert("root".to_string(), test_formula("root", &["middle"]));
+        formulas.insert("middle".to_string(), test_formula("middle", &["cyclea"]));
+        formulas.insert("cyclea".to_string(), test_formula("cyclea", &["cycleb"]));
+        formulas.insert("cycleb".to_string(), test_formula("cycleb", &["cyclea"]));
+
+        let result = resolve_closure("root", &formulas);
+        assert!(result.is_err());
+        
+        match result.unwrap_err() {
+            zb_core::Error::DependencyCycle { cycle } => {
+                // Only the cycling nodes should be in the error
+                assert!(cycle.contains(&"cyclea".to_string()));
+                assert!(cycle.contains(&"cycleb".to_string()));
+            }
+            other => panic!("Expected DependencyCycle, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn no_cycle_with_diamond_dependency() {
+        // Diamond: root -> [a, b], a -> c, b -> c
+        // This is NOT a cycle - c is just a shared dependency
+        let mut formulas = BTreeMap::new();
+        formulas.insert("root".to_string(), test_formula("root", &["a", "b"]));
+        formulas.insert("a".to_string(), test_formula("a", &["c"]));
+        formulas.insert("b".to_string(), test_formula("b", &["c"]));
+        formulas.insert("c".to_string(), test_formula("c", &[]));
+
+        let result = resolve_closure("root", &formulas);
+        assert!(result.is_ok(), "Diamond dependency should not be a cycle");
+        
+        let order = result.unwrap();
+        assert_eq!(order.len(), 4);
+        // c must come before a and b, which must come before root
+        let pos: BTreeMap<_, _> = order.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
+        assert!(pos["c"] < pos["a"]);
+        assert!(pos["c"] < pos["b"]);
+        assert!(pos["a"] < pos["root"]);
+        assert!(pos["b"] < pos["root"]);
+    }
+
+    // ========================================================================
+    // Parallel fetch planning tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn parallel_fetch_batches_independent_deps() {
+        // Test that independent dependencies are fetched in parallel batches
+        // root -> [a, b, c] (all independent, should be fetched together)
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        // Create bottles
+        let root_bottle = mock_bottle_tarball_with_version("root", "1.0.0");
+        let root_sha = sha256_hex(&root_bottle);
+        let a_bottle = mock_bottle_tarball_with_version("a", "1.0.0");
+        let a_sha = sha256_hex(&a_bottle);
+        let b_bottle = mock_bottle_tarball_with_version("b", "1.0.0");
+        let b_sha = sha256_hex(&b_bottle);
+        let c_bottle = mock_bottle_tarball_with_version("c", "1.0.0");
+        let c_sha = sha256_hex(&c_bottle);
+
+        // Mount formula mocks with expectation tracking
+        let root_json = mock_formula_json("root", "1.0.0", &["a", "b", "c"], &mock_server.uri(), &root_sha);
+        let a_json = mock_formula_json("a", "1.0.0", &[], &mock_server.uri(), &a_sha);
+        let b_json = mock_formula_json("b", "1.0.0", &[], &mock_server.uri(), &b_sha);
+        let c_json = mock_formula_json("c", "1.0.0", &[], &mock_server.uri(), &c_sha);
+
+        // Mount formula APIs - each should be called exactly once
+        Mock::given(method("GET"))
+            .and(path("/root.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&root_json))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/a.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&a_json))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/b.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&b_json))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/c.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&c_json))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        // Fetch all formulas
+        let result = installer.fetch_all_formulas("root").await;
+        assert!(result.is_ok(), "Parallel fetch failed: {:?}", result.err());
+
+        let formulas = result.unwrap();
+        assert_eq!(formulas.len(), 4);
+        assert!(formulas.contains_key("root"));
+        assert!(formulas.contains_key("a"));
+        assert!(formulas.contains_key("b"));
+        assert!(formulas.contains_key("c"));
+
+        // Verify mock expectations (each formula fetched exactly once)
+        // This implicitly verifies no duplicate fetches
+    }
+
+    #[tokio::test]
+    async fn parallel_fetch_handles_deep_chain_in_batches() {
+        // Test batching with a deep dependency chain
+        // root -> mid1 -> mid2 -> leaf
+        // This requires multiple batches: [root], [mid1], [mid2], [leaf]
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let root_bottle = mock_bottle_tarball_with_version("root", "1.0.0");
+        let root_sha = sha256_hex(&root_bottle);
+        let mid1_bottle = mock_bottle_tarball_with_version("mid1", "1.0.0");
+        let mid1_sha = sha256_hex(&mid1_bottle);
+        let mid2_bottle = mock_bottle_tarball_with_version("mid2", "1.0.0");
+        let mid2_sha = sha256_hex(&mid2_bottle);
+        let leaf_bottle = mock_bottle_tarball_with_version("leaf", "1.0.0");
+        let leaf_sha = sha256_hex(&leaf_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/root.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("root", "1.0.0", &["mid1"], &mock_server.uri(), &root_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/mid1.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("mid1", "1.0.0", &["mid2"], &mock_server.uri(), &mid1_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/mid2.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("mid2", "1.0.0", &["leaf"], &mock_server.uri(), &mid2_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/leaf.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("leaf", "1.0.0", &[], &mock_server.uri(), &leaf_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let installer = create_test_installer(&mock_server, &tmp);
+        let result = installer.fetch_all_formulas("root").await;
+        
+        assert!(result.is_ok());
+        let formulas = result.unwrap();
+        assert_eq!(formulas.len(), 4);
+        
+        // Verify correct dependency relationships
+        assert!(formulas["root"].dependencies.contains(&"mid1".to_string()));
+        assert!(formulas["mid1"].dependencies.contains(&"mid2".to_string()));
+        assert!(formulas["mid2"].dependencies.contains(&"leaf".to_string()));
+        assert!(formulas["leaf"].dependencies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parallel_fetch_deduplicates_shared_dependencies() {
+        // Diamond: root -> [a, b], a -> shared, b -> shared
+        // 'shared' should only be fetched once
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let root_bottle = mock_bottle_tarball_with_version("root", "1.0.0");
+        let root_sha = sha256_hex(&root_bottle);
+        let a_bottle = mock_bottle_tarball_with_version("a", "1.0.0");
+        let a_sha = sha256_hex(&a_bottle);
+        let b_bottle = mock_bottle_tarball_with_version("b", "1.0.0");
+        let b_sha = sha256_hex(&b_bottle);
+        let shared_bottle = mock_bottle_tarball_with_version("shared", "1.0.0");
+        let shared_sha = sha256_hex(&shared_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/root.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("root", "1.0.0", &["a", "b"], &mock_server.uri(), &root_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/a.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("a", "1.0.0", &["shared"], &mock_server.uri(), &a_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/b.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("b", "1.0.0", &["shared"], &mock_server.uri(), &b_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        // 'shared' should only be fetched once despite being dep of both a and b
+        Mock::given(method("GET"))
+            .and(path("/shared.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("shared", "1.0.0", &[], &mock_server.uri(), &shared_sha)
+            ))
+            .expect(1)  // Exactly once!
+            .mount(&mock_server)
+            .await;
+
+        let installer = create_test_installer(&mock_server, &tmp);
+        let result = installer.fetch_all_formulas("root").await;
+
+        assert!(result.is_ok());
+        let formulas = result.unwrap();
+        assert_eq!(formulas.len(), 4);
+        assert!(formulas.contains_key("shared"));
+    }
+
+    #[tokio::test]
+    async fn parallel_fetch_skips_missing_dependencies() {
+        // root -> [exists, missing]
+        // 'missing' returns 404, should be skipped gracefully
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let root_bottle = mock_bottle_tarball_with_version("root", "1.0.0");
+        let root_sha = sha256_hex(&root_bottle);
+        let exists_bottle = mock_bottle_tarball_with_version("exists", "1.0.0");
+        let exists_sha = sha256_hex(&exists_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/root.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("root", "1.0.0", &["exists", "missing"], &mock_server.uri(), &root_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/exists.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("exists", "1.0.0", &[], &mock_server.uri(), &exists_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        // 'missing' returns 404
+        Mock::given(method("GET"))
+            .and(path("/missing.json"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let installer = create_test_installer(&mock_server, &tmp);
+        let result = installer.fetch_all_formulas("root").await;
+
+        // Should succeed, skipping the missing dependency
+        assert!(result.is_ok());
+        let formulas = result.unwrap();
+        assert_eq!(formulas.len(), 2); // root + exists, missing is skipped
+        assert!(formulas.contains_key("root"));
+        assert!(formulas.contains_key("exists"));
+        assert!(!formulas.contains_key("missing"));
+    }
+
+    #[tokio::test]
+    async fn fetch_formula_returns_error_for_missing_root() {
+        // Root package missing should return error, not skip
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/nonexistent.json"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let installer = create_test_installer(&mock_server, &tmp);
+        let result = installer.fetch_all_formulas("nonexistent").await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            zb_core::Error::MissingFormula { name } => {
+                assert_eq!(name, "nonexistent");
+            }
+            other => panic!("Expected MissingFormula, got: {:?}", other),
+        }
     }
 }
