@@ -1387,4 +1387,102 @@ mod tests {
             _ => panic!("Expected Services Disable command"),
         }
     }
+
+    #[test]
+    fn test_commands_subcommand_parsing() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "commands"]).unwrap();
+        assert!(
+            matches!(cli.command, Commands::Commands),
+            "Expected Commands subcommand"
+        );
+    }
+
+    #[test]
+    fn test_external_subcommand_parsing() {
+        use clap::Parser;
+
+        // External commands are parsed as External(Vec<String>)
+        let cli = Cli::try_parse_from(["zb", "my-custom-cmd", "arg1", "arg2"]).unwrap();
+        match cli.command {
+            Commands::External(args) => {
+                assert_eq!(args, vec!["my-custom-cmd", "arg1", "arg2"]);
+            }
+            _ => panic!("Expected External subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_versioned_formula_install_parsing() {
+        use clap::Parser;
+
+        // Test versioned formula name parsing (e.g., python@3.11)
+        let cli = Cli::try_parse_from(["zb", "install", "python@3.11"]).unwrap();
+        match cli.command {
+            Commands::Install { formula, .. } => {
+                assert_eq!(formula, "python@3.11");
+            }
+            _ => panic!("Expected Install command"),
+        }
+    }
+
+    #[test]
+    fn test_versioned_formula_link_with_force() {
+        use clap::Parser;
+
+        // Test link --force for keg-only versioned formulas
+        let cli = Cli::try_parse_from(["zb", "link", "openssl@3", "--force"]).unwrap();
+        match cli.command {
+            Commands::Link { formula, force, .. } => {
+                assert_eq!(formula, "openssl@3");
+                assert!(force);
+            }
+            _ => panic!("Expected Link command"),
+        }
+    }
+
+    #[test]
+    fn test_info_shows_versioned_formula() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "info", "node@20"]).unwrap();
+        match cli.command {
+            Commands::Info { formula, .. } => {
+                assert_eq!(formula, "node@20");
+            }
+            _ => panic!("Expected Info command"),
+        }
+    }
+
+    #[test]
+    fn test_is_executable_returns_false_for_nonexistent() {
+        let path = Path::new("/nonexistent/path/to/file");
+        assert!(!is_executable(path));
+    }
+
+    #[test]
+    fn test_find_external_commands_handles_empty_cmd_dir() {
+        let temp_dir = std::env::temp_dir().join("zb-test-empty-cmd");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let commands = find_external_commands(&temp_dir);
+        // Should return empty or only PATH commands, no panic
+        assert!(commands.iter().all(|(name, _)| !name.is_empty()));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_external_command_returns_none_for_nonexistent() {
+        let temp_dir = std::env::temp_dir().join("zb-test-no-cmd");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let result = find_external_command("nonexistent-command", &temp_dir);
+        assert!(result.is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
