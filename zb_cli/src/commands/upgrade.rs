@@ -266,3 +266,152 @@ pub fn run_unpin(installer: &mut Installer, formula: &str) -> Result<(), zb_core
     }
     Ok(())
 }
+
+/// Filter outdated packages by name.
+/// Returns packages matching the given name, or all packages if name is None.
+/// Extracted for testability.
+pub(crate) fn filter_outdated_by_name(
+    outdated: Vec<zb_core::version::OutdatedPackage>,
+    name: Option<&str>,
+) -> Vec<zb_core::version::OutdatedPackage> {
+    match name {
+        Some(n) => outdated.into_iter().filter(|p| p.name == n).collect(),
+        None => outdated,
+    }
+}
+
+/// Format an outdated package as a version transition string.
+/// Extracted for testability.
+pub(crate) fn format_version_transition(
+    name: &str,
+    old_version: &str,
+    new_version: &str,
+) -> String {
+    format!("{}: {} → {}", name, old_version, new_version)
+}
+
+/// Build JSON output for outdated packages.
+/// Extracted for testability.
+pub(crate) fn build_outdated_json(
+    outdated: &[zb_core::version::OutdatedPackage],
+) -> Vec<serde_json::Value> {
+    outdated
+        .iter()
+        .map(|pkg| {
+            serde_json::json!({
+                "name": pkg.name,
+                "installed_version": pkg.installed_version,
+                "available_version": pkg.available_version
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zb_core::version::OutdatedPackage;
+
+    fn make_outdated_pkg(name: &str, installed: &str, available: &str) -> OutdatedPackage {
+        OutdatedPackage {
+            name: name.to_string(),
+            installed_version: installed.to_string(),
+            available_version: available.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_filter_outdated_by_name_with_match() {
+        let outdated = vec![
+            make_outdated_pkg("git", "2.43.0", "2.44.0"),
+            make_outdated_pkg("ripgrep", "14.0.0", "14.1.0"),
+            make_outdated_pkg("jq", "1.6", "1.7"),
+        ];
+
+        let filtered = filter_outdated_by_name(outdated, Some("git"));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "git");
+    }
+
+    #[test]
+    fn test_filter_outdated_by_name_no_match() {
+        let outdated = vec![
+            make_outdated_pkg("git", "2.43.0", "2.44.0"),
+            make_outdated_pkg("ripgrep", "14.0.0", "14.1.0"),
+        ];
+
+        let filtered = filter_outdated_by_name(outdated, Some("nonexistent"));
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_filter_outdated_by_name_none_returns_all() {
+        let outdated = vec![
+            make_outdated_pkg("git", "2.43.0", "2.44.0"),
+            make_outdated_pkg("ripgrep", "14.0.0", "14.1.0"),
+        ];
+
+        let filtered = filter_outdated_by_name(outdated, None);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_outdated_by_name_empty_list() {
+        let outdated: Vec<OutdatedPackage> = vec![];
+        let filtered = filter_outdated_by_name(outdated, Some("git"));
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_format_version_transition() {
+        let result = format_version_transition("git", "2.43.0", "2.44.0");
+        assert_eq!(result, "git: 2.43.0 → 2.44.0");
+    }
+
+    #[test]
+    fn test_format_version_transition_with_rebuild() {
+        let result = format_version_transition("openssl@3", "3.2.0_1", "3.3.0");
+        assert_eq!(result, "openssl@3: 3.2.0_1 → 3.3.0");
+    }
+
+    #[test]
+    fn test_build_outdated_json_single() {
+        let outdated = vec![make_outdated_pkg("git", "2.43.0", "2.44.0")];
+        let json = build_outdated_json(&outdated);
+
+        assert_eq!(json.len(), 1);
+        assert_eq!(json[0]["name"], "git");
+        assert_eq!(json[0]["installed_version"], "2.43.0");
+        assert_eq!(json[0]["available_version"], "2.44.0");
+    }
+
+    #[test]
+    fn test_build_outdated_json_multiple() {
+        let outdated = vec![
+            make_outdated_pkg("git", "2.43.0", "2.44.0"),
+            make_outdated_pkg("ripgrep", "14.0.0", "14.1.0"),
+        ];
+        let json = build_outdated_json(&outdated);
+
+        assert_eq!(json.len(), 2);
+        assert_eq!(json[0]["name"], "git");
+        assert_eq!(json[1]["name"], "ripgrep");
+    }
+
+    #[test]
+    fn test_build_outdated_json_empty() {
+        let outdated: Vec<OutdatedPackage> = vec![];
+        let json = build_outdated_json(&outdated);
+        assert!(json.is_empty());
+    }
+
+    #[test]
+    fn test_build_outdated_json_versioned_formula() {
+        let outdated = vec![make_outdated_pkg("python@3.11", "3.11.8", "3.11.9")];
+        let json = build_outdated_json(&outdated);
+
+        assert_eq!(json[0]["name"], "python@3.11");
+        assert_eq!(json[0]["installed_version"], "3.11.8");
+        assert_eq!(json[0]["available_version"], "3.11.9");
+    }
+}

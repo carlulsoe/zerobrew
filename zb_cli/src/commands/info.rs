@@ -309,6 +309,41 @@ async fn print_info_human(
     Ok(())
 }
 
+/// Truncate a description to a maximum length with ellipsis.
+/// Extracted for testability.
+pub(crate) fn truncate_description(desc: &str, max_len: usize) -> String {
+    if desc.len() > max_len {
+        format!("{}...", &desc[..max_len.saturating_sub(3)])
+    } else {
+        desc.to_string()
+    }
+}
+
+/// Format a store key for display (show first 12 characters).
+/// Extracted for testability.
+pub(crate) fn format_store_key(store_key: &str) -> &str {
+    if store_key.len() >= 12 {
+        &store_key[..12]
+    } else {
+        store_key
+    }
+}
+
+/// Build the basic info JSON structure for a formula.
+/// Extracted for testability.
+pub(crate) fn build_info_json_base(
+    formula_name: &str,
+    installed: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut info = serde_json::Map::new();
+    info.insert(
+        "name".to_string(),
+        serde_json::json!(formula_name),
+    );
+    info.insert("installed".to_string(), serde_json::json!(installed));
+    info
+}
+
 /// Run the search command.
 pub async fn run_search(
     installer: &Installer,
@@ -421,4 +456,100 @@ pub async fn run_search(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_description_under_limit() {
+        let desc = "A short description";
+        let result = truncate_description(desc, 70);
+        assert_eq!(result, "A short description");
+    }
+
+    #[test]
+    fn test_truncate_description_at_limit() {
+        let desc = "x".repeat(70);
+        let result = truncate_description(&desc, 70);
+        assert_eq!(result, desc);
+    }
+
+    #[test]
+    fn test_truncate_description_over_limit() {
+        let desc = "x".repeat(100);
+        let result = truncate_description(&desc, 70);
+        assert_eq!(result.len(), 70);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_description_empty() {
+        let result = truncate_description("", 70);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_description_small_max() {
+        let desc = "Hello World";
+        let result = truncate_description(desc, 5);
+        assert_eq!(result, "He...");
+    }
+
+    #[test]
+    fn test_format_store_key_full_length() {
+        let key = "abcdef123456789012345678";
+        let result = format_store_key(key);
+        assert_eq!(result, "abcdef123456");
+    }
+
+    #[test]
+    fn test_format_store_key_exact_12() {
+        let key = "abcdef123456";
+        let result = format_store_key(key);
+        assert_eq!(result, "abcdef123456");
+    }
+
+    #[test]
+    fn test_format_store_key_short() {
+        let key = "abc";
+        let result = format_store_key(key);
+        assert_eq!(result, "abc");
+    }
+
+    #[test]
+    fn test_format_store_key_empty() {
+        let key = "";
+        let result = format_store_key(key);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_build_info_json_base_installed() {
+        let info = build_info_json_base("git", true);
+        assert_eq!(info.get("name").unwrap(), "git");
+        assert_eq!(info.get("installed").unwrap(), true);
+    }
+
+    #[test]
+    fn test_build_info_json_base_not_installed() {
+        let info = build_info_json_base("ripgrep", false);
+        assert_eq!(info.get("name").unwrap(), "ripgrep");
+        assert_eq!(info.get("installed").unwrap(), false);
+    }
+
+    #[test]
+    fn test_build_info_json_base_versioned_formula() {
+        let info = build_info_json_base("python@3.11", true);
+        assert_eq!(info.get("name").unwrap(), "python@3.11");
+    }
+
+    #[test]
+    fn test_build_info_json_base_has_required_keys() {
+        let info = build_info_json_base("test", false);
+        assert!(info.contains_key("name"));
+        assert!(info.contains_key("installed"));
+        assert_eq!(info.len(), 2);
+    }
 }

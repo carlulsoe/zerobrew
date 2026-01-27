@@ -227,3 +227,95 @@ fn print_caveats(caveats: Option<&String>, prefix: &Path) {
         println!("{}", line);
     }
 }
+
+/// Substitute $HOMEBREW_PREFIX in caveats text.
+/// Extracted for testability.
+pub(crate) fn substitute_prefix(text: &str, prefix: &Path) -> String {
+    text.replace("$HOMEBREW_PREFIX", &prefix.to_string_lossy())
+}
+
+/// Build keg-only PATH suggestion.
+/// Extracted for testability.
+pub(crate) fn build_keg_only_path_suggestion(prefix: &Path, formula: &str) -> String {
+    format!(
+        "export PATH=\"{}/opt/{}/bin:$PATH\"",
+        prefix.display(),
+        formula
+    )
+}
+
+/// Build keg-only link suggestion.
+/// Extracted for testability.
+pub(crate) fn build_keg_only_link_suggestion(formula: &str) -> String {
+    format!("zb link {} --force", formula)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_substitute_prefix_basic() {
+        let prefix = PathBuf::from("/opt/zerobrew/prefix");
+        let text = "Add $HOMEBREW_PREFIX/bin to your PATH";
+        let result = substitute_prefix(text, &prefix);
+        assert_eq!(result, "Add /opt/zerobrew/prefix/bin to your PATH");
+    }
+
+    #[test]
+    fn test_substitute_prefix_multiple_occurrences() {
+        let prefix = PathBuf::from("/usr/local");
+        let text = "$HOMEBREW_PREFIX/bin and $HOMEBREW_PREFIX/sbin";
+        let result = substitute_prefix(text, &prefix);
+        assert_eq!(result, "/usr/local/bin and /usr/local/sbin");
+    }
+
+    #[test]
+    fn test_substitute_prefix_no_placeholder() {
+        let prefix = PathBuf::from("/opt/zerobrew");
+        let text = "No placeholder here";
+        let result = substitute_prefix(text, &prefix);
+        assert_eq!(result, "No placeholder here");
+    }
+
+    #[test]
+    fn test_substitute_prefix_empty_string() {
+        let prefix = PathBuf::from("/opt/zerobrew");
+        let text = "";
+        let result = substitute_prefix(text, &prefix);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_build_keg_only_path_suggestion() {
+        let prefix = PathBuf::from("/opt/zerobrew/prefix");
+        let result = build_keg_only_path_suggestion(&prefix, "openssl@3");
+        assert_eq!(
+            result,
+            "export PATH=\"/opt/zerobrew/prefix/opt/openssl@3/bin:$PATH\""
+        );
+    }
+
+    #[test]
+    fn test_build_keg_only_path_suggestion_versioned_formula() {
+        let prefix = PathBuf::from("/usr/local");
+        let result = build_keg_only_path_suggestion(&prefix, "python@3.11");
+        assert_eq!(
+            result,
+            "export PATH=\"/usr/local/opt/python@3.11/bin:$PATH\""
+        );
+    }
+
+    #[test]
+    fn test_build_keg_only_link_suggestion() {
+        let result = build_keg_only_link_suggestion("openssl@3");
+        assert_eq!(result, "zb link openssl@3 --force");
+    }
+
+    #[test]
+    fn test_build_keg_only_link_suggestion_simple_formula() {
+        let result = build_keg_only_link_suggestion("readline");
+        assert_eq!(result, "zb link readline --force");
+    }
+}

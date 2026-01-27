@@ -342,7 +342,7 @@ pub enum BundleAction {
         describe: bool,
 
         /// Overwrite existing file without prompting
-        #[arg(long, short = 'f')]
+        #[arg(long, short = 'F')]
         force: bool,
     },
 
@@ -1339,6 +1339,10 @@ fn is_executable(path: &Path) -> bool {
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // CLI Argument Parsing Tests
+    // ========================================================================
+
     #[test]
     fn test_services_list_json_flag_parsing() {
         use clap::Parser;
@@ -1492,5 +1496,634 @@ mod tests {
         assert!(result.is_none());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // ========================================================================
+    // Install Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_install_no_link_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "install", "git", "--no-link"]).unwrap();
+        match cli.command {
+            Commands::Install { formula, no_link, .. } => {
+                assert_eq!(formula, "git");
+                assert!(no_link);
+            }
+            _ => panic!("Expected Install command"),
+        }
+    }
+
+    #[test]
+    fn test_install_build_from_source_short_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "install", "git", "-s"]).unwrap();
+        match cli.command {
+            Commands::Install { formula, build_from_source, .. } => {
+                assert_eq!(formula, "git");
+                assert!(build_from_source);
+            }
+            _ => panic!("Expected Install command"),
+        }
+    }
+
+    #[test]
+    fn test_install_head_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "install", "neovim", "--head"]).unwrap();
+        match cli.command {
+            Commands::Install { formula, head, .. } => {
+                assert_eq!(formula, "neovim");
+                assert!(head);
+            }
+            _ => panic!("Expected Install command"),
+        }
+    }
+
+    #[test]
+    fn test_install_head_short_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "install", "neovim", "-H"]).unwrap();
+        match cli.command {
+            Commands::Install { formula, head, .. } => {
+                assert_eq!(formula, "neovim");
+                assert!(head);
+            }
+            _ => panic!("Expected Install command"),
+        }
+    }
+
+    // ========================================================================
+    // Upgrade Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_upgrade_all_packages() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "upgrade"]).unwrap();
+        match cli.command {
+            Commands::Upgrade { formula, dry_run } => {
+                assert!(formula.is_none());
+                assert!(!dry_run);
+            }
+            _ => panic!("Expected Upgrade command"),
+        }
+    }
+
+    #[test]
+    fn test_upgrade_specific_formula() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "upgrade", "git"]).unwrap();
+        match cli.command {
+            Commands::Upgrade { formula, dry_run } => {
+                assert_eq!(formula, Some("git".to_string()));
+                assert!(!dry_run);
+            }
+            _ => panic!("Expected Upgrade command"),
+        }
+    }
+
+    #[test]
+    fn test_upgrade_dry_run() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "upgrade", "--dry-run"]).unwrap();
+        match cli.command {
+            Commands::Upgrade { formula, dry_run } => {
+                assert!(formula.is_none());
+                assert!(dry_run);
+            }
+            _ => panic!("Expected Upgrade command"),
+        }
+    }
+
+    #[test]
+    fn test_outdated_json_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "outdated", "--json"]).unwrap();
+        match cli.command {
+            Commands::Outdated { json } => {
+                assert!(json);
+            }
+            _ => panic!("Expected Outdated command"),
+        }
+    }
+
+    // ========================================================================
+    // Info Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_info_json_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "info", "git", "--json"]).unwrap();
+        match cli.command {
+            Commands::Info { formula, json } => {
+                assert_eq!(formula, "git");
+                assert!(json);
+            }
+            _ => panic!("Expected Info command"),
+        }
+    }
+
+    #[test]
+    fn test_list_pinned_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "list", "--pinned"]).unwrap();
+        match cli.command {
+            Commands::List { pinned } => {
+                assert!(pinned);
+            }
+            _ => panic!("Expected List command"),
+        }
+    }
+
+    // ========================================================================
+    // Bundle Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_bundle_default_install() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "bundle"]).unwrap();
+        match cli.command {
+            Commands::Bundle { action } => {
+                assert!(action.is_none());
+            }
+            _ => panic!("Expected Bundle command"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_install_with_file() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "bundle", "install", "--file", "MyBrewfile"]).unwrap();
+        match cli.command {
+            Commands::Bundle { action: Some(BundleAction::Install { file }) } => {
+                assert_eq!(file, Some(PathBuf::from("MyBrewfile")));
+            }
+            _ => panic!("Expected Bundle Install command"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_dump_describe() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "bundle", "dump", "--describe"]).unwrap();
+        match cli.command {
+            Commands::Bundle { action: Some(BundleAction::Dump { describe, force, file }) } => {
+                assert!(describe);
+                assert!(!force);
+                assert!(file.is_none());
+            }
+            _ => panic!("Expected Bundle Dump command"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_dump_force_file() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "bundle", "dump", "--force", "--file", "out.txt"]).unwrap();
+        match cli.command {
+            Commands::Bundle { action: Some(BundleAction::Dump { describe, force, file }) } => {
+                assert!(!describe);
+                assert!(force);
+                assert_eq!(file, Some(PathBuf::from("out.txt")));
+            }
+            _ => panic!("Expected Bundle Dump command"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_dump_short_flags() {
+        use clap::Parser;
+
+        // -F for force (uppercase to avoid conflict with -f for file)
+        let cli = Cli::try_parse_from(["zb", "bundle", "dump", "-F", "-f", "Brewfile"]).unwrap();
+        match cli.command {
+            Commands::Bundle { action: Some(BundleAction::Dump { describe, force, file }) } => {
+                assert!(!describe);
+                assert!(force);
+                assert_eq!(file, Some(PathBuf::from("Brewfile")));
+            }
+            _ => panic!("Expected Bundle Dump command"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_check_strict() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "bundle", "check", "--strict"]).unwrap();
+        match cli.command {
+            Commands::Bundle { action: Some(BundleAction::Check { strict, file }) } => {
+                assert!(strict);
+                assert!(file.is_none());
+            }
+            _ => panic!("Expected Bundle Check command"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_list() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "bundle", "list"]).unwrap();
+        match cli.command {
+            Commands::Bundle { action: Some(BundleAction::List { file }) } => {
+                assert!(file.is_none());
+            }
+            _ => panic!("Expected Bundle List command"),
+        }
+    }
+
+    // ========================================================================
+    // Search Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_search_basic() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "search", "git"]).unwrap();
+        match cli.command {
+            Commands::Search { query, json, installed } => {
+                assert_eq!(query, "git");
+                assert!(!json);
+                assert!(!installed);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_json_installed() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "search", "python", "--json", "--installed"]).unwrap();
+        match cli.command {
+            Commands::Search { query, json, installed } => {
+                assert_eq!(query, "python");
+                assert!(json);
+                assert!(installed);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    // ========================================================================
+    // Deps Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_deps_tree_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "deps", "git", "--tree"]).unwrap();
+        match cli.command {
+            Commands::Deps { formula, tree, installed, all } => {
+                assert_eq!(formula, "git");
+                assert!(tree);
+                assert!(!installed);
+                assert!(!all);
+            }
+            _ => panic!("Expected Deps command"),
+        }
+    }
+
+    #[test]
+    fn test_deps_all_installed() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "deps", "neovim", "--installed", "-1"]).unwrap();
+        match cli.command {
+            Commands::Deps { formula, tree, installed, all } => {
+                assert_eq!(formula, "neovim");
+                assert!(!tree);
+                assert!(installed);
+                assert!(all);
+            }
+            _ => panic!("Expected Deps command"),
+        }
+    }
+
+    // ========================================================================
+    // Link/Unlink Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_link_overwrite_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "link", "openssl", "--overwrite"]).unwrap();
+        match cli.command {
+            Commands::Link { formula, overwrite, force } => {
+                assert_eq!(formula, "openssl");
+                assert!(overwrite);
+                assert!(!force);
+            }
+            _ => panic!("Expected Link command"),
+        }
+    }
+
+    #[test]
+    fn test_unlink_parsing() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "unlink", "python@3.11"]).unwrap();
+        match cli.command {
+            Commands::Unlink { formula } => {
+                assert_eq!(formula, "python@3.11");
+            }
+            _ => panic!("Expected Unlink command"),
+        }
+    }
+
+    // ========================================================================
+    // Cleanup Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_cleanup_prune_days() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "cleanup", "--prune", "30"]).unwrap();
+        match cli.command {
+            Commands::Cleanup { dry_run, prune } => {
+                assert!(!dry_run);
+                assert_eq!(prune, Some(30));
+            }
+            _ => panic!("Expected Cleanup command"),
+        }
+    }
+
+    #[test]
+    fn test_cleanup_dry_run() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "cleanup", "--dry-run"]).unwrap();
+        match cli.command {
+            Commands::Cleanup { dry_run, prune } => {
+                assert!(dry_run);
+                assert!(prune.is_none());
+            }
+            _ => panic!("Expected Cleanup command"),
+        }
+    }
+
+    // ========================================================================
+    // Global Options Tests
+    // ========================================================================
+
+    #[test]
+    fn test_custom_root_and_prefix() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from([
+            "zb",
+            "--root", "/custom/root",
+            "--prefix", "/custom/prefix",
+            "list"
+        ]).unwrap();
+        assert_eq!(cli.root, PathBuf::from("/custom/root"));
+        assert_eq!(cli.prefix, PathBuf::from("/custom/prefix"));
+    }
+
+    #[test]
+    fn test_custom_concurrency() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "--concurrency", "16", "install", "git"]).unwrap();
+        assert_eq!(cli.concurrency, 16);
+    }
+
+    #[test]
+    fn test_default_values() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "list"]).unwrap();
+        assert_eq!(cli.root, PathBuf::from("/opt/zerobrew"));
+        assert_eq!(cli.prefix, PathBuf::from("/opt/zerobrew/prefix"));
+        assert_eq!(cli.concurrency, 48);
+    }
+
+    // ========================================================================
+    // Services Log Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_services_log_with_lines() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "services", "log", "redis", "-n", "50"]).unwrap();
+        match cli.command {
+            Commands::Services {
+                action: Some(ServicesAction::Log { formula, lines, follow }),
+            } => {
+                assert_eq!(formula, "redis");
+                assert_eq!(lines, 50);
+                assert!(!follow);
+            }
+            _ => panic!("Expected Services Log command"),
+        }
+    }
+
+    #[test]
+    fn test_services_log_follow() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "services", "log", "postgresql", "--follow"]).unwrap();
+        match cli.command {
+            Commands::Services {
+                action: Some(ServicesAction::Log { formula, lines, follow }),
+            } => {
+                assert_eq!(formula, "postgresql");
+                assert_eq!(lines, 20); // default
+                assert!(follow);
+            }
+            _ => panic!("Expected Services Log command"),
+        }
+    }
+
+    // ========================================================================
+    // Pin/Unpin Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_pin_versioned_formula() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "pin", "node@20"]).unwrap();
+        match cli.command {
+            Commands::Pin { formula } => {
+                assert_eq!(formula, "node@20");
+            }
+            _ => panic!("Expected Pin command"),
+        }
+    }
+
+    #[test]
+    fn test_unpin_formula() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "unpin", "git"]).unwrap();
+        match cli.command {
+            Commands::Unpin { formula } => {
+                assert_eq!(formula, "git");
+            }
+            _ => panic!("Expected Unpin command"),
+        }
+    }
+
+    // ========================================================================
+    // Tap/Untap Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_tap_list() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "tap"]).unwrap();
+        match cli.command {
+            Commands::Tap { user_repo } => {
+                assert!(user_repo.is_none());
+            }
+            _ => panic!("Expected Tap command"),
+        }
+    }
+
+    #[test]
+    fn test_tap_add() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "tap", "homebrew/cask"]).unwrap();
+        match cli.command {
+            Commands::Tap { user_repo } => {
+                assert_eq!(user_repo, Some("homebrew/cask".to_string()));
+            }
+            _ => panic!("Expected Tap command"),
+        }
+    }
+
+    #[test]
+    fn test_untap() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "untap", "homebrew/cask"]).unwrap();
+        match cli.command {
+            Commands::Untap { user_repo } => {
+                assert_eq!(user_repo, "homebrew/cask");
+            }
+            _ => panic!("Expected Untap command"),
+        }
+    }
+
+    // ========================================================================
+    // Reset Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_reset_with_yes_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "reset", "--yes"]).unwrap();
+        match cli.command {
+            Commands::Reset { yes } => {
+                assert!(yes);
+            }
+            _ => panic!("Expected Reset command"),
+        }
+    }
+
+    #[test]
+    fn test_reset_short_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "reset", "-y"]).unwrap();
+        match cli.command {
+            Commands::Reset { yes } => {
+                assert!(yes);
+            }
+            _ => panic!("Expected Reset command"),
+        }
+    }
+
+    // ========================================================================
+    // Autoremove Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_autoremove_dry_run() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "autoremove", "--dry-run"]).unwrap();
+        match cli.command {
+            Commands::Autoremove { dry_run } => {
+                assert!(dry_run);
+            }
+            _ => panic!("Expected Autoremove command"),
+        }
+    }
+
+    // ========================================================================
+    // Uses Command Tests  
+    // ========================================================================
+
+    #[test]
+    fn test_uses_recursive() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "uses", "openssl", "--recursive"]).unwrap();
+        match cli.command {
+            Commands::Uses { formula, recursive, .. } => {
+                assert_eq!(formula, "openssl");
+                assert!(recursive);
+            }
+            _ => panic!("Expected Uses command"),
+        }
+    }
+
+    // ========================================================================
+    // Shellenv Command Tests
+    // ========================================================================
+
+    #[test]
+    fn test_shellenv_default() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "shellenv"]).unwrap();
+        match cli.command {
+            Commands::Shellenv { shell } => {
+                assert!(shell.is_none());
+            }
+            _ => panic!("Expected Shellenv command"),
+        }
+    }
+
+    #[test]
+    fn test_shellenv_fish() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zb", "shellenv", "--shell", "fish"]).unwrap();
+        match cli.command {
+            Commands::Shellenv { shell } => {
+                assert_eq!(shell, Some("fish".to_string()));
+            }
+            _ => panic!("Expected Shellenv command"),
+        }
     }
 }
