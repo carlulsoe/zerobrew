@@ -57,8 +57,14 @@ case "$SHELL" in
         fi
         ;;
     */bash)
-        if [[ -f "$HOME/.bash_profile" ]]; then
-            SHELL_CONFIG="$HOME/.bash_profile"
+        # On Linux, use .bashrc (terminal emulators run non-login shells)
+        # On macOS, use .bash_profile (Terminal.app runs login shells)
+        if [[ "$(uname)" == "Darwin" ]]; then
+            if [[ -f "$HOME/.bash_profile" ]]; then
+                SHELL_CONFIG="$HOME/.bash_profile"
+            else
+                SHELL_CONFIG="$HOME/.bashrc"
+            fi
         else
             SHELL_CONFIG="$HOME/.bashrc"
         fi
