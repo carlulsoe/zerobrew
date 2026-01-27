@@ -215,7 +215,7 @@ impl BlobWriter {
         // (race with another download), that's fine - clean up and return success.
         match fs::rename(&self.tmp_path, &self.final_path) {
             Ok(()) => {}
-            Err(_e) if self.final_path.exists() => {
+            Err(_) if self.final_path.exists() => {
                 // Another download won the race, clean up our temp file
                 let _ = fs::remove_file(&self.tmp_path);
             }

@@ -6,6 +6,8 @@ curl -sSL https://raw.githubusercontent.com/lucasgelfond/zerobrew/main/install.s
 
 After install, run the export command it prints, or restart your terminal.
 
+Join the [Discord](https://discord.gg/UxAAvZ93) for support / discussion.
+
 # zerobrew
 
 A faster, modern Mac package manager.
