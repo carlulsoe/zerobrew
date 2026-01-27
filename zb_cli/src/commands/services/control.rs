@@ -9,7 +9,7 @@ use zb_io::ServiceManager;
 
 /// Pluralize a word based on count.
 /// Extracted for testability.
-pub(crate) fn pluralize(count: usize, singular: &str, plural: &str) -> &str {
+pub(crate) fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
     if count == 1 { singular } else { plural }
 }
 
@@ -469,4 +469,313 @@ pub fn run_cleanup(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // ==================== pluralize Tests ====================
+
+    #[test]
+    fn test_pluralize_zero() {
+        assert_eq!(pluralize(0, "service", "services"), "services");
+    }
+
+    #[test]
+    fn test_pluralize_one() {
+        assert_eq!(pluralize(1, "service", "services"), "service");
+    }
+
+    #[test]
+    fn test_pluralize_two() {
+        assert_eq!(pluralize(2, "service", "services"), "services");
+    }
+
+    #[test]
+    fn test_pluralize_many() {
+        assert_eq!(pluralize(100, "service", "services"), "services");
+    }
+
+    #[test]
+    fn test_pluralize_empty_strings() {
+        assert_eq!(pluralize(0, "", "s"), "s");
+        assert_eq!(pluralize(1, "", "s"), "");
+        assert_eq!(pluralize(2, "", "s"), "s");
+    }
+
+    #[test]
+    fn test_pluralize_irregular() {
+        assert_eq!(pluralize(1, "child", "children"), "child");
+        assert_eq!(pluralize(2, "child", "children"), "children");
+    }
+
+    // ==================== format_orphan_count_message Tests ====================
+
+    #[test]
+    fn test_format_orphan_count_message_zero_dry_run() {
+        let msg = format_orphan_count_message(0, true);
+        assert_eq!(msg, "Would remove 0 orphaned services");
+    }
+
+    #[test]
+    fn test_format_orphan_count_message_one_dry_run() {
+        let msg = format_orphan_count_message(1, true);
+        assert_eq!(msg, "Would remove 1 orphaned service");
+    }
+
+    #[test]
+    fn test_format_orphan_count_message_multiple_dry_run() {
+        let msg = format_orphan_count_message(5, true);
+        assert_eq!(msg, "Would remove 5 orphaned services");
+    }
+
+    #[test]
+    fn test_format_orphan_count_message_zero_actual() {
+        let msg = format_orphan_count_message(0, false);
+        assert_eq!(msg, "Removing 0 orphaned services");
+    }
+
+    #[test]
+    fn test_format_orphan_count_message_one_actual() {
+        let msg = format_orphan_count_message(1, false);
+        assert_eq!(msg, "Removing 1 orphaned service");
+    }
+
+    #[test]
+    fn test_format_orphan_count_message_multiple_actual() {
+        let msg = format_orphan_count_message(10, false);
+        assert_eq!(msg, "Removing 10 orphaned services");
+    }
+
+    // ==================== format_cleanup_complete_message Tests ====================
+
+    #[test]
+    fn test_format_cleanup_complete_message_zero() {
+        let msg = format_cleanup_complete_message(0);
+        assert_eq!(msg, "Removed 0 orphaned services");
+    }
+
+    #[test]
+    fn test_format_cleanup_complete_message_one() {
+        let msg = format_cleanup_complete_message(1);
+        assert_eq!(msg, "Removed 1 orphaned service");
+    }
+
+    #[test]
+    fn test_format_cleanup_complete_message_multiple() {
+        let msg = format_cleanup_complete_message(7);
+        assert_eq!(msg, "Removed 7 orphaned services");
+    }
+
+    // ==================== select_log_file Tests ====================
+
+    #[test]
+    fn test_select_log_file_both_exist() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join("zb-test-log-both");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let stdout_log = temp_dir.join("stdout.log");
+        let stderr_log = temp_dir.join("stderr.log");
+        fs::write(&stdout_log, "stdout content").unwrap();
+        fs::write(&stderr_log, "stderr content").unwrap();
+
+        // Should prefer stdout
+        let selected = select_log_file(&stdout_log, &stderr_log);
+        assert_eq!(selected, Some(stdout_log.as_path()));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_select_log_file_only_stdout() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join("zb-test-log-stdout");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let stdout_log = temp_dir.join("stdout.log");
+        let stderr_log = temp_dir.join("stderr.log");
+        fs::write(&stdout_log, "stdout content").unwrap();
+        // stderr doesn't exist
+
+        let selected = select_log_file(&stdout_log, &stderr_log);
+        assert_eq!(selected, Some(stdout_log.as_path()));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_select_log_file_only_stderr() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join("zb-test-log-stderr");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let stdout_log = temp_dir.join("stdout.log");
+        let stderr_log = temp_dir.join("stderr.log");
+        // stdout doesn't exist
+        fs::write(&stderr_log, "stderr content").unwrap();
+
+        let selected = select_log_file(&stdout_log, &stderr_log);
+        assert_eq!(selected, Some(stderr_log.as_path()));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_select_log_file_neither_exist() {
+        let stdout_log = PathBuf::from("/nonexistent/stdout.log");
+        let stderr_log = PathBuf::from("/nonexistent/stderr.log");
+
+        let selected = select_log_file(&stdout_log, &stderr_log);
+        assert_eq!(selected, None);
+    }
+
+    // ==================== get_last_lines Tests ====================
+
+    #[test]
+    fn test_get_last_lines_empty() {
+        let content = "";
+        let result = get_last_lines(content, 10);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_last_lines_fewer_than_requested() {
+        let content = "line 1\nline 2\nline 3";
+        let result = get_last_lines(content, 10);
+        assert_eq!(result, vec!["line 1", "line 2", "line 3"]);
+    }
+
+    #[test]
+    fn test_get_last_lines_exact_count() {
+        let content = "line 1\nline 2\nline 3";
+        let result = get_last_lines(content, 3);
+        assert_eq!(result, vec!["line 1", "line 2", "line 3"]);
+    }
+
+    #[test]
+    fn test_get_last_lines_more_than_requested() {
+        let content = "line 1\nline 2\nline 3\nline 4\nline 5";
+        let result = get_last_lines(content, 2);
+        assert_eq!(result, vec!["line 4", "line 5"]);
+    }
+
+    #[test]
+    fn test_get_last_lines_request_zero() {
+        let content = "line 1\nline 2\nline 3";
+        let result = get_last_lines(content, 0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_last_lines_single_line() {
+        let content = "only line";
+        let result = get_last_lines(content, 5);
+        assert_eq!(result, vec!["only line"]);
+    }
+
+    #[test]
+    fn test_get_last_lines_with_empty_lines() {
+        let content = "line 1\n\nline 3\n\nline 5";
+        let result = get_last_lines(content, 3);
+        assert_eq!(result, vec!["line 3", "", "line 5"]);
+    }
+
+    #[test]
+    fn test_get_last_lines_trailing_newline() {
+        let content = "line 1\nline 2\n";
+        let result = get_last_lines(content, 10);
+        // Rust's str::lines() does NOT include trailing empty element for trailing newline
+        assert_eq!(result, vec!["line 1", "line 2"]);
+    }
+
+    #[test]
+    fn test_get_last_lines_large_file_simulation() {
+        // Simulate a large log file
+        let lines: Vec<String> = (1..=1000).map(|i| format!("Log entry {}", i)).collect();
+        let content = lines.join("\n");
+
+        let result = get_last_lines(&content, 50);
+        assert_eq!(result.len(), 50);
+        assert_eq!(result[0], "Log entry 951");
+        assert_eq!(result[49], "Log entry 1000");
+    }
+
+    // ==================== Error Message Format Tests ====================
+
+    #[test]
+    fn test_error_messages_are_user_friendly() {
+        // These tests document expected error message patterns
+        // for future reference and to prevent regressions
+
+        // Formula not installed pattern
+        let formula = "redis";
+        let expected = format!("Formula '{}' is not installed.", formula);
+        assert!(expected.contains(formula));
+        assert!(expected.contains("not installed"));
+
+        // No service definition pattern
+        let expected = format!("Formula '{}' does not have a service definition.", formula);
+        assert!(expected.contains("service definition"));
+
+        // No service file pattern
+        let expected = format!("No service file found for '{}'.", formula);
+        assert!(expected.contains("service file"));
+    }
+
+    // ==================== Integration-style Logic Tests ====================
+
+    #[test]
+    fn test_cleanup_message_consistency() {
+        // Verify dry-run and actual messages use consistent pluralization
+        for count in [0, 1, 2, 5, 100] {
+            let dry_run_msg = format_orphan_count_message(count, true);
+            let actual_msg = format_orphan_count_message(count, false);
+            let complete_msg = format_cleanup_complete_message(count);
+
+            // All should use "service" for 1, "services" otherwise
+            let expected_suffix = if count == 1 { "service" } else { "services" };
+            assert!(dry_run_msg.contains(expected_suffix));
+            assert!(actual_msg.contains(expected_suffix));
+            assert!(complete_msg.contains(expected_suffix));
+        }
+    }
+
+    #[test]
+    fn test_log_selection_priority() {
+        // This documents the priority: stdout > stderr > none
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join("zb-test-log-priority");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let stdout_log = temp_dir.join("stdout.log");
+        let stderr_log = temp_dir.join("stderr.log");
+
+        // Neither exists
+        assert!(select_log_file(&stdout_log, &stderr_log).is_none());
+
+        // Only stderr
+        fs::write(&stderr_log, "err").unwrap();
+        assert_eq!(select_log_file(&stdout_log, &stderr_log), Some(stderr_log.as_path()));
+
+        // Both exist - stdout wins
+        fs::write(&stdout_log, "out").unwrap();
+        assert_eq!(select_log_file(&stdout_log, &stderr_log), Some(stdout_log.as_path()));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }

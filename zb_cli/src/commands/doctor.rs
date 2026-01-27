@@ -24,7 +24,7 @@ pub fn plain_status_marker(status: &DoctorStatus) -> &'static str {
 }
 
 /// Pluralize issue type based on count.
-pub fn pluralize_issue(count: u32, singular: &str) -> String {
+pub fn pluralize_issue(count: usize, singular: &str) -> String {
     if count == 1 {
         singular.to_string()
     } else {
@@ -33,7 +33,7 @@ pub fn pluralize_issue(count: u32, singular: &str) -> String {
 }
 
 /// Format the issue count for display (plain text, no styling).
-pub fn format_issue_count_plain(count: u32, issue_type: &str) -> String {
+pub fn format_issue_count_plain(count: usize, issue_type: &str) -> String {
     let noun = pluralize_issue(count, issue_type);
     format!("{} {} found", count, noun)
 }
@@ -130,6 +130,7 @@ mod tests {
     // Helper to create a DoctorCheck
     fn make_check(message: &str, status: DoctorStatus, fix: Option<&str>) -> DoctorCheck {
         DoctorCheck {
+            name: "test_check".to_string(),
             message: message.to_string(),
             status,
             fix: fix.map(|s| s.to_string()),
@@ -137,7 +138,7 @@ mod tests {
     }
 
     // Helper to create a DoctorResult
-    fn make_result(checks: Vec<DoctorCheck>, errors: u32, warnings: u32) -> DoctorResult {
+    fn make_result(checks: Vec<DoctorCheck>, errors: usize, warnings: usize) -> DoctorResult {
         DoctorResult {
             checks,
             errors,
