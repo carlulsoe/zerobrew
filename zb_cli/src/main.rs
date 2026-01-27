@@ -491,10 +491,19 @@ fn add_to_path(prefix: &Path) -> Result<(), String> {
             format!("{}/.zshrc", zdotdir)
         }
     } else if shell.contains("bash") {
-        let bash_profile = format!("{}/.bash_profile", home);
-        if std::path::Path::new(&bash_profile).exists() {
-            bash_profile
-        } else {
+        // On Linux, interactive non-login shells (most terminal emulators) source .bashrc
+        // On macOS, Terminal.app runs login shells which source .bash_profile
+        #[cfg(target_os = "macos")]
+        {
+            let bash_profile = format!("{}/.bash_profile", home);
+            if std::path::Path::new(&bash_profile).exists() {
+                bash_profile
+            } else {
+                format!("{}/.bashrc", home)
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
             format!("{}/.bashrc", home)
         }
     } else {
