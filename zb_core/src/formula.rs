@@ -205,6 +205,7 @@ impl Formula {
     /// Returns the effective dependencies for the current platform.
     /// On Linux, this includes `uses_from_macos` dependencies since they
     /// aren't available as system libraries like on macOS.
+    #[allow(unused_mut)] // mut needed on Linux only
     pub fn effective_dependencies(&self) -> Vec<String> {
         let mut deps = self.dependencies.clone();
 
