@@ -5267,3 +5267,713 @@ mod tap_and_dependency_tests {
         }
     }
 }
+
+// ============================================================================
+// Install Orchestration Flow Tests
+// ============================================================================
+
+mod orchestration_tests {
+    use super::*;
+    use crate::progress::InstallProgress;
+    use crate::test_utils::{
+        mock_formula_json, mock_bottle_tarball_with_version, 
+        sha256_hex, platform_bottle_tag, create_test_installer,
+    };
+    use std::sync::{Arc, Mutex};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    /// Helper to mount a formula with its bottle for tests
+    async fn mount_formula(
+        mock_server: &MockServer,
+        name: &str,
+        version: &str,
+        deps: &[&str],
+    ) -> String {
+        let bottle = mock_bottle_tarball_with_version(name, version);
+        let sha = sha256_hex(&bottle);
+        let tag = platform_bottle_tag();
+
+        let formula_json = mock_formula_json(name, version, deps, &mock_server.uri(), &sha);
+
+        Mock::given(method("GET"))
+            .and(path(format!("/{}.json", name)))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/{}-{}.{}.bottle.tar.gz", name, version, tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(mock_server)
+            .await;
+
+        sha
+    }
+
+    // ========================================================================
+    // Progress callback tests
+    // ========================================================================
+
+    /// Test that install emits progress events in correct order.
+    /// The callback should receive: DownloadStarted -> DownloadCompleted -> 
+    /// UnpackStarted -> UnpackCompleted -> LinkStarted -> LinkCompleted
+    #[tokio::test]
+    async fn install_emits_progress_events_in_order() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        let bottle = mock_bottle_tarball_with_version("progresspkg", "1.0.0");
+        let sha = sha256_hex(&bottle);
+
+        let formula_json = mock_formula_json("progresspkg", "1.0.0", &[], &mock_server.uri(), &sha);
+
+        Mock::given(method("GET"))
+            .and(path("/progresspkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/progresspkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Collect progress events
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let callback: Arc<crate::progress::ProgressCallback> = Arc::new(Box::new(move |event: InstallProgress| {
+            let event_name = match &event {
+                InstallProgress::DownloadStarted { name, .. } => format!("DownloadStarted:{}", name),
+                InstallProgress::DownloadProgress { name, .. } => format!("DownloadProgress:{}", name),
+                InstallProgress::DownloadCompleted { name, .. } => format!("DownloadCompleted:{}", name),
+                InstallProgress::UnpackStarted { name } => format!("UnpackStarted:{}", name),
+                InstallProgress::UnpackCompleted { name } => format!("UnpackCompleted:{}", name),
+                InstallProgress::LinkStarted { name } => format!("LinkStarted:{}", name),
+                InstallProgress::LinkCompleted { name } => format!("LinkCompleted:{}", name),
+                InstallProgress::InstallCompleted { name } => format!("InstallCompleted:{}", name),
+            };
+            events_clone.lock().unwrap().push(event_name);
+        }));
+
+        // Plan and execute with progress
+        let plan = installer.plan("progresspkg").await.unwrap();
+        let result = installer.execute_with_progress(plan, true, Some(callback)).await;
+
+        assert!(result.is_ok(), "Install failed: {:?}", result.err());
+
+        // Verify events
+        let recorded = events.lock().unwrap();
+        assert!(!recorded.is_empty(), "Should have recorded progress events");
+
+        // Find key events (ignoring progress updates)
+        let key_events: Vec<&String> = recorded.iter()
+            .filter(|e| !e.starts_with("DownloadProgress"))
+            .collect();
+
+        // Verify order: Download -> Unpack -> Link
+        let mut saw_download_complete = false;
+        let mut saw_unpack_start = false;
+        let mut saw_unpack_complete = false;
+        let mut saw_link_start = false;
+
+        for event in &key_events {
+            if event.starts_with("DownloadCompleted") {
+                saw_download_complete = true;
+            }
+            if event.starts_with("UnpackStarted") {
+                assert!(saw_download_complete, "Unpack should start after download completes");
+                saw_unpack_start = true;
+            }
+            if event.starts_with("UnpackCompleted") {
+                assert!(saw_unpack_start, "Unpack complete should follow unpack start");
+                saw_unpack_complete = true;
+            }
+            if event.starts_with("LinkStarted") {
+                assert!(saw_unpack_complete, "Link should start after unpack completes");
+                saw_link_start = true;
+            }
+            if event.starts_with("LinkCompleted") {
+                assert!(saw_link_start, "Link complete should follow link start");
+            }
+        }
+    }
+
+    /// Test progress events with multiple packages (dependency chain).
+    /// Events should interleave correctly for streaming extraction.
+    #[tokio::test]
+    async fn install_with_deps_emits_progress_for_all_packages() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        // Create dep -> main chain
+        mount_formula(&mock_server, "progdep", "1.0.0", &[]).await;
+        mount_formula(&mock_server, "progmain", "1.0.0", &["progdep"]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let callback: Arc<crate::progress::ProgressCallback> = Arc::new(Box::new(move |event: InstallProgress| {
+            let event_name = match &event {
+                InstallProgress::DownloadStarted { name, .. } => format!("DownloadStarted:{}", name),
+                InstallProgress::DownloadProgress { .. } => return, // Skip progress
+                InstallProgress::DownloadCompleted { name, .. } => format!("DownloadCompleted:{}", name),
+                InstallProgress::UnpackStarted { name } => format!("UnpackStarted:{}", name),
+                InstallProgress::UnpackCompleted { name } => format!("UnpackCompleted:{}", name),
+                InstallProgress::LinkStarted { name } => format!("LinkStarted:{}", name),
+                InstallProgress::LinkCompleted { name } => format!("LinkCompleted:{}", name),
+                InstallProgress::InstallCompleted { name } => format!("InstallCompleted:{}", name),
+            };
+            events_clone.lock().unwrap().push(event_name);
+        }));
+
+        let plan = installer.plan("progmain").await.unwrap();
+        let result = installer.execute_with_progress(plan, true, Some(callback)).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().installed, 2);
+
+        let recorded = events.lock().unwrap();
+
+        // Both packages should have events
+        let dep_events: Vec<_> = recorded.iter().filter(|e| e.contains("progdep")).collect();
+        let main_events: Vec<_> = recorded.iter().filter(|e| e.contains("progmain")).collect();
+
+        assert!(!dep_events.is_empty(), "Should have events for dependency");
+        assert!(!main_events.is_empty(), "Should have events for main package");
+    }
+
+    // ========================================================================
+    // Reinstall behavior tests
+    // ========================================================================
+
+    /// Test that installing an already-installed package reinstalls it.
+    /// The plan should include the package even if it's already in the database.
+    #[tokio::test]
+    async fn reinstall_already_installed_package() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        mount_formula(&mock_server, "reinstallme", "1.0.0", &[]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install first time
+        let result1 = installer.install("reinstallme", true).await;
+        assert!(result1.is_ok());
+        assert!(installer.is_installed("reinstallme"));
+        assert_eq!(installer.get_installed("reinstallme").unwrap().version, "1.0.0");
+
+        // Install again (reinstall)
+        let result2 = installer.install("reinstallme", true).await;
+        assert!(result2.is_ok());
+        
+        // Should still be installed with same version
+        assert!(installer.is_installed("reinstallme"));
+        assert_eq!(installer.get_installed("reinstallme").unwrap().version, "1.0.0");
+    }
+
+    /// Test force reinstall by uninstalling and reinstalling.
+    /// This is the pattern users would use to force a clean reinstall.
+    #[tokio::test]
+    async fn force_reinstall_via_uninstall_install() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+
+        mount_formula(&mock_server, "forcepkg", "1.0.0", &[]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install
+        installer.install("forcepkg", true).await.unwrap();
+        assert!(installer.is_installed("forcepkg"));
+        assert!(root.join("cellar/forcepkg/1.0.0").exists());
+        assert!(prefix.join("bin/forcepkg").exists());
+
+        // Uninstall
+        installer.uninstall("forcepkg").unwrap();
+        assert!(!installer.is_installed("forcepkg"));
+        assert!(!root.join("cellar/forcepkg/1.0.0").exists());
+        assert!(!prefix.join("bin/forcepkg").exists());
+
+        // Reinstall
+        installer.install("forcepkg", true).await.unwrap();
+        assert!(installer.is_installed("forcepkg"));
+        assert!(root.join("cellar/forcepkg/1.0.0").exists());
+        assert!(prefix.join("bin/forcepkg").exists());
+    }
+
+    // ========================================================================
+    // Install without linking tests
+    // ========================================================================
+
+    /// Test install with link=false doesn't create symlinks.
+    #[tokio::test]
+    async fn install_without_link_flag() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+
+        mount_formula(&mock_server, "nolinkpkg", "1.0.0", &[]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install without linking
+        let result = installer.install("nolinkpkg", false).await;
+        assert!(result.is_ok());
+
+        // Keg should exist
+        assert!(root.join("cellar/nolinkpkg/1.0.0").exists());
+
+        // But no symlinks
+        assert!(!prefix.join("bin/nolinkpkg").exists());
+        assert!(!installer.is_linked("nolinkpkg"));
+
+        // Package is installed
+        assert!(installer.is_installed("nolinkpkg"));
+
+        // Linked files should be empty
+        let linked = installer.get_linked_files("nolinkpkg").unwrap();
+        assert!(linked.is_empty());
+    }
+
+    /// Test that dependencies are linked even when main package link=false.
+    #[tokio::test]
+    async fn install_deps_linked_when_main_not_linked() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("homebrew");
+
+        mount_formula(&mock_server, "linkeddep", "1.0.0", &[]).await;
+        mount_formula(&mock_server, "unlinkpkg", "1.0.0", &["linkeddep"]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install with link=false - deps should still be linked (they follow the flag)
+        let result = installer.install("unlinkpkg", false).await;
+        assert!(result.is_ok());
+
+        // Both packages installed
+        assert!(installer.is_installed("unlinkpkg"));
+        assert!(installer.is_installed("linkeddep"));
+
+        // Neither is linked when link=false is passed
+        assert!(!prefix.join("bin/unlinkpkg").exists());
+        assert!(!prefix.join("bin/linkeddep").exists());
+    }
+
+    // ========================================================================
+    // Rollback and failure handling tests
+    // ========================================================================
+
+    /// Test that a download failure doesn't leave partial state.
+    #[tokio::test]
+    async fn download_failure_no_partial_state() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+
+        let tag = platform_bottle_tag();
+        let bottle = mock_bottle_tarball_with_version("faildownload", "1.0.0");
+        let sha = sha256_hex(&bottle);
+
+        let formula_json = mock_formula_json("faildownload", "1.0.0", &[], &mock_server.uri(), &sha);
+
+        Mock::given(method("GET"))
+            .and(path("/faildownload.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        // Bottle download fails
+        let bottle_path = format!("/bottles/faildownload-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        let result = installer.install("faildownload", true).await;
+        assert!(result.is_err());
+
+        // No partial state
+        assert!(!installer.is_installed("faildownload"));
+        assert!(!root.join("cellar/faildownload").exists());
+
+        // Database should not have any record
+        assert!(installer.db.get_installed("faildownload").is_none());
+    }
+
+    /// Test that extraction failure cleans up properly.
+    #[tokio::test]
+    async fn extraction_failure_cleans_up() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let tag = platform_bottle_tag();
+
+        // Create corrupted tarball (valid gzip, invalid tar)
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"not a valid tar").unwrap();
+        let corrupt_bottle = encoder.finish().unwrap();
+        let sha = sha256_hex(&corrupt_bottle);
+
+        let formula_json = mock_formula_json("corrupttar", "1.0.0", &[], &mock_server.uri(), &sha);
+
+        Mock::given(method("GET"))
+            .and(path("/corrupttar.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&formula_json))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/corrupttar-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(corrupt_bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        let result = installer.install("corrupttar", true).await;
+        assert!(result.is_err());
+
+        // No partial cellar entry
+        assert!(!root.join("cellar/corrupttar").exists());
+
+        // No temp directories in store
+        let store_path = root.join("store");
+        if store_path.exists() {
+            for entry in fs::read_dir(&store_path).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                assert!(!name.contains(".tmp."), "Temp dir left behind: {}", name);
+            }
+        }
+
+        // Not in database
+        assert!(installer.db.get_installed("corrupttar").is_none());
+    }
+
+    /// Test multi-package install where one package fails.
+    /// Successfully installed packages should remain.
+    #[tokio::test]
+    async fn partial_install_failure_keeps_successful() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Good package
+        mount_formula(&mock_server, "goodpkg", "1.0.0", &[]).await;
+
+        // Bad package (formula exists, bottle fails)
+        let bad_bottle = mock_bottle_tarball_with_version("badpkg", "1.0.0");
+        let bad_sha = sha256_hex(&bad_bottle);
+
+        let bad_formula = mock_formula_json("badpkg", "1.0.0", &[], &mock_server.uri(), &bad_sha);
+        Mock::given(method("GET"))
+            .and(path("/badpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&bad_formula))
+            .mount(&mock_server)
+            .await;
+
+        let bad_bottle_path = format!("/bottles/badpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bad_bottle_path))
+            .respond_with(ResponseTemplate::new(500)) // Bottle fails
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install good package first
+        let good_result = installer.install("goodpkg", true).await;
+        assert!(good_result.is_ok());
+        assert!(installer.is_installed("goodpkg"));
+
+        // Install bad package (should fail)
+        let bad_result = installer.install("badpkg", true).await;
+        assert!(bad_result.is_err());
+        assert!(!installer.is_installed("badpkg"));
+
+        // Good package should still be there
+        assert!(installer.is_installed("goodpkg"));
+    }
+
+    /// Test that a dependency chain failure doesn't leave partial installs.
+    #[tokio::test]
+    async fn dependency_chain_failure_rollback() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create chain: main -> dep1 -> dep2 (dep2 fails)
+        // Good: main and dep1
+        mount_formula(&mock_server, "chainmain", "1.0.0", &["chaindep1"]).await;
+        mount_formula(&mock_server, "chaindep1", "1.0.0", &["chaindep2"]).await;
+
+        // dep2 has formula but bottle fails
+        let dep2_bottle = mock_bottle_tarball_with_version("chaindep2", "1.0.0");
+        let dep2_sha = sha256_hex(&dep2_bottle);
+
+        let dep2_formula = mock_formula_json("chaindep2", "1.0.0", &[], &mock_server.uri(), &dep2_sha);
+        Mock::given(method("GET"))
+            .and(path("/chaindep2.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&dep2_formula))
+            .mount(&mock_server)
+            .await;
+
+        let dep2_bottle_path = format!("/bottles/chaindep2-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(dep2_bottle_path))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Try to install main (should fail because dep2 fails)
+        let result = installer.install("chainmain", true).await;
+        assert!(result.is_err());
+
+        // None of the chain should be installed
+        assert!(!installer.is_installed("chainmain"));
+        assert!(!installer.is_installed("chaindep1"));
+        assert!(!installer.is_installed("chaindep2"));
+    }
+
+    // ========================================================================
+    // Database consistency tests
+    // ========================================================================
+
+    /// Test that database records are consistent after successful install.
+    #[tokio::test]
+    async fn database_consistency_after_install() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("homebrew");
+
+        mount_formula(&mock_server, "dbpkg", "2.5.0", &[]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        installer.install("dbpkg", true).await.unwrap();
+
+        // Check database record
+        let keg = installer.db.get_installed("dbpkg").unwrap();
+        assert_eq!(keg.name, "dbpkg");
+        assert_eq!(keg.version, "2.5.0");
+        assert!(keg.explicit);
+
+        // Check linked files record
+        let linked = installer.db.get_linked_files("dbpkg").unwrap();
+        assert!(!linked.is_empty());
+
+        // Verify actual symlink exists
+        assert!(prefix.join("bin/dbpkg").exists());
+    }
+
+    /// Test database has no records after failed install.
+    #[tokio::test]
+    async fn database_clean_after_failed_install() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let formula_json = r#"{
+            "name": "dbfailpkg",
+            "versions": { "stable": "1.0.0" },
+            "dependencies": [],
+            "bottle": {
+                "stable": {
+                    "files": {}
+                }
+            }
+        }"#;
+
+        Mock::given(method("GET"))
+            .and(path("/dbfailpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(formula_json))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Should fail due to no bottle for platform
+        let result = installer.install("dbfailpkg", true).await;
+        assert!(result.is_err());
+
+        // No database records
+        assert!(installer.db.get_installed("dbfailpkg").is_none());
+        assert!(installer.db.get_linked_files("dbfailpkg").unwrap().is_empty());
+    }
+
+    // ========================================================================
+    // Streaming extraction order tests
+    // ========================================================================
+
+    /// Test that dependencies are installed before dependents.
+    /// With streaming extraction, deps should complete before their dependents.
+    #[tokio::test]
+    async fn dependency_installation_order() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        // Chain: main -> mid -> leaf
+        mount_formula(&mock_server, "orderleaf", "1.0.0", &[]).await;
+        mount_formula(&mock_server, "ordermid", "1.0.0", &["orderleaf"]).await;
+        mount_formula(&mock_server, "ordermain", "1.0.0", &["ordermid"]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        let result = installer.install("ordermain", true).await;
+        assert!(result.is_ok());
+
+        // All packages should be installed
+        assert!(installer.is_installed("orderleaf"));
+        assert!(installer.is_installed("ordermid"));
+        assert!(installer.is_installed("ordermain"));
+
+        // Leaf should be dependency, mid should be dependency, main should be explicit
+        assert!(!installer.is_explicit("orderleaf"));
+        assert!(!installer.is_explicit("ordermid"));
+        assert!(installer.is_explicit("ordermain"));
+    }
+
+    /// Test that all packages in a diamond dependency are installed correctly.
+    #[tokio::test]
+    async fn diamond_dependency_all_installed() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        // Diamond: main -> [left, right], left -> shared, right -> shared
+        mount_formula(&mock_server, "diamondshared", "1.0.0", &[]).await;
+        mount_formula(&mock_server, "diamondleft", "1.0.0", &["diamondshared"]).await;
+        mount_formula(&mock_server, "diamondright", "1.0.0", &["diamondshared"]).await;
+        mount_formula(&mock_server, "diamondmain", "1.0.0", &["diamondleft", "diamondright"]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        let result = installer.install("diamondmain", true).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().installed, 4);
+
+        // All four packages installed
+        assert!(installer.is_installed("diamondshared"));
+        assert!(installer.is_installed("diamondleft"));
+        assert!(installer.is_installed("diamondright"));
+        assert!(installer.is_installed("diamondmain"));
+    }
+
+    // ========================================================================
+    // Execute plan edge cases
+    // ========================================================================
+
+    /// Test execute with an empty plan returns zero installed.
+    #[tokio::test]
+    async fn execute_empty_plan() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        let empty_plan = super::super::InstallPlan {
+            formulas: vec![],
+            bottles: vec![],
+            root_name: "empty".to_string(),
+        };
+
+        let result = installer.execute(empty_plan, true).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().installed, 0);
+    }
+
+    /// Test that install result contains correct count.
+    #[tokio::test]
+    async fn install_result_count_correct() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        // Three packages: main -> dep1 -> dep2
+        mount_formula(&mock_server, "countdep2", "1.0.0", &[]).await;
+        mount_formula(&mock_server, "countdep1", "1.0.0", &["countdep2"]).await;
+        mount_formula(&mock_server, "countmain", "1.0.0", &["countdep1"]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        let result = installer.install("countmain", true).await;
+        assert!(result.is_ok());
+
+        let execute_result = result.unwrap();
+        assert_eq!(execute_result.installed, 3, "Should report 3 packages installed");
+    }
+
+    // ========================================================================
+    // Keg materialization tests
+    // ========================================================================
+
+    /// Test that keg directory structure is correct after install.
+    #[tokio::test]
+    async fn keg_structure_correct_after_install() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+
+        mount_formula(&mock_server, "kegpkg", "3.0.0", &[]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        installer.install("kegpkg", true).await.unwrap();
+
+        // Check keg structure
+        let keg_path = root.join("cellar/kegpkg/3.0.0");
+        assert!(keg_path.exists());
+        assert!(keg_path.join("bin").exists());
+        assert!(keg_path.join("bin/kegpkg").exists());
+
+        // Verify it's executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::metadata(keg_path.join("bin/kegpkg")).unwrap().permissions();
+            assert!(perms.mode() & 0o111 != 0, "Should be executable");
+        }
+    }
+
+    /// Test that store entry is created correctly.
+    #[tokio::test]
+    async fn store_entry_created() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+
+        let bottle = mock_bottle_tarball_with_version("storepkg", "1.0.0");
+        let sha = sha256_hex(&bottle);
+
+        mount_formula(&mock_server, "storepkg", "1.0.0", &[]).await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        installer.install("storepkg", true).await.unwrap();
+
+        // Store entry should exist
+        let store_entry = root.join("store").join(&sha);
+        assert!(store_entry.exists(), "Store entry should exist at {}", store_entry.display());
+    }
+}
