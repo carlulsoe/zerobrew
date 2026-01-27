@@ -24,9 +24,8 @@ pub fn run_list(installer: &Installer, pinned: bool) -> Result<(), zb_core::Erro
         }
         ListOutputKind::HasItems { count: _ } => {
             for keg in installed {
-                // format_list_entry provides the plain-text format for scripting/testing
-                let plain_entry = format_list_entry(&keg.name, &keg.version, keg.pinned);
-                tracing::debug!("List entry: {}", plain_entry);
+                // format_list_entry provides the plain-text format (used for testing)
+                let _ = format_list_entry(&keg.name, &keg.version, keg.pinned);
                 
                 // Styled output for terminal
                 let styled_pin = if keg.pinned {
@@ -162,12 +161,8 @@ async fn print_info_human(
 
     // Version info - use helper functions for testable logic
     if let Some(keg) = keg {
-        // format_installed_version_line provides the complete plain text format
-        // We use the individual markers for styled terminal output
-        let installed_line = format_installed_version_line(&keg.version, keg.pinned, keg.explicit);
-        
-        // Log plain format for debugging/scripting if needed
-        tracing::debug!("Installed info: {}", installed_line);
+        // format_installed_version_line provides the complete plain text format (used for testing)
+        let _ = format_installed_version_line(&keg.version, keg.pinned, keg.explicit);
         
         // Styled output for terminal
         print!(
@@ -192,9 +187,8 @@ async fn print_info_human(
         let available_version = f.effective_version();
         let installed_version = keg.as_ref().map(|k| k.version.as_str());
         
-        // format_available_version_line provides the plain text format for scripting
-        let available_line = format_available_version_line(&available_version, installed_version);
-        tracing::debug!("Available info: {}", available_line);
+        // format_available_version_line provides the plain text format (used for testing)
+        let _ = format_available_version_line(&available_version, installed_version);
         
         // Use format_version_comparison for styled output logic
         let version_display = format_version_comparison(installed_version, &available_version);
