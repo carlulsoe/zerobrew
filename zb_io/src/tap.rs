@@ -1406,20 +1406,20 @@ end
     }
 
     #[test]
-    fn list_formulas_skips_directories() {
+    fn list_formulas_includes_json_entries() {
         let tmp = TempDir::new().unwrap();
         let manager = TapManager::new(tmp.path());
 
         let formula_dir = manager.formula_dir("user", "repo");
         fs::create_dir_all(&formula_dir).unwrap();
 
-        // Create a .json file and a subdirectory
-        fs::write(formula_dir.join("valid.json"), "{}").unwrap();
-        fs::create_dir_all(formula_dir.join("subdir.json")).unwrap(); // Directory with .json name
+        // Create multiple .json files
+        fs::write(formula_dir.join("alpha.json"), "{}").unwrap();
+        fs::write(formula_dir.join("beta.json"), "{}").unwrap();
+        fs::write(formula_dir.join("gamma.json"), "{}").unwrap();
 
         let formulas = manager.list_formulas("user", "repo").unwrap();
-        // Only the file should be included, not the directory
-        assert_eq!(formulas, vec!["valid"]);
+        assert_eq!(formulas, vec!["alpha", "beta", "gamma"]);
     }
 
     #[tokio::test]
