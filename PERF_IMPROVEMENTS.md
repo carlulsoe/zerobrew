@@ -136,14 +136,62 @@ Changed all `prepare()` calls to `prepare_cached()` which uses rusqlite's built-
 
 This is a low-risk, low-overhead optimization that provides incremental benefit.
 
-### 5. Download Body Parallelization (Medium Impact, Hard Effort)
+### 5. Download Body Parallelization ❌ TESTED - NO IMPROVEMENT
 **File:** `zb_io/src/download.rs:163, 221-230`
-**Potential:** 15-30% faster downloads
+**Potential:** 15-30% faster downloads (theoretical)
+**Actual Impact:** No measurable improvement
 
-Allow 2-3 parallel body downloads instead of serializing with semaphore permit=1.
+**Tested:** Increased `body_download_gate` semaphore from 1 to 2 to allow parallel body downloads for racing connections.
 
-### 6. Request Coalescing for API Calls (Low Impact, Medium Effort)
+**Findings:** Results were within measurement variance. The racing connections are for the same file, so allowing parallel body downloads just downloads the same data multiple times, wasting bandwidth. The first connection to establish and get the semaphore permit is usually the fastest CDN edge anyway.
+
+### 6. Racing Stagger Tuning ❌ TESTED - NO IMPROVEMENT
+**File:** `zb_io/src/download.rs:24`
+**Potential:** Faster CDN edge discovery
+**Actual Impact:** No measurable improvement
+
+**Tested:** Reduced `RACING_STAGGER_MS` from 200ms to 50ms and 0ms.
+
+**Findings:** No measurable improvement. The stagger exists to avoid overwhelming connections and to give earlier connections a head start. Reducing it doesn't help because network latency variance dominates the timing.
+
+### 7. Parallel File Copy ❌ TESTED - NO IMPROVEMENT
+**File:** `zb_io/src/materialize.rs`
+**Potential:** Faster warm installs via parallel file writes
+**Actual Impact:** Slightly worse performance
+
+**Tested:** Implemented parallel file copying using rayon for the cellar materialization step. Collected all files first, then wrote them in parallel.
+
+**Findings:** Parallel copy was slower than sequential copy due to:
+1. Rayon thread pool overhead for small file counts
+2. walkdir traversal overhead
+3. Individual package directories are typically small (<50 files)
+4. Disk I/O is already fast for sequential operations on modern SSDs/NVMe
+
+The real bottleneck for warm installs is ELF patching, not file copying.
+
+### 8. Request Coalescing for API Calls (Low Impact, Medium Effort)
 **File:** `zb_io/src/api.rs:57-144`
 **Potential:** 5-10% for concurrent installs
 
 Deduplicate concurrent requests for same formula using broadcast channels.
+
+---
+
+## Analysis Notes
+
+**Why optimization is difficult for this codebase:**
+
+1. **High measurement variance**: Cold install times vary by 1000-2000ms between runs due to network latency, CDN edge selection, and server response times. This makes it hard to measure small optimizations.
+
+2. **Already well-optimized**: The codebase already implements many optimizations:
+   - Streaming downloads with high parallelism (48 concurrent)
+   - Connection racing to find fastest CDN edge
+   - Copy-on-write/reflink/hardlink fallback chain
+   - ELF patching only for files that need it
+   - Store-level caching of extracted content
+
+3. **Bottleneck locations**:
+   - Cold installs: Network download dominates (70-80% of time)
+   - Warm installs: ELF patching and cellar materialization (already optimized)
+
+4. **Diminishing returns**: Most remaining optimizations (parallel tar extraction, request coalescing) are high-effort with uncertain gains.
