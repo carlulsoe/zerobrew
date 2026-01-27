@@ -127,6 +127,100 @@ impl Store {
 
         Ok(())
     }
+
+    /// List all store entries (directories in the store)
+    pub fn list_entries(&self) -> io::Result<Vec<String>> {
+        let mut entries = Vec::new();
+
+        for entry in fs::read_dir(&self.store_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && !name.starts_with('.')
+            {
+                // Skip temp directories (start with .)
+                entries.push(name.to_string());
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Get the total size of the store
+    pub fn total_size(&self) -> io::Result<u64> {
+        dir_size(&self.store_dir)
+    }
+
+    /// Clean up stale lock files (locks without corresponding store entries)
+    /// Returns the number of lock files removed
+    pub fn cleanup_stale_locks(&self) -> io::Result<usize> {
+        let mut count = 0;
+
+        for entry in fs::read_dir(&self.locks_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.ends_with(".lock")
+            {
+                let store_key = name.trim_end_matches(".lock");
+                // If there's no corresponding store entry, remove the lock
+                if !self.has_entry(store_key) && fs::remove_file(&path).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Clean up stale temp directories from interrupted extractions
+    /// Returns the count of directories removed and total bytes freed
+    pub fn cleanup_temp_dirs(&self) -> io::Result<(usize, u64)> {
+        let mut count = 0;
+        let mut bytes_freed = 0;
+
+        for entry in fs::read_dir(&self.store_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.starts_with('.')
+                && name.contains(".tmp.")
+            {
+                // Temp directories start with "." and contain ".tmp."
+                let size = dir_size(&path).unwrap_or(0);
+                if fs::remove_dir_all(&path).is_ok() {
+                    count += 1;
+                    bytes_freed += size;
+                }
+            }
+        }
+
+        Ok((count, bytes_freed))
+    }
+}
+
+/// Calculate the total size of a directory recursively
+fn dir_size(path: &Path) -> io::Result<u64> {
+    let mut total = 0;
+
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                total += dir_size(&path)?;
+            } else {
+                total += entry.metadata()?.len();
+            }
+        }
+    }
+
+    Ok(total)
 }
 
 #[cfg(test)]
@@ -252,5 +346,90 @@ mod tests {
         store.ensure_entry(store_key, &blob_path).unwrap();
 
         assert!(store.has_entry(store_key));
+    }
+
+    #[test]
+    fn list_entries_returns_all_store_entries() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::new(tmp.path()).unwrap();
+
+        // Create some store entries
+        let tarball = create_test_tarball(b"test content");
+        let blob_path = tmp.path().join("test.tar.gz");
+        fs::write(&blob_path, &tarball).unwrap();
+
+        for key in ["entry1", "entry2", "entry3"] {
+            store.ensure_entry(key, &blob_path).unwrap();
+        }
+
+        let entries = store.list_entries().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(entries.contains(&"entry1".to_string()));
+        assert!(entries.contains(&"entry2".to_string()));
+        assert!(entries.contains(&"entry3".to_string()));
+    }
+
+    #[test]
+    fn cleanup_stale_locks_removes_orphaned_locks() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::new(tmp.path()).unwrap();
+
+        // Create a store entry
+        let tarball = create_test_tarball(b"test content");
+        let blob_path = tmp.path().join("test.tar.gz");
+        fs::write(&blob_path, &tarball).unwrap();
+        store.ensure_entry("realentry", &blob_path).unwrap();
+
+        // Create some orphaned lock files (no corresponding store entry)
+        let locks_dir = tmp.path().join("locks");
+        fs::write(locks_dir.join("orphan1.lock"), b"").unwrap();
+        fs::write(locks_dir.join("orphan2.lock"), b"").unwrap();
+
+        let removed = store.cleanup_stale_locks().unwrap();
+        assert_eq!(removed, 2);
+
+        // Verify orphaned locks are gone but real entry's lock might still exist
+        // (it was created during ensure_entry)
+        assert!(!locks_dir.join("orphan1.lock").exists());
+        assert!(!locks_dir.join("orphan2.lock").exists());
+    }
+
+    #[test]
+    fn cleanup_temp_dirs_removes_stale_temp_directories() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::new(tmp.path()).unwrap();
+
+        // Create some stale temp directories
+        let store_dir = tmp.path().join("store");
+        fs::create_dir_all(store_dir.join(".abc123.tmp.1234")).unwrap();
+        fs::write(
+            store_dir.join(".abc123.tmp.1234").join("file.txt"),
+            b"temp file",
+        )
+        .unwrap();
+        fs::create_dir_all(store_dir.join(".def456.tmp.5678")).unwrap();
+
+        let (count, _) = store.cleanup_temp_dirs().unwrap();
+        assert_eq!(count, 2);
+
+        // Verify temp dirs are gone
+        assert!(!store_dir.join(".abc123.tmp.1234").exists());
+        assert!(!store_dir.join(".def456.tmp.5678").exists());
+    }
+
+    #[test]
+    fn total_size_returns_correct_value() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::new(tmp.path()).unwrap();
+
+        // Create a store entry with known content size
+        let tarball = create_test_tarball(b"test content for size check");
+        let blob_path = tmp.path().join("test.tar.gz");
+        fs::write(&blob_path, &tarball).unwrap();
+        store.ensure_entry("sizetest", &blob_path).unwrap();
+
+        let size = store.total_size().unwrap();
+        // Size should be > 0 (includes the extracted content)
+        assert!(size > 0);
     }
 }
