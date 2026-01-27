@@ -7,6 +7,10 @@ use std::process::Command;
 use zb_io::install::Installer;
 use zb_io::ServiceManager;
 
+// ============================================================================
+// Pure Helper Functions (Extracted for Testability)
+// ============================================================================
+
 /// Pluralize a word based on count.
 /// Extracted for testability.
 pub(crate) fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
@@ -57,6 +61,188 @@ pub(crate) fn get_last_lines(content: &str, lines: usize) -> Vec<&str> {
 pub(crate) fn format_cleanup_complete_message(count: usize) -> String {
     let suffix = pluralize(count, "", "s");
     format!("Removed {} orphaned service{}", count, suffix)
+}
+
+// ============================================================================
+// Action Message Formatters
+// ============================================================================
+
+/// Format the "Starting <formula>..." message.
+pub(crate) fn format_starting_message(formula: &str) -> String {
+    format!("Starting {}...", formula)
+}
+
+/// Format the "Started <formula>" completion message.
+pub(crate) fn format_started_message(formula: &str) -> String {
+    format!("Started {}", formula)
+}
+
+/// Format the "Stopping <formula>..." message.
+pub(crate) fn format_stopping_message(formula: &str) -> String {
+    format!("Stopping {}...", formula)
+}
+
+/// Format the "Stopped <formula>" completion message.
+pub(crate) fn format_stopped_message(formula: &str) -> String {
+    format!("Stopped {}", formula)
+}
+
+/// Format the "Restarting <formula>..." message.
+pub(crate) fn format_restarting_message(formula: &str) -> String {
+    format!("Restarting {}...", formula)
+}
+
+/// Format the "Restarted <formula>" completion message.
+pub(crate) fn format_restarted_message(formula: &str) -> String {
+    format!("Restarted {}", formula)
+}
+
+/// Format the "Enabling <formula>..." message.
+pub(crate) fn format_enabling_message(formula: &str) -> String {
+    format!("Enabling {} to start automatically...", formula)
+}
+
+/// Format the "Enabled <formula>" completion message.
+pub(crate) fn format_enabled_message(formula: &str) -> String {
+    format!("Enabled {} - it will start automatically at login", formula)
+}
+
+/// Format the "Disabling <formula>..." message.
+pub(crate) fn format_disabling_message(formula: &str) -> String {
+    format!("Disabling {} from starting automatically...", formula)
+}
+
+/// Format the "Disabled <formula>" completion message.
+pub(crate) fn format_disabled_message(formula: &str) -> String {
+    format!("Disabled {} - it will no longer start automatically", formula)
+}
+
+/// Format the "already enabled" message.
+pub(crate) fn format_already_enabled_message(formula: &str) -> String {
+    format!("{} is already set to start automatically.", formula)
+}
+
+/// Format the "not enabled" message.
+pub(crate) fn format_not_enabled_message(formula: &str) -> String {
+    format!("{} is not set to start automatically.", formula)
+}
+
+/// Format the "Creating service file" message.
+pub(crate) fn format_creating_service_message(formula: &str) -> String {
+    format!("Creating service file for {}...", formula)
+}
+
+/// Format the "Running in foreground" message.
+pub(crate) fn format_foreground_message(formula: &str) -> String {
+    format!("Running {} in foreground...", formula)
+}
+
+/// Format the foreground command display.
+pub(crate) fn format_foreground_command(program: &Path, args: &[String]) -> String {
+    format!("Command: {} {}", program.display(), args.join(" "))
+}
+
+/// Format the log header message.
+pub(crate) fn format_log_header(formula: &str, lines: usize) -> String {
+    format!("Logs for {} (last {} lines):", formula, lines)
+}
+
+/// Format the log follow header message.
+pub(crate) fn format_log_follow_header(formula: &str) -> String {
+    format!("Following logs for {} (Ctrl+C to stop)...", formula)
+}
+
+// ============================================================================
+// Error Message Formatters
+// ============================================================================
+
+/// Format the "formula not installed" error message.
+pub(crate) fn format_not_installed_error(formula: &str) -> String {
+    format!("Formula '{}' is not installed.", formula)
+}
+
+/// Format the "no service definition" error message.
+pub(crate) fn format_no_service_definition_error(formula: &str) -> String {
+    format!("Formula '{}' does not have a service definition.", formula)
+}
+
+/// Format the "no service file" error message.
+pub(crate) fn format_no_service_file_error(formula: &str) -> String {
+    format!("No service file found for '{}'.", formula)
+}
+
+/// Format the "no log files" error message.
+pub(crate) fn format_no_log_files_error(formula: &str) -> String {
+    format!("No log files found for '{}'.", formula)
+}
+
+/// Format the expected log files hint.
+pub(crate) fn format_expected_log_files_hint(stdout_path: &Path, stderr_path: &Path) -> String {
+    format!(
+        "Expected log files:\n      {}\n      {}",
+        stdout_path.display(),
+        stderr_path.display()
+    )
+}
+
+/// Format the "start service first" hint for logs.
+pub(crate) fn format_start_service_hint(formula: &str) -> String {
+    format!("Start the service first with: zb services start {}", formula)
+}
+
+/// Format the "start service first" hint for enable.
+pub(crate) fn format_start_service_for_enable_hint(formula: &str) -> String {
+    format!(
+        "Start the service first to create the service file:\n    zb services start {}",
+        formula
+    )
+}
+
+/// Format the service exited message.
+pub(crate) fn format_service_exited_message(exit_code: i32) -> String {
+    format!("Service exited with status: {}", exit_code)
+}
+
+/// Format the cleanup dry-run prompt.
+pub(crate) fn format_cleanup_dry_run_prompt() -> String {
+    "Run zb services cleanup to remove".to_string()
+}
+
+/// Format the "no orphaned services" message.
+pub(crate) fn format_no_orphaned_services_message() -> String {
+    "No orphaned services found.".to_string()
+}
+
+/// Format the check caveats hint.
+pub(crate) fn format_check_caveats_hint(formula: &str) -> String {
+    format!("Check the formula's caveats with: zb info {}", formula)
+}
+
+// ============================================================================
+// Validation Helpers
+// ============================================================================
+
+/// Validate that a formula name is non-empty.
+pub(crate) fn validate_formula_name(formula: &str) -> Result<(), String> {
+    if formula.is_empty() {
+        Err("Formula name cannot be empty".to_string())
+    } else if formula.contains('/') && !formula.contains('@') {
+        // Looks like a tap path without version
+        Err(format!("Invalid formula name '{}': use the formula name, not the tap path", formula))
+    } else {
+        Ok(())
+    }
+}
+
+/// Check if a line count is valid for log display.
+pub(crate) fn validate_log_lines(lines: usize) -> Result<(), String> {
+    if lines == 0 {
+        Err("Line count must be greater than 0".to_string())
+    } else if lines > 100_000 {
+        Err("Line count too large (max 100000)".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 /// Start a service.

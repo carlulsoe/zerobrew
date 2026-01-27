@@ -430,6 +430,130 @@ pub(crate) fn is_update_available(installed_version: &str, available_version: &s
     installed_version != available_version
 }
 
+/// Format caveats text by replacing prefix placeholder.
+/// Extracted for testability.
+pub(crate) fn format_caveats(caveats: &str, prefix: &str) -> String {
+    caveats.replace("$HOMEBREW_PREFIX", prefix)
+}
+
+/// Generate empty list message based on filter type.
+/// Extracted for testability.
+pub(crate) fn empty_list_message(pinned: bool) -> &'static str {
+    if pinned {
+        "No pinned formulas."
+    } else {
+        "No formulas installed."
+    }
+}
+
+/// Generate empty search results message based on filter.
+/// Extracted for testability.
+pub(crate) fn empty_search_message(query: &str, installed_only: bool) -> String {
+    if installed_only {
+        format!("No installed formulas found matching '{}'.", query)
+    } else {
+        format!("No formulas found matching '{}'.", query)
+    }
+}
+
+/// Get search results label based on filter.
+/// Extracted for testability.
+pub(crate) fn search_results_label(installed_only: bool) -> &'static str {
+    if installed_only {
+        "installed formulas"
+    } else {
+        "formulas"
+    }
+}
+
+/// Format dependency status marker for display.
+/// Extracted for testability.
+pub(crate) fn format_dependency_status(installed: bool) -> &'static str {
+    if installed {
+        "✓"
+    } else {
+        "✗"
+    }
+}
+
+/// Format the version comparison message when update available.
+/// Extracted for testability.
+pub(crate) fn format_version_comparison(
+    installed: Option<&str>,
+    available: &str,
+) -> VersionDisplay {
+    match installed {
+        Some(inst) if inst == available => VersionDisplay::UpToDate(inst.to_string()),
+        Some(inst) => VersionDisplay::UpdateAvailable {
+            installed: inst.to_string(),
+            available: available.to_string(),
+        },
+        None => VersionDisplay::NotInstalled(available.to_string()),
+    }
+}
+
+/// Result of version comparison for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VersionDisplay {
+    UpToDate(String),
+    UpdateAvailable { installed: String, available: String },
+    NotInstalled(String),
+}
+
+/// Format keg-only reason for display.
+/// Extracted for testability.
+pub(crate) fn format_keg_only_reason(explanation: Option<&str>) -> String {
+    match explanation {
+        Some(exp) if !exp.is_empty() => format!("Yes ({})", exp),
+        _ => "Yes".to_string(),
+    }
+}
+
+/// Build formula info JSON with API data.
+/// Extracted for testability.
+pub(crate) fn build_formula_api_json(
+    version: &str,
+    description: Option<&str>,
+    homepage: Option<&str>,
+    license: Option<&str>,
+    dependencies: &[String],
+    build_dependencies: &[String],
+    caveats: Option<&str>,
+    keg_only: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut info = serde_json::Map::new();
+    info.insert("available_version".to_string(), serde_json::json!(version));
+    if let Some(desc) = description {
+        info.insert("description".to_string(), serde_json::json!(desc));
+    }
+    if let Some(hp) = homepage {
+        info.insert("homepage".to_string(), serde_json::json!(hp));
+    }
+    if let Some(lic) = license {
+        info.insert("license".to_string(), serde_json::json!(lic));
+    }
+    info.insert("dependencies".to_string(), serde_json::json!(dependencies));
+    info.insert("build_dependencies".to_string(), serde_json::json!(build_dependencies));
+    if let Some(cavs) = caveats {
+        info.insert("caveats".to_string(), serde_json::json!(cavs));
+    }
+    info.insert("keg_only".to_string(), serde_json::json!(keg_only));
+    info
+}
+
+/// Truncate search results for display.
+/// Extracted for testability.
+pub(crate) fn calculate_search_display(
+    total_results: usize,
+    display_limit: usize,
+) -> (usize, Option<usize>) {
+    if total_results <= display_limit {
+        (total_results, None)
+    } else {
+        (display_limit, Some(total_results - display_limit))
+    }
+}
+
 /// Run the search command.
 pub async fn run_search(
     installer: &Installer,
@@ -898,5 +1022,392 @@ mod tests {
     fn test_is_update_available_downgrade() {
         // Simple string comparison - doesn't validate semver ordering
         assert!(is_update_available("2.0.0", "1.0.0"));
+    }
+
+    // ========================================================================
+    // Caveats Formatting Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_caveats_with_prefix() {
+        let caveats = "Add $HOMEBREW_PREFIX/bin to your PATH";
+        let result = format_caveats(caveats, "/opt/homebrew");
+        assert_eq!(result, "Add /opt/homebrew/bin to your PATH");
+    }
+
+    #[test]
+    fn test_format_caveats_multiple_replacements() {
+        let caveats = "$HOMEBREW_PREFIX/bin and $HOMEBREW_PREFIX/sbin";
+        let result = format_caveats(caveats, "/usr/local");
+        assert_eq!(result, "/usr/local/bin and /usr/local/sbin");
+    }
+
+    #[test]
+    fn test_format_caveats_no_placeholder() {
+        let caveats = "No special configuration needed";
+        let result = format_caveats(caveats, "/opt/homebrew");
+        assert_eq!(result, "No special configuration needed");
+    }
+
+    #[test]
+    fn test_format_caveats_empty() {
+        let result = format_caveats("", "/opt/homebrew");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_format_caveats_multiline() {
+        let caveats = "Line 1 at $HOMEBREW_PREFIX\nLine 2 at $HOMEBREW_PREFIX";
+        let result = format_caveats(caveats, "/test");
+        assert_eq!(result, "Line 1 at /test\nLine 2 at /test");
+    }
+
+    // ========================================================================
+    // Empty List Message Tests
+    // ========================================================================
+
+    #[test]
+    fn test_empty_list_message_pinned() {
+        assert_eq!(empty_list_message(true), "No pinned formulas.");
+    }
+
+    #[test]
+    fn test_empty_list_message_all() {
+        assert_eq!(empty_list_message(false), "No formulas installed.");
+    }
+
+    // ========================================================================
+    // Empty Search Message Tests
+    // ========================================================================
+
+    #[test]
+    fn test_empty_search_message_all() {
+        let msg = empty_search_message("git", false);
+        assert_eq!(msg, "No formulas found matching 'git'.");
+    }
+
+    #[test]
+    fn test_empty_search_message_installed_only() {
+        let msg = empty_search_message("ripgrep", true);
+        assert_eq!(msg, "No installed formulas found matching 'ripgrep'.");
+    }
+
+    #[test]
+    fn test_empty_search_message_empty_query() {
+        let msg = empty_search_message("", false);
+        assert_eq!(msg, "No formulas found matching ''.");
+    }
+
+    // ========================================================================
+    // Search Results Label Tests
+    // ========================================================================
+
+    #[test]
+    fn test_search_results_label_all() {
+        assert_eq!(search_results_label(false), "formulas");
+    }
+
+    #[test]
+    fn test_search_results_label_installed() {
+        assert_eq!(search_results_label(true), "installed formulas");
+    }
+
+    // ========================================================================
+    // Dependency Status Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_dependency_status_installed() {
+        assert_eq!(format_dependency_status(true), "✓");
+    }
+
+    #[test]
+    fn test_format_dependency_status_not_installed() {
+        assert_eq!(format_dependency_status(false), "✗");
+    }
+
+    // ========================================================================
+    // Version Display Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_version_comparison_up_to_date() {
+        let result = format_version_comparison(Some("1.0.0"), "1.0.0");
+        assert_eq!(result, VersionDisplay::UpToDate("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_format_version_comparison_update_available() {
+        let result = format_version_comparison(Some("1.0.0"), "2.0.0");
+        assert_eq!(
+            result,
+            VersionDisplay::UpdateAvailable {
+                installed: "1.0.0".to_string(),
+                available: "2.0.0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_format_version_comparison_not_installed() {
+        let result = format_version_comparison(None, "1.0.0");
+        assert_eq!(result, VersionDisplay::NotInstalled("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_format_version_comparison_complex_versions() {
+        let result = format_version_comparison(Some("3.12.0_1"), "3.12.1");
+        assert_eq!(
+            result,
+            VersionDisplay::UpdateAvailable {
+                installed: "3.12.0_1".to_string(),
+                available: "3.12.1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_version_display_equality() {
+        let a = VersionDisplay::UpToDate("1.0".to_string());
+        let b = VersionDisplay::UpToDate("1.0".to_string());
+        assert_eq!(a, b);
+
+        let c = VersionDisplay::UpToDate("2.0".to_string());
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_version_display_clone() {
+        let original = VersionDisplay::UpdateAvailable {
+            installed: "1.0".to_string(),
+            available: "2.0".to_string(),
+        };
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    // ========================================================================
+    // Keg-Only Reason Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_keg_only_reason_with_explanation() {
+        let result = format_keg_only_reason(Some("macOS provides its own"));
+        assert_eq!(result, "Yes (macOS provides its own)");
+    }
+
+    #[test]
+    fn test_format_keg_only_reason_empty_explanation() {
+        let result = format_keg_only_reason(Some(""));
+        assert_eq!(result, "Yes");
+    }
+
+    #[test]
+    fn test_format_keg_only_reason_none() {
+        let result = format_keg_only_reason(None);
+        assert_eq!(result, "Yes");
+    }
+
+    // ========================================================================
+    // Formula API JSON Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_formula_api_json_full() {
+        let deps = vec!["openssl".to_string(), "readline".to_string()];
+        let build_deps = vec!["pkg-config".to_string()];
+        let json = build_formula_api_json(
+            "3.12.0",
+            Some("Interpreted, interactive, object-oriented programming language"),
+            Some("https://www.python.org/"),
+            Some("Python-2.0"),
+            &deps,
+            &build_deps,
+            Some("See python.org for documentation"),
+            false,
+        );
+
+        assert_eq!(json.get("available_version").unwrap(), "3.12.0");
+        assert_eq!(
+            json.get("description").unwrap(),
+            "Interpreted, interactive, object-oriented programming language"
+        );
+        assert_eq!(json.get("homepage").unwrap(), "https://www.python.org/");
+        assert_eq!(json.get("license").unwrap(), "Python-2.0");
+        assert_eq!(json.get("dependencies").unwrap(), &serde_json::json!(["openssl", "readline"]));
+        assert_eq!(json.get("build_dependencies").unwrap(), &serde_json::json!(["pkg-config"]));
+        assert_eq!(json.get("caveats").unwrap(), "See python.org for documentation");
+        assert_eq!(json.get("keg_only").unwrap(), false);
+    }
+
+    #[test]
+    fn test_build_formula_api_json_minimal() {
+        let json = build_formula_api_json(
+            "1.0.0",
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            false,
+        );
+
+        assert_eq!(json.get("available_version").unwrap(), "1.0.0");
+        assert!(!json.contains_key("description"));
+        assert!(!json.contains_key("homepage"));
+        assert!(!json.contains_key("license"));
+        assert_eq!(json.get("dependencies").unwrap(), &serde_json::json!([]));
+        assert_eq!(json.get("build_dependencies").unwrap(), &serde_json::json!([]));
+        assert!(!json.contains_key("caveats"));
+        assert_eq!(json.get("keg_only").unwrap(), false);
+    }
+
+    #[test]
+    fn test_build_formula_api_json_keg_only() {
+        let json = build_formula_api_json(
+            "1.0.0",
+            Some("Test"),
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            true,
+        );
+
+        assert_eq!(json.get("keg_only").unwrap(), true);
+    }
+
+    // ========================================================================
+    // Search Display Calculation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_calculate_search_display_under_limit() {
+        let (shown, remaining) = calculate_search_display(10, 20);
+        assert_eq!(shown, 10);
+        assert_eq!(remaining, None);
+    }
+
+    #[test]
+    fn test_calculate_search_display_at_limit() {
+        let (shown, remaining) = calculate_search_display(20, 20);
+        assert_eq!(shown, 20);
+        assert_eq!(remaining, None);
+    }
+
+    #[test]
+    fn test_calculate_search_display_over_limit() {
+        let (shown, remaining) = calculate_search_display(50, 20);
+        assert_eq!(shown, 20);
+        assert_eq!(remaining, Some(30));
+    }
+
+    #[test]
+    fn test_calculate_search_display_zero_results() {
+        let (shown, remaining) = calculate_search_display(0, 20);
+        assert_eq!(shown, 0);
+        assert_eq!(remaining, None);
+    }
+
+    #[test]
+    fn test_calculate_search_display_one_over() {
+        let (shown, remaining) = calculate_search_display(21, 20);
+        assert_eq!(shown, 20);
+        assert_eq!(remaining, Some(1));
+    }
+
+    // ========================================================================
+    // Truncate Description Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_truncate_description_max_len_zero() {
+        // Edge case: max_len of 0 should handle gracefully
+        let result = truncate_description("test", 0);
+        // With saturating_sub, this gives us empty string with "..."
+        assert!(result.is_empty() || result == "...");
+    }
+
+    #[test]
+    fn test_truncate_description_max_len_three() {
+        // Exactly enough for "..."
+        let result = truncate_description("testing", 3);
+        assert_eq!(result, "...");
+    }
+
+    #[test]
+    fn test_truncate_description_max_len_four() {
+        let result = truncate_description("testing", 4);
+        assert_eq!(result, "t...");
+    }
+
+    // ========================================================================
+    // Build Info JSON Combined Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_info_json_base_special_characters() {
+        let info = build_info_json_base("test-formula_v2", false);
+        assert_eq!(info.get("name").unwrap(), "test-formula_v2");
+    }
+
+    #[test]
+    fn test_build_installed_info_json_zero_timestamp() {
+        let info = build_installed_info_json("1.0.0", "abc", 0, false, true);
+        assert_eq!(info.get("installed_at").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_build_installed_info_json_large_timestamp() {
+        let info = build_installed_info_json("1.0.0", "abc", u64::MAX, false, true);
+        assert_eq!(info.get("installed_at").unwrap(), u64::MAX);
+    }
+
+    // ========================================================================
+    // Linked Files JSON Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_build_linked_files_json_with_spaces() {
+        let files = vec![
+            ("/path/with spaces/bin".to_string(), "/target/with spaces".to_string()),
+        ];
+        let json = build_linked_files_json(&files);
+        assert_eq!(json[0]["link"], "/path/with spaces/bin");
+        assert_eq!(json[0]["target"], "/target/with spaces");
+    }
+
+    #[test]
+    fn test_build_linked_files_json_unicode_paths() {
+        let files = vec![
+            ("/usr/bin/日本語".to_string(), "/opt/日本語".to_string()),
+        ];
+        let json = build_linked_files_json(&files);
+        assert_eq!(json[0]["link"], "/usr/bin/日本語");
+    }
+
+    // ========================================================================
+    // Search Result JSON Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_build_search_result_json_with_special_chars() {
+        let json = build_search_result_json(
+            "c++",
+            "homebrew/core/c++",
+            "1.0",
+            "A C++ compiler",
+            false,
+        );
+        assert_eq!(json["name"], "c++");
+    }
+
+    #[test]
+    fn test_build_search_result_json_long_description() {
+        let long_desc = "x".repeat(1000);
+        let json = build_search_result_json("test", "test", "1.0", &long_desc, false);
+        assert_eq!(json["description"].as_str().unwrap().len(), 1000);
     }
 }
