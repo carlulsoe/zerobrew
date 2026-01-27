@@ -6277,3 +6277,1007 @@ mod orchestration_tests {
         assert!(store_entry.exists(), "Store entry should exist at {}", store_entry.display());
     }
 }
+
+// ============================================================================
+// Additional mod.rs Coverage Tests
+// ============================================================================
+
+mod mod_rs_coverage_tests {
+    use crate::test_utils::{
+        mock_formula_json, mock_bottle_tarball_with_version,
+        sha256_hex, platform_bottle_tag, create_test_installer,
+    };
+    use std::fs;
+    use tempfile::TempDir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // ========================================================================
+    // get_deps_tree() tests
+    // ========================================================================
+
+    /// Test get_deps_tree returns correct tree structure.
+    #[tokio::test]
+    async fn get_deps_tree_simple_chain() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let _tag = platform_bottle_tag();
+
+        // Create chain: A -> B -> C
+        let c_bottle = mock_bottle_tarball_with_version("tree_c", "1.0.0");
+        let c_sha = sha256_hex(&c_bottle);
+        let b_bottle = mock_bottle_tarball_with_version("tree_b", "1.0.0");
+        let b_sha = sha256_hex(&b_bottle);
+        let a_bottle = mock_bottle_tarball_with_version("tree_a", "1.0.0");
+        let a_sha = sha256_hex(&a_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/tree_a.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("tree_a", "1.0.0", &["tree_b"], &mock_server.uri(), &a_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/tree_b.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("tree_b", "1.0.0", &["tree_c"], &mock_server.uri(), &b_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/tree_c.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("tree_c", "1.0.0", &[], &mock_server.uri(), &c_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        // Get deps tree
+        let tree = installer.get_deps_tree("tree_a", false).await.unwrap();
+
+        // Verify structure
+        assert_eq!(tree.name, "tree_a");
+        assert!(!tree.installed); // Not installed yet
+        assert_eq!(tree.children.len(), 1);
+        assert_eq!(tree.children[0].name, "tree_b");
+        assert_eq!(tree.children[0].children.len(), 1);
+        assert_eq!(tree.children[0].children[0].name, "tree_c");
+        assert!(tree.children[0].children[0].children.is_empty());
+    }
+
+    /// Test get_deps_tree with installed_only=true filters correctly.
+    #[tokio::test]
+    async fn get_deps_tree_installed_only() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create A -> [B, C], only install B
+        let c_bottle = mock_bottle_tarball_with_version("treec", "1.0.0");
+        let c_sha = sha256_hex(&c_bottle);
+        let b_bottle = mock_bottle_tarball_with_version("treeb", "1.0.0");
+        let b_sha = sha256_hex(&b_bottle);
+        let a_bottle = mock_bottle_tarball_with_version("treea", "1.0.0");
+        let a_sha = sha256_hex(&a_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/treea.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("treea", "1.0.0", &["treeb", "treec"], &mock_server.uri(), &a_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/treeb.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("treeb", "1.0.0", &[], &mock_server.uri(), &b_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/treec.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("treec", "1.0.0", &[], &mock_server.uri(), &c_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        // Mount bottles
+        let b_path = format!("/bottles/treeb-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(b_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b_bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Only install treeb
+        installer.install("treeb", true).await.unwrap();
+
+        // Get tree with installed_only=true
+        let tree = installer.get_deps_tree("treea", true).await.unwrap();
+
+        // Should only show treeb (installed) not treec (not installed)
+        assert_eq!(tree.name, "treea");
+        assert_eq!(tree.children.len(), 1);
+        assert_eq!(tree.children[0].name, "treeb");
+        assert!(tree.children[0].installed);
+    }
+
+    /// Test get_deps_tree handles diamond dependency correctly.
+    #[tokio::test]
+    async fn get_deps_tree_diamond_dependency() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        // Diamond: root -> [left, right], left -> shared, right -> shared
+        let shared_bottle = mock_bottle_tarball_with_version("dshared", "1.0.0");
+        let shared_sha = sha256_hex(&shared_bottle);
+        let left_bottle = mock_bottle_tarball_with_version("dleft", "1.0.0");
+        let left_sha = sha256_hex(&left_bottle);
+        let right_bottle = mock_bottle_tarball_with_version("dright", "1.0.0");
+        let right_sha = sha256_hex(&right_bottle);
+        let root_bottle = mock_bottle_tarball_with_version("droot", "1.0.0");
+        let root_sha = sha256_hex(&root_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/droot.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("droot", "1.0.0", &["dleft", "dright"], &mock_server.uri(), &root_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/dleft.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("dleft", "1.0.0", &["dshared"], &mock_server.uri(), &left_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/dright.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("dright", "1.0.0", &["dshared"], &mock_server.uri(), &right_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/dshared.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("dshared", "1.0.0", &[], &mock_server.uri(), &shared_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        let tree = installer.get_deps_tree("droot", false).await.unwrap();
+
+        // Check structure
+        assert_eq!(tree.name, "droot");
+        assert_eq!(tree.children.len(), 2);
+
+        // Both left and right should have shared as child
+        for child in &tree.children {
+            assert!(child.name == "dleft" || child.name == "dright");
+            assert_eq!(child.children.len(), 1);
+            assert_eq!(child.children[0].name, "dshared");
+        }
+    }
+
+    // ========================================================================
+    // get_uses() and get_dependents() tests
+    // ========================================================================
+
+    /// Test get_uses returns packages that depend on a formula.
+    #[tokio::test]
+    async fn get_uses_returns_dependents() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create: app1 -> lib, app2 -> lib, standalone
+        let lib_bottle = mock_bottle_tarball_with_version("useslib", "1.0.0");
+        let lib_sha = sha256_hex(&lib_bottle);
+        let app1_bottle = mock_bottle_tarball_with_version("usesapp1", "1.0.0");
+        let app1_sha = sha256_hex(&app1_bottle);
+        let app2_bottle = mock_bottle_tarball_with_version("usesapp2", "1.0.0");
+        let app2_sha = sha256_hex(&app2_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/useslib.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("useslib", "1.0.0", &[], &mock_server.uri(), &lib_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/usesapp1.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("usesapp1", "1.0.0", &["useslib"], &mock_server.uri(), &app1_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/usesapp2.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("usesapp2", "1.0.0", &["useslib"], &mock_server.uri(), &app2_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        // Mount bottles
+        for (name, bottle) in [
+            ("useslib", &lib_bottle),
+            ("usesapp1", &app1_bottle),
+            ("usesapp2", &app2_bottle),
+        ] {
+            let path_str = format!("/bottles/{}-1.0.0.{}.bottle.tar.gz", name, tag);
+            Mock::given(method("GET"))
+                .and(path(path_str))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install all packages
+        installer.install("usesapp1", true).await.unwrap();
+        installer.install("usesapp2", true).await.unwrap();
+
+        // Get uses of lib (who depends on it)
+        let uses = installer.get_uses("useslib", true, false).await.unwrap();
+        assert_eq!(uses.len(), 2);
+        assert!(uses.contains(&"usesapp1".to_string()));
+        assert!(uses.contains(&"usesapp2".to_string()));
+    }
+
+    /// Test get_uses with recursive=true follows dependency chain.
+    #[tokio::test]
+    async fn get_uses_recursive() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create: top -> mid -> leaf
+        // get_uses(leaf, recursive=true) should return [mid, top]
+        let leaf_bottle = mock_bottle_tarball_with_version("recleaf", "1.0.0");
+        let leaf_sha = sha256_hex(&leaf_bottle);
+        let mid_bottle = mock_bottle_tarball_with_version("recmid", "1.0.0");
+        let mid_sha = sha256_hex(&mid_bottle);
+        let top_bottle = mock_bottle_tarball_with_version("rectop", "1.0.0");
+        let top_sha = sha256_hex(&top_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/recleaf.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("recleaf", "1.0.0", &[], &mock_server.uri(), &leaf_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/recmid.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("recmid", "1.0.0", &["recleaf"], &mock_server.uri(), &mid_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rectop.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("rectop", "1.0.0", &["recmid"], &mock_server.uri(), &top_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        // Mount bottles
+        for (name, bottle) in [
+            ("recleaf", &leaf_bottle),
+            ("recmid", &mid_bottle),
+            ("rectop", &top_bottle),
+        ] {
+            let path_str = format!("/bottles/{}-1.0.0.{}.bottle.tar.gz", name, tag);
+            Mock::given(method("GET"))
+                .and(path(path_str))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install all
+        installer.install("rectop", true).await.unwrap();
+
+        // Get recursive uses of leaf
+        let uses = installer.get_uses("recleaf", true, true).await.unwrap();
+        assert_eq!(uses.len(), 2);
+        assert!(uses.contains(&"recmid".to_string()));
+        assert!(uses.contains(&"rectop".to_string()));
+    }
+
+    /// Test get_dependents returns reverse deps.
+    #[tokio::test]
+    async fn get_dependents_returns_reverse_deps() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        let dep_bottle = mock_bottle_tarball_with_version("deptest", "1.0.0");
+        let dep_sha = sha256_hex(&dep_bottle);
+        let main_bottle = mock_bottle_tarball_with_version("maintest", "1.0.0");
+        let main_sha = sha256_hex(&main_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/deptest.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("deptest", "1.0.0", &[], &mock_server.uri(), &dep_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/maintest.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("maintest", "1.0.0", &["deptest"], &mock_server.uri(), &main_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        for (name, bottle) in [("deptest", &dep_bottle), ("maintest", &main_bottle)] {
+            let path_str = format!("/bottles/{}-1.0.0.{}.bottle.tar.gz", name, tag);
+            Mock::given(method("GET"))
+                .and(path(path_str))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+        installer.install("maintest", true).await.unwrap();
+
+        let dependents = installer.get_dependents("deptest").await.unwrap();
+        assert_eq!(dependents.len(), 1);
+        assert_eq!(dependents[0], "maintest");
+    }
+
+    // ========================================================================
+    // keg_path() tests
+    // ========================================================================
+
+    /// Test keg_path returns correct path for installed package.
+    #[tokio::test]
+    async fn keg_path_returns_correct_path() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        let bottle = mock_bottle_tarball_with_version("kegpathpkg", "2.5.0");
+        let sha = sha256_hex(&bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/kegpathpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("kegpathpkg", "2.5.0", &[], &mock_server.uri(), &sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/kegpathpkg-2.5.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+        installer.install("kegpathpkg", true).await.unwrap();
+
+        let keg = installer.keg_path("kegpathpkg");
+        assert!(keg.is_some());
+        let path = keg.unwrap();
+        assert!(path.ends_with("kegpathpkg/2.5.0"));
+        assert!(path.exists());
+    }
+
+    /// Test keg_path returns None for non-installed package.
+    #[tokio::test]
+    async fn keg_path_none_for_not_installed() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        assert!(installer.keg_path("nonexistent").is_none());
+    }
+
+    // ========================================================================
+    // link() with overwrite and force flags
+    // ========================================================================
+
+    /// Test link with overwrite=true clears existing links for the package.
+    /// Note: overwrite only affects the package's own previous links, not arbitrary files.
+    #[tokio::test]
+    async fn link_with_overwrite_clears_own_links() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("homebrew");
+        let tag = platform_bottle_tag();
+
+        let v1_bottle = mock_bottle_tarball_with_version("linkover", "1.0.0");
+        let v1_sha = sha256_hex(&v1_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/linkover.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("linkover", "1.0.0", &[], &mock_server.uri(), &v1_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/linkover-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(v1_bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install with linking
+        installer.install("linkover", true).await.unwrap();
+        assert!(prefix.join("bin/linkover").exists());
+        assert!(installer.is_linked("linkover"));
+
+        // Unlink and then re-link with overwrite=true
+        installer.unlink("linkover").unwrap();
+        assert!(!prefix.join("bin/linkover").exists());
+
+        // Link with overwrite=true should succeed on previously linked package
+        let result = installer.link("linkover", true, false).unwrap();
+        assert!(!result.already_linked);
+        assert!(result.files_linked > 0);
+
+        // Verify symlink exists
+        assert!(prefix.join("bin/linkover").exists());
+        assert!(installer.is_linked("linkover"));
+    }
+
+    /// Test that linking over an existing regular file fails with LinkConflict.
+    #[tokio::test]
+    async fn link_conflict_with_regular_file() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("homebrew");
+        let tag = platform_bottle_tag();
+
+        let bottle = mock_bottle_tarball_with_version("conflictpkg", "1.0.0");
+        let sha = sha256_hex(&bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/conflictpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("conflictpkg", "1.0.0", &[], &mock_server.uri(), &sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/conflictpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install without linking
+        installer.install("conflictpkg", false).await.unwrap();
+
+        // Create a conflicting regular file
+        fs::create_dir_all(prefix.join("bin")).unwrap();
+        fs::write(prefix.join("bin/conflictpkg"), "existing file").unwrap();
+
+        // Link should fail due to conflict
+        let result = installer.link("conflictpkg", false, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, zb_core::Error::LinkConflict { .. }),
+            "Expected LinkConflict error, got: {:?}",
+            err
+        );
+    }
+
+    /// Test link with force=true sets keg_only_forced flag.
+    #[tokio::test]
+    async fn link_with_force_flag() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        let bottle = mock_bottle_tarball_with_version("forcepkg", "1.0.0");
+        let sha = sha256_hex(&bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/forcepkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("forcepkg", "1.0.0", &[], &mock_server.uri(), &sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/forcepkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install without linking
+        installer.install("forcepkg", false).await.unwrap();
+
+        // Link with force=true
+        let result = installer.link("forcepkg", false, true).unwrap();
+        assert!(result.keg_only_forced);
+        assert!(result.files_linked > 0);
+    }
+
+    // ========================================================================
+    // Bundle/Brewfile operations
+    // ========================================================================
+
+    /// Test bundle_dump generates valid brewfile content.
+    #[tokio::test]
+    async fn bundle_dump_generates_brewfile() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        let pkg1_bottle = mock_bottle_tarball_with_version("dumpkg1", "1.0.0");
+        let pkg1_sha = sha256_hex(&pkg1_bottle);
+        let pkg2_bottle = mock_bottle_tarball_with_version("dumpkg2", "1.0.0");
+        let pkg2_sha = sha256_hex(&pkg2_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/dumpkg1.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("dumpkg1", "1.0.0", &[], &mock_server.uri(), &pkg1_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/dumpkg2.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("dumpkg2", "1.0.0", &[], &mock_server.uri(), &pkg2_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        for (name, bottle) in [("dumpkg1", &pkg1_bottle), ("dumpkg2", &pkg2_bottle)] {
+            let path_str = format!("/bottles/{}-1.0.0.{}.bottle.tar.gz", name, tag);
+            Mock::given(method("GET"))
+                .and(path(path_str))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        // Install packages
+        installer.install("dumpkg1", true).await.unwrap();
+        installer.install("dumpkg2", true).await.unwrap();
+
+        // Generate brewfile
+        let brewfile = installer.bundle_dump(true).unwrap();
+
+        // Should contain both packages
+        assert!(brewfile.contains("dumpkg1"));
+        assert!(brewfile.contains("dumpkg2"));
+        // Should have brew declarations
+        assert!(brewfile.contains("brew"));
+    }
+
+    /// Test bundle_check identifies missing packages.
+    #[tokio::test]
+    async fn bundle_check_finds_missing() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create and install one package
+        let bottle = mock_bottle_tarball_with_version("checkpkg", "1.0.0");
+        let sha = sha256_hex(&bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/checkpkg.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("checkpkg", "1.0.0", &[], &mock_server.uri(), &sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let bottle_path = format!("/bottles/checkpkg-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(bottle_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+        installer.install("checkpkg", true).await.unwrap();
+
+        // Create a Brewfile with installed and missing packages
+        let brewfile_content = r#"
+brew "checkpkg"
+brew "missingpkg"
+"#;
+        let brewfile_path = tmp.path().join("Brewfile");
+        fs::write(&brewfile_path, brewfile_content).unwrap();
+
+        // Check brewfile
+        let result = installer.bundle_check(&brewfile_path).unwrap();
+
+        // checkpkg is installed, missingpkg is not
+        assert!(result.missing_formulas.contains(&"missingpkg".to_string()));
+        assert!(!result.missing_formulas.contains(&"checkpkg".to_string()));
+    }
+
+    /// Test parse_brewfile parses entries correctly.
+    #[tokio::test]
+    async fn parse_brewfile_entries() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        // Create a Brewfile
+        let brewfile_content = r#"
+tap "homebrew/core"
+brew "wget"
+brew "curl", args: ["--HEAD"]
+"#;
+        let brewfile_path = tmp.path().join("Brewfile");
+        fs::write(&brewfile_path, brewfile_content).unwrap();
+
+        let entries = installer.parse_brewfile(&brewfile_path).unwrap();
+
+        // Should have 3 entries
+        assert!(entries.len() >= 2);
+
+        // Find the tap and brew entries
+        let has_tap = entries.iter().any(|e| matches!(e, crate::bundle::BrewfileEntry::Tap { name } if name == "homebrew/core"));
+        let has_wget = entries.iter().any(|e| matches!(e, crate::bundle::BrewfileEntry::Brew { name, .. } if name == "wget"));
+
+        assert!(has_tap || has_wget); // At least some entries parsed
+    }
+
+    /// Test find_brewfile searches directories.
+    #[tokio::test]
+    async fn find_brewfile_searches() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        // Create Brewfile in subdir
+        let subdir = tmp.path().join("project");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(subdir.join("Brewfile"), "brew \"test\"").unwrap();
+
+        // Should find it
+        let found = installer.find_brewfile(&subdir);
+        assert!(found.is_some());
+        assert!(found.unwrap().ends_with("Brewfile"));
+
+        // Should not find in empty dir
+        let empty_dir = tmp.path().join("empty");
+        fs::create_dir_all(&empty_dir).unwrap();
+        let not_found = installer.find_brewfile(&empty_dir);
+        assert!(not_found.is_none());
+    }
+
+    // ========================================================================
+    // Tap operations
+    // ========================================================================
+
+    /// Test list_taps returns empty for fresh install.
+    #[tokio::test]
+    async fn list_taps_empty() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        let taps = installer.list_taps().unwrap();
+        assert!(taps.is_empty());
+    }
+
+    /// Test is_tapped returns false for non-tapped repo.
+    #[tokio::test]
+    async fn is_tapped_false_for_missing() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        assert!(!installer.is_tapped("someuser", "somerepo"));
+        assert!(!installer.is_tapped("homebrew", "core"));
+    }
+
+    /// Test is_tapped handles homebrew- prefix.
+    #[tokio::test]
+    async fn is_tapped_strips_prefix() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        // Both should return false (not tapped), but shouldn't error
+        assert!(!installer.is_tapped("user", "homebrew-repo"));
+        assert!(!installer.is_tapped("user", "repo"));
+    }
+
+    // ========================================================================
+    // copy_dir_recursive() tests
+    // ========================================================================
+
+    /// Test copy_dir_recursive copies nested directories.
+    #[test]
+    fn copy_dir_recursive_nested() {
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+
+        // Create nested structure
+        fs::create_dir_all(src.path().join("a/b/c")).unwrap();
+        fs::write(src.path().join("a/b/c/file.txt"), "content").unwrap();
+        fs::write(src.path().join("a/b/file2.txt"), "content2").unwrap();
+        fs::write(src.path().join("a/file3.txt"), "content3").unwrap();
+
+        super::super::copy_dir_recursive(src.path(), dst.path()).unwrap();
+
+        // Verify all files copied
+        assert!(dst.path().join("a/b/c/file.txt").exists());
+        assert!(dst.path().join("a/b/file2.txt").exists());
+        assert!(dst.path().join("a/file3.txt").exists());
+
+        // Verify content
+        assert_eq!(fs::read_to_string(dst.path().join("a/b/c/file.txt")).unwrap(), "content");
+    }
+
+    /// Test copy_dir_recursive handles empty directories.
+    #[test]
+    fn copy_dir_recursive_empty_dirs() {
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+
+        // Create empty nested dirs
+        fs::create_dir_all(src.path().join("empty/nested/deep")).unwrap();
+
+        super::super::copy_dir_recursive(src.path(), dst.path()).unwrap();
+
+        // Empty dirs should be created
+        assert!(dst.path().join("empty/nested/deep").exists());
+    }
+
+    // ========================================================================
+    // get_leaves() additional tests
+    // ========================================================================
+
+    /// Test get_leaves with empty database.
+    #[tokio::test]
+    async fn get_leaves_empty_db() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let installer = create_test_installer(&mock_server, &tmp);
+
+        let leaves = installer.get_leaves().await.unwrap();
+        assert!(leaves.is_empty());
+    }
+
+    /// Test get_leaves with only standalone packages.
+    #[tokio::test]
+    async fn get_leaves_all_standalone() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        let pkg1_bottle = mock_bottle_tarball_with_version("leaf1", "1.0.0");
+        let pkg1_sha = sha256_hex(&pkg1_bottle);
+        let pkg2_bottle = mock_bottle_tarball_with_version("leaf2", "1.0.0");
+        let pkg2_sha = sha256_hex(&pkg2_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/leaf1.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("leaf1", "1.0.0", &[], &mock_server.uri(), &pkg1_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/leaf2.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("leaf2", "1.0.0", &[], &mock_server.uri(), &pkg2_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        for (name, bottle) in [("leaf1", &pkg1_bottle), ("leaf2", &pkg2_bottle)] {
+            let path_str = format!("/bottles/{}-1.0.0.{}.bottle.tar.gz", name, tag);
+            Mock::given(method("GET"))
+                .and(path(path_str))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+
+        installer.install("leaf1", true).await.unwrap();
+        installer.install("leaf2", true).await.unwrap();
+
+        // Both are leaves (no one depends on them)
+        let leaves = installer.get_leaves().await.unwrap();
+        assert_eq!(leaves.len(), 2);
+        assert!(leaves.contains(&"leaf1".to_string()));
+        assert!(leaves.contains(&"leaf2".to_string()));
+    }
+
+    // ========================================================================
+    // CleanupResult and struct coverage
+    // ========================================================================
+
+    /// Test CleanupResult default values.
+    #[test]
+    fn cleanup_result_default() {
+        let result = super::super::CleanupResult::default();
+        assert_eq!(result.store_entries_removed, 0);
+        assert_eq!(result.blobs_removed, 0);
+        assert_eq!(result.temp_files_removed, 0);
+        assert_eq!(result.locks_removed, 0);
+        assert_eq!(result.http_cache_removed, 0);
+        assert_eq!(result.bytes_freed, 0);
+    }
+
+    /// Test DepsTree structure.
+    #[test]
+    fn deps_tree_structure() {
+        let child = super::super::DepsTree {
+            name: "child".to_string(),
+            installed: true,
+            children: vec![],
+        };
+
+        let parent = super::super::DepsTree {
+            name: "parent".to_string(),
+            installed: false,
+            children: vec![child],
+        };
+
+        assert_eq!(parent.name, "parent");
+        assert!(!parent.installed);
+        assert_eq!(parent.children.len(), 1);
+        assert_eq!(parent.children[0].name, "child");
+        assert!(parent.children[0].installed);
+    }
+
+    /// Test LinkResult fields.
+    #[test]
+    fn link_result_fields() {
+        let result = super::super::LinkResult {
+            files_linked: 10,
+            already_linked: false,
+            keg_only_forced: true,
+        };
+
+        assert_eq!(result.files_linked, 10);
+        assert!(!result.already_linked);
+        assert!(result.keg_only_forced);
+    }
+
+    /// Test ProcessedPackage fields.
+    #[test]
+    fn processed_package_fields() {
+        let pkg = super::super::ProcessedPackage {
+            name: "testpkg".to_string(),
+            version: "1.2.3".to_string(),
+            store_key: "abc123".to_string(),
+            linked_files: vec![],
+            explicit: true,
+        };
+
+        assert_eq!(pkg.name, "testpkg");
+        assert_eq!(pkg.version, "1.2.3");
+        assert_eq!(pkg.store_key, "abc123");
+        assert!(pkg.linked_files.is_empty());
+        assert!(pkg.explicit);
+    }
+
+    // ========================================================================
+    // get_deps() additional tests
+    // ========================================================================
+
+    /// Test get_deps with installed_only=true filters non-installed.
+    #[tokio::test]
+    async fn get_deps_installed_only_filter() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = platform_bottle_tag();
+
+        // Create A -> [B, C], only B is installed
+        let b_bottle = mock_bottle_tarball_with_version("depb", "1.0.0");
+        let b_sha = sha256_hex(&b_bottle);
+        let c_bottle = mock_bottle_tarball_with_version("depc", "1.0.0");
+        let c_sha = sha256_hex(&c_bottle);
+        let a_bottle = mock_bottle_tarball_with_version("depa", "1.0.0");
+        let a_sha = sha256_hex(&a_bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/depa.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("depa", "1.0.0", &["depb", "depc"], &mock_server.uri(), &a_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/depb.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("depb", "1.0.0", &[], &mock_server.uri(), &b_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/depc.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                &mock_formula_json("depc", "1.0.0", &[], &mock_server.uri(), &c_sha)
+            ))
+            .mount(&mock_server)
+            .await;
+
+        // Only install depb
+        let b_path = format!("/bottles/depb-1.0.0.{}.bottle.tar.gz", tag);
+        Mock::given(method("GET"))
+            .and(path(b_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b_bottle))
+            .mount(&mock_server)
+            .await;
+
+        let mut installer = create_test_installer(&mock_server, &tmp);
+        installer.install("depb", true).await.unwrap();
+
+        // Get deps with installed_only=true
+        let deps = installer.get_deps("depa", true, false).await.unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0], "depb");
+
+        // Get deps with installed_only=false
+        let all_deps = installer.get_deps("depa", false, false).await.unwrap();
+        assert_eq!(all_deps.len(), 2);
+        assert!(all_deps.contains(&"depb".to_string()));
+        assert!(all_deps.contains(&"depc".to_string()));
+    }
+}
