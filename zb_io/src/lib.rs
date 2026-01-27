@@ -30,6 +30,9 @@ pub mod services;
 pub mod store;
 pub mod tap;
 
+#[cfg(test)]
+pub mod test_utils;
+
 pub use api::{ApiClient, FormulaInfo};
 pub use blob::BlobCache;
 pub use build::{BuildEnvironment, BuildResult, BuildSystem, Builder, detect_build_system};

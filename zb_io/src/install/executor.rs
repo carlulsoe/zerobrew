@@ -16,6 +16,7 @@ use zb_core::{Error, Formula, SelectedBottle};
 use super::{CleanupResult, Installer, InstallPlan, ProcessedPackage, MAX_CORRUPTION_RETRIES};
 
 /// Result of executing an install plan
+#[derive(Debug)]
 pub struct ExecuteResult {
     pub installed: usize,
 }
