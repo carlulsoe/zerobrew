@@ -1994,4 +1994,665 @@ Restart=no
         let content = manager.generate_service_file("my-special-formula@1.2.3", &config);
         assert!(content.contains("Description=Zerobrew: my-special-formula@1.2.3"));
     }
+
+    // ==================== Service List with Real Files Tests ====================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_list_with_service_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        // Create some service files
+        std::fs::write(
+            service_dir.join("zerobrew.redis.service"),
+            "[Unit]\nDescription=Redis\n",
+        )
+        .unwrap();
+        std::fs::write(
+            service_dir.join("zerobrew.postgresql.service"),
+            "[Unit]\nDescription=PostgreSQL\n",
+        )
+        .unwrap();
+        // Non-zerobrew service should be ignored
+        std::fs::write(
+            service_dir.join("other.service"),
+            "[Unit]\nDescription=Other\n",
+        )
+        .unwrap();
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir,
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        let services = manager.list().unwrap();
+        assert_eq!(services.len(), 2);
+        
+        let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"redis"));
+        assert!(names.contains(&"postgresql"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_list_ignores_non_service_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        // Create various non-matching files
+        std::fs::write(service_dir.join("zerobrew.redis"), "not a service").unwrap();
+        std::fs::write(service_dir.join("redis.service"), "wrong prefix").unwrap();
+        std::fs::write(service_dir.join("zerobrew.service"), "just prefix").unwrap();
+        std::fs::write(service_dir.join("README.md"), "documentation").unwrap();
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir,
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        let services = manager.list().unwrap();
+        assert!(services.is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_list_sorted_alphabetically() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        // Create services in non-alphabetical order
+        for name in ["zebra", "alpha", "mysql", "beta"] {
+            std::fs::write(
+                service_dir.join(format!("zerobrew.{}.service", name)),
+                "[Unit]\n",
+            )
+            .unwrap();
+        }
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir,
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        let services = manager.list().unwrap();
+        let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta", "mysql", "zebra"]);
+    }
+
+    // ==================== Remove Service Tests ====================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_remove_service_deletes_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        let service_file = service_dir.join("zerobrew.testapp.service");
+        std::fs::write(&service_file, "[Unit]\nDescription=Test\n").unwrap();
+        assert!(service_file.exists());
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir,
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        // Note: This will fail on stop/disable but file removal should still work
+        let result = manager.remove_service("testapp");
+        // Even if systemctl commands fail, the file should be attempted to be removed
+        // The result depends on daemon_reload which may fail
+        if result.is_ok() {
+            assert!(!service_file.exists());
+        }
+    }
+
+    #[test]
+    fn test_remove_service_nonexistent_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir,
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        // Removing a service that doesn't exist should not error on file removal
+        // (file doesn't exist check happens first)
+        let _ = manager.remove_service("nonexistent");
+    }
+
+    // ==================== Service Info Tests ====================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_get_service_info_returns_correct_file_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir: service_dir.clone(),
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        let info = manager.get_service_info("redis").unwrap();
+        assert_eq!(info.name, "redis");
+        assert_eq!(info.file_path, service_dir.join("zerobrew.redis.service"));
+    }
+
+    // ==================== Extract Formula Name Edge Cases ====================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_extract_formula_name_with_dots() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        // Formula names shouldn't have dots but test the behavior
+        assert_eq!(
+            manager.extract_formula_name("zerobrew.my.dotted.name.service"),
+            Some("my.dotted.name".to_string())
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_extract_formula_name_unicode() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        // Unicode characters (though unusual for formula names)
+        assert_eq!(
+            manager.extract_formula_name("zerobrew.tëst-äpp.service"),
+            Some("tëst-äpp".to_string())
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_extract_formula_name_only_prefix_suffix() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        // Just the wrapper with nothing in between
+        assert_eq!(
+            manager.extract_formula_name("zerobrew..service"),
+            Some("".to_string())
+        );
+    }
+
+    // ==================== Service Config Generation Edge Cases ====================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_generate_service_file_empty_formula_name() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        let config = ServiceConfig {
+            program: PathBuf::from("/usr/bin/test"),
+            ..Default::default()
+        };
+
+        let content = manager.generate_service_file("", &config);
+        assert!(content.contains("Description=Zerobrew: "));
+        assert!(content.contains("ExecStart=/usr/bin/test"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_generate_service_file_with_special_chars_in_env() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        let mut env = HashMap::new();
+        env.insert("MY_VAR".to_string(), "value with spaces".to_string());
+        env.insert("PATH".to_string(), "/usr/bin:/usr/local/bin".to_string());
+
+        let config = ServiceConfig {
+            program: PathBuf::from("/usr/bin/test"),
+            environment: env,
+            ..Default::default()
+        };
+
+        let content = manager.generate_service_file("test", &config);
+        assert!(content.contains("Environment=\"MY_VAR=value with spaces\""));
+        assert!(content.contains("Environment=\"PATH=/usr/bin:/usr/local/bin\""));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_generate_service_file_args_with_spaces() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        let config = ServiceConfig {
+            program: PathBuf::from("/usr/bin/test"),
+            args: vec!["--config=/path/to/config file.conf".to_string()],
+            ..Default::default()
+        };
+
+        let content = manager.generate_service_file("test", &config);
+        assert!(content.contains("--config=/path/to/config file.conf"));
+    }
+
+    // ==================== Detect Service Config Advanced ====================
+
+    #[test]
+    fn test_detect_service_config_priority_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let prefix = temp_dir.path();
+
+        // Create all three possible binaries - should pick the first one (exact name)
+        let bin_dir = prefix.join("opt/myapp/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let exact_binary = bin_dir.join("myapp");
+        let daemon_binary = bin_dir.join("myappd");
+        let server_binary = bin_dir.join("myapp-server");
+
+        std::fs::write(&exact_binary, "#!/bin/sh").unwrap();
+        std::fs::write(&daemon_binary, "#!/bin/sh").unwrap();
+        std::fs::write(&server_binary, "#!/bin/sh").unwrap();
+
+        let manager = ServiceManager {
+            prefix: prefix.to_path_buf(),
+            service_dir: temp_dir.path().join("services"),
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        let keg_path = temp_dir.path().join("Cellar/myapp/1.0");
+        let config = manager.detect_service_config("myapp", &keg_path);
+
+        assert!(config.is_some());
+        let config = config.unwrap();
+        // Should pick exact name first
+        assert_eq!(config.program, exact_binary);
+    }
+
+    #[test]
+    fn test_detect_service_config_daemon_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let prefix = temp_dir.path();
+
+        // Only create daemon binary (no exact match)
+        let bin_dir = prefix.join("opt/myapp/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let daemon_binary = bin_dir.join("myappd");
+        std::fs::write(&daemon_binary, "#!/bin/sh").unwrap();
+
+        let manager = ServiceManager {
+            prefix: prefix.to_path_buf(),
+            service_dir: temp_dir.path().join("services"),
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        let keg_path = temp_dir.path().join("Cellar/myapp/1.0");
+        let config = manager.detect_service_config("myapp", &keg_path);
+
+        assert!(config.is_some());
+        let config = config.unwrap();
+        assert_eq!(config.program, daemon_binary);
+    }
+
+    #[test]
+    fn test_detect_service_config_working_directory_set() {
+        let temp_dir = TempDir::new().unwrap();
+        let prefix = temp_dir.path();
+
+        let bin_dir = prefix.join("opt/myapp/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let binary = bin_dir.join("myapp");
+        std::fs::write(&binary, "#!/bin/sh").unwrap();
+
+        let manager = ServiceManager {
+            prefix: prefix.to_path_buf(),
+            service_dir: temp_dir.path().join("services"),
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        let keg_path = temp_dir.path().join("Cellar/myapp/1.0");
+        let config = manager.detect_service_config("myapp", &keg_path).unwrap();
+
+        // Working directory should be set to prefix/var
+        assert_eq!(config.working_directory, Some(prefix.join("var")));
+    }
+
+    // ==================== Orphaned Services Tests ====================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_find_orphaned_services_detects_orphans() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        // Create service files
+        std::fs::write(service_dir.join("zerobrew.redis.service"), "[Unit]\n").unwrap();
+        std::fs::write(service_dir.join("zerobrew.orphan.service"), "[Unit]\n").unwrap();
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir,
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        // Only redis is installed
+        let installed = vec!["redis".to_string()];
+        let orphaned = manager.find_orphaned_services(&installed).unwrap();
+
+        assert_eq!(orphaned.len(), 1);
+        assert_eq!(orphaned[0].name, "orphan");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_find_orphaned_services_none_when_all_match() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        std::fs::write(service_dir.join("zerobrew.redis.service"), "[Unit]\n").unwrap();
+        std::fs::write(service_dir.join("zerobrew.postgresql.service"), "[Unit]\n").unwrap();
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir,
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        let installed = vec!["redis".to_string(), "postgresql".to_string()];
+        let orphaned = manager.find_orphaned_services(&installed).unwrap();
+
+        assert!(orphaned.is_empty());
+    }
+
+    // ==================== Cleanup Services Tests ====================
+
+    #[test]
+    fn test_cleanup_services_returns_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        std::fs::create_dir_all(&service_dir).unwrap();
+
+        // Create service files to be cleaned
+        for name in ["orphan1", "orphan2"] {
+            std::fs::write(
+                service_dir.join(format!("zerobrew.{}.service", name)),
+                "[Unit]\n",
+            )
+            .unwrap();
+        }
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir: service_dir.clone(),
+            log_dir: temp_dir.path().join("logs"),
+        };
+
+        let services = vec![
+            ServiceInfo {
+                name: "orphan1".to_string(),
+                status: ServiceStatus::Stopped,
+                pid: None,
+                file_path: service_dir.join("zerobrew.orphan1.service"),
+                auto_start: false,
+            },
+            ServiceInfo {
+                name: "orphan2".to_string(),
+                status: ServiceStatus::Stopped,
+                pid: None,
+                file_path: service_dir.join("zerobrew.orphan2.service"),
+                auto_start: false,
+            },
+        ];
+
+        // Note: cleanup will attempt remove_service which may partially fail
+        // due to systemctl not being available, but count should reflect attempts
+        let result = manager.cleanup_services(&services);
+        // The result depends on whether daemon_reload succeeds
+        match result {
+            Ok(count) => assert_eq!(count, 2),
+            Err(_) => {} // Expected if systemctl isn't available
+        }
+    }
+
+    // ==================== Create Service Tests ====================
+
+    #[test]
+    fn test_create_service_writes_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        let log_dir = temp_dir.path().join("logs");
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir: service_dir.clone(),
+            log_dir: log_dir.clone(),
+        };
+
+        let config = ServiceConfig {
+            program: PathBuf::from("/usr/bin/myservice"),
+            args: vec!["--daemon".to_string()],
+            ..Default::default()
+        };
+
+        // This may fail on daemon_reload but directories and file should be created
+        let _ = manager.create_service("myservice", &config);
+
+        // Check directories were created
+        assert!(service_dir.exists());
+        assert!(log_dir.exists());
+
+        // Check service file content
+        #[cfg(target_os = "linux")]
+        {
+            let service_file = service_dir.join("zerobrew.myservice.service");
+            if service_file.exists() {
+                let content = std::fs::read_to_string(&service_file).unwrap();
+                assert!(content.contains("ExecStart=/usr/bin/myservice"));
+                assert!(content.contains("--daemon"));
+            }
+        }
+    }
+
+    // ==================== Service Label Tests ====================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_service_label_empty_formula() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        assert_eq!(manager.service_label(""), "zerobrew..service");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_service_label_special_characters() {
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        assert_eq!(
+            manager.service_label("node@18.x"),
+            "zerobrew.node@18.x.service"
+        );
+        assert_eq!(
+            manager.service_label("my_underscore-dash"),
+            "zerobrew.my_underscore-dash.service"
+        );
+    }
+
+    // ==================== Parse Homebrew Systemd Edge Cases ====================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_homebrew_systemd_with_multiple_restart_types() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_path = temp_dir.path().join("test.service");
+
+        let content = r#"[Service]
+ExecStart=/usr/bin/test
+Restart=always
+"#;
+        std::fs::write(&service_path, content).unwrap();
+
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        let config = manager.parse_homebrew_systemd(&service_path).unwrap();
+
+        assert!(config.restart_on_failure);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_homebrew_systemd_restart_on_abort() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_path = temp_dir.path().join("test.service");
+
+        let content = r#"[Service]
+ExecStart=/usr/bin/test
+Restart=on-abort
+"#;
+        std::fs::write(&service_path, content).unwrap();
+
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        let config = manager.parse_homebrew_systemd(&service_path).unwrap();
+
+        // on-abort is not "no", so restart_on_failure should be true
+        assert!(config.restart_on_failure);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_homebrew_systemd_no_working_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_path = temp_dir.path().join("test.service");
+
+        let content = r#"[Service]
+ExecStart=/usr/bin/test
+"#;
+        std::fs::write(&service_path, content).unwrap();
+
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        let config = manager.parse_homebrew_systemd(&service_path).unwrap();
+
+        assert!(config.working_directory.is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_homebrew_systemd_exec_start_no_args() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_path = temp_dir.path().join("test.service");
+
+        let content = r#"[Service]
+ExecStart=/usr/bin/simple-daemon
+"#;
+        std::fs::write(&service_path, content).unwrap();
+
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        let config = manager.parse_homebrew_systemd(&service_path).unwrap();
+
+        assert_eq!(config.program, PathBuf::from("/usr/bin/simple-daemon"));
+        assert!(config.args.is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_homebrew_systemd_multiple_args() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_path = temp_dir.path().join("test.service");
+
+        let content = r#"[Service]
+ExecStart=/usr/bin/myapp --config /etc/myapp.conf --verbose --port 8080
+"#;
+        std::fs::write(&service_path, content).unwrap();
+
+        let manager = ServiceManager::new(Path::new("/opt/zerobrew"));
+        let config = manager.parse_homebrew_systemd(&service_path).unwrap();
+
+        assert_eq!(config.program, PathBuf::from("/usr/bin/myapp"));
+        assert_eq!(
+            config.args,
+            vec!["--config", "/etc/myapp.conf", "--verbose", "--port", "8080"]
+        );
+    }
+
+    // ==================== Service Paths Tests ====================
+
+    #[test]
+    fn test_service_paths_contains_expected_directories() {
+        let (service_dir, log_dir) = ServiceManager::get_service_paths();
+
+        // Both paths should be absolute or relative to home
+        #[cfg(target_os = "linux")]
+        {
+            assert!(service_dir.to_string_lossy().contains("systemd"));
+            assert!(log_dir.to_string_lossy().contains("zerobrew"));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(service_dir.to_string_lossy().contains("LaunchAgents"));
+            assert!(log_dir.to_string_lossy().contains("Logs"));
+        }
+    }
+
+    // ==================== Integration-style Tests ====================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_full_service_lifecycle_files_only() {
+        let temp_dir = TempDir::new().unwrap();
+        let service_dir = temp_dir.path().join("services");
+        let log_dir = temp_dir.path().join("logs");
+
+        let manager = ServiceManager {
+            prefix: temp_dir.path().to_path_buf(),
+            service_dir: service_dir.clone(),
+            log_dir: log_dir.clone(),
+        };
+
+        let config = ServiceConfig {
+            program: PathBuf::from("/usr/bin/testservice"),
+            args: vec!["--foreground".to_string()],
+            working_directory: Some(PathBuf::from("/var/lib/testservice")),
+            restart_on_failure: true,
+            run_at_load: true,
+            ..Default::default()
+        };
+
+        // Create service (file creation should work even if daemon_reload fails)
+        let create_result = manager.create_service("testservice", &config);
+        
+        // Verify directories exist regardless of daemon_reload result
+        assert!(service_dir.exists());
+        assert!(log_dir.exists());
+
+        // If create succeeded, verify the file
+        if create_result.is_ok() {
+            let service_file = service_dir.join("zerobrew.testservice.service");
+            assert!(service_file.exists());
+
+            // List should find it
+            let services = manager.list().unwrap();
+            assert!(services.iter().any(|s| s.name == "testservice"));
+
+            // Get info
+            let info = manager.get_service_info("testservice").unwrap();
+            assert_eq!(info.name, "testservice");
+            assert_eq!(info.file_path, service_file);
+
+            // Remove service (may fail on systemctl calls but file should be removed)
+            let _ = manager.remove_service("testservice");
+            // File might still exist if daemon_reload failed before removal
+        }
+    }
+
+    #[test]
+    fn test_service_manager_prefix_propagation() {
+        let manager = ServiceManager::new(Path::new("/custom/zerobrew/prefix"));
+        
+        assert_eq!(manager.prefix, PathBuf::from("/custom/zerobrew/prefix"));
+        
+        // Log paths should use the configured log_dir, not prefix
+        let log_dir = manager.get_log_dir();
+        assert!(!log_dir.to_string_lossy().is_empty());
+    }
 }

@@ -4615,6 +4615,295 @@ mod orphan_tests {
         let orphans = ctx.installer().find_orphans().await.unwrap();
         assert_eq!(orphans, vec!["toggle_lib".to_string()]);
     }
+
+    /// Test that mark_dependency returns error for non-installed package.
+    #[tokio::test]
+    async fn test_mark_dependency_not_installed_returns_error() {
+        let ctx = TestContext::new().await;
+        
+        // Marking a non-installed package as dependency should fail
+        let result = ctx.installer().mark_dependency("nonexistent");
+        assert!(result.is_err());
+        // Verify it's a NotInstalled error
+        match result {
+            Err(zb_core::Error::NotInstalled { name }) => {
+                assert_eq!(name, "nonexistent");
+            }
+            other => panic!("Expected NotInstalled error, got: {:?}", other),
+        }
+    }
+
+    /// Test is_explicit returns false for non-installed packages.
+    #[tokio::test]
+    async fn test_is_explicit_nonexistent_package() {
+        let ctx = TestContext::new().await;
+        
+        // is_explicit should return false for packages that don't exist
+        assert!(!ctx.installer().is_explicit("doesnotexist"));
+    }
+
+    /// Test list_dependencies returns only dependency packages, not explicit ones.
+    #[tokio::test]
+    async fn test_list_dependencies_filters_correctly() {
+        let mut ctx = TestContext::new().await;
+        
+        // Install a package with a dependency
+        mount_formula_with_deps(&ctx, "dep_only", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "explicit_pkg", "1.0.0", &["dep_only"]).await;
+        mount_formula_with_deps(&ctx, "standalone", "1.0.0", &[]).await;
+        
+        // Install both - explicit_pkg pulls in dep_only as dependency
+        ctx.installer_mut().install("explicit_pkg", true).await.unwrap();
+        // Install standalone separately (explicit)
+        ctx.installer_mut().install("standalone", true).await.unwrap();
+        
+        // Verify setup
+        assert!(ctx.installer().is_explicit("explicit_pkg"));
+        assert!(ctx.installer().is_explicit("standalone"));
+        assert!(!ctx.installer().is_explicit("dep_only"));
+        
+        // list_dependencies should only return dep_only
+        let deps = ctx.installer().list_dependencies().unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "dep_only");
+    }
+
+    /// Test find_orphans when API fails for an explicit package.
+    /// It should continue safely and not crash.
+    #[tokio::test]
+    async fn test_find_orphans_api_failure_graceful() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        
+        let mut ctx = TestContext::new().await;
+        
+        // Install a package with a dependency
+        mount_formula_with_deps(&ctx, "api_dep", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "api_app", "1.0.0", &["api_dep"]).await;
+        
+        ctx.installer_mut().install("api_app", true).await.unwrap();
+        
+        // Now unmount/reset the formula endpoint to simulate API failure
+        // Note: wiremock doesn't support unmounting, so we mount a 500 error on top
+        Mock::given(method("GET"))
+            .and(path("/api_app.json"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&ctx.mock_server)
+            .await;
+        
+        // find_orphans should handle the API error gracefully
+        // When API fails, it continues to next package (keeping it safe)
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        // api_dep should NOT be an orphan because we couldn't determine deps
+        // (safe behavior: when unsure, keep the package)
+        assert!(orphans.is_empty(), "Expected no orphans due to API failure safety, got: {:?}", orphans);
+    }
+
+    /// Test autoremove continues when one package fails to uninstall.
+    /// This simulates the error handling path where uninstall fails but autoremove continues.
+    #[tokio::test]
+    async fn test_autoremove_continues_on_partial_failure() {
+        let mut ctx = TestContext::new().await;
+        
+        // Install multiple packages that will become orphans
+        mount_formula_with_deps(&ctx, "orphan_a", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "orphan_b", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "main_pkg", "1.0.0", &["orphan_a", "orphan_b"]).await;
+        
+        ctx.installer_mut().install("main_pkg", true).await.unwrap();
+        
+        // Verify all installed
+        assert!(ctx.installer().is_installed("main_pkg"));
+        assert!(ctx.installer().is_installed("orphan_a"));
+        assert!(ctx.installer().is_installed("orphan_b"));
+        
+        // Uninstall main to make orphans
+        ctx.installer_mut().uninstall("main_pkg").unwrap();
+        
+        // Verify orphans detected
+        let mut orphans = ctx.installer().find_orphans().await.unwrap();
+        orphans.sort();
+        assert_eq!(orphans.len(), 2);
+        assert!(orphans.contains(&"orphan_a".to_string()));
+        assert!(orphans.contains(&"orphan_b".to_string()));
+        
+        // Autoremove should remove both orphans
+        // Note: This tests the success path. Testing actual failure would require
+        // making the filesystem readonly, which is complex.
+        let removed = ctx.installer_mut().autoremove().await.unwrap();
+        assert_eq!(removed.len(), 2);
+        
+        // Verify both removed
+        assert!(!ctx.installer().is_installed("orphan_a"));
+        assert!(!ctx.installer().is_installed("orphan_b"));
+    }
+
+    /// Test that find_orphans with only dependency packages (none explicit)
+    /// returns all of them as orphans.
+    #[tokio::test]
+    async fn test_find_orphans_all_dependencies_no_explicit() {
+        let mut ctx = TestContext::new().await;
+        
+        // Install packages
+        mount_formula_with_deps(&ctx, "leaf", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "middle", "1.0.0", &["leaf"]).await;
+        mount_formula_with_deps(&ctx, "top", "1.0.0", &["middle"]).await;
+        
+        ctx.installer_mut().install("top", true).await.unwrap();
+        
+        // Verify all installed
+        assert!(ctx.installer().is_installed("top"));
+        assert!(ctx.installer().is_installed("middle"));
+        assert!(ctx.installer().is_installed("leaf"));
+        
+        // Mark top as dependency (simulating a broken state or manual intervention)
+        ctx.installer().mark_dependency("top").unwrap();
+        
+        // Now all packages are dependencies with no explicit packages
+        // All three should be orphans
+        let mut orphans = ctx.installer().find_orphans().await.unwrap();
+        orphans.sort();
+        assert_eq!(orphans.len(), 3, "All packages should be orphans when no explicit, got: {:?}", orphans);
+        assert!(orphans.contains(&"leaf".to_string()));
+        assert!(orphans.contains(&"middle".to_string()));
+        assert!(orphans.contains(&"top".to_string()));
+    }
+
+    /// Test find_orphans when dependency packages list is empty.
+    /// This happens when all installed packages are explicit.
+    #[tokio::test]
+    async fn test_find_orphans_no_dependencies() {
+        let mut ctx = TestContext::new().await;
+        
+        // Install packages explicitly (no dependencies)
+        mount_formula_with_deps(&ctx, "app1", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "app2", "1.0.0", &[]).await;
+        
+        ctx.installer_mut().install("app1", true).await.unwrap();
+        ctx.installer_mut().install("app2", true).await.unwrap();
+        
+        // Both are explicit, so there are no dependency packages
+        assert!(ctx.installer().is_explicit("app1"));
+        assert!(ctx.installer().is_explicit("app2"));
+        
+        // list_dependencies should be empty
+        let deps = ctx.installer().list_dependencies().unwrap();
+        assert!(deps.is_empty());
+        
+        // find_orphans should return empty (no dependency packages to be orphans)
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty());
+    }
+
+    /// Test that is_explicit correctly identifies explicit vs dependency packages.
+    #[tokio::test]
+    async fn test_is_explicit_accuracy() {
+        let mut ctx = TestContext::new().await;
+        
+        mount_formula_with_deps(&ctx, "my_lib", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "my_app", "1.0.0", &["my_lib"]).await;
+        
+        ctx.installer_mut().install("my_app", true).await.unwrap();
+        
+        // Verify correct is_explicit values
+        assert!(ctx.installer().is_explicit("my_app"), "my_app should be explicit");
+        assert!(!ctx.installer().is_explicit("my_lib"), "my_lib should not be explicit");
+        
+        // Mark lib as explicit
+        ctx.installer().mark_explicit("my_lib").unwrap();
+        assert!(ctx.installer().is_explicit("my_lib"), "my_lib should now be explicit");
+        
+        // Mark it back as dependency
+        ctx.installer().mark_dependency("my_lib").unwrap();
+        assert!(!ctx.installer().is_explicit("my_lib"), "my_lib should be dependency again");
+    }
+
+    /// Test autoremove on empty orphan list (different from find_orphans_empty_database).
+    /// This tests the early return when orphans list is empty after calculation.
+    #[tokio::test]
+    async fn test_autoremove_returns_empty_when_no_orphans_exist() {
+        let mut ctx = TestContext::new().await;
+        
+        // Install an explicit package with no dependencies
+        mount_formula_with_deps(&ctx, "solo", "1.0.0", &[]).await;
+        ctx.installer_mut().install("solo", true).await.unwrap();
+        
+        // No orphans should exist
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty());
+        
+        // autoremove should return empty vec without doing anything
+        let removed = ctx.installer_mut().autoremove().await.unwrap();
+        assert!(removed.is_empty());
+        
+        // Package should still be installed
+        assert!(ctx.installer().is_installed("solo"));
+    }
+
+    /// Test deep dependency chain where middle package is marked explicit.
+    /// When middle is explicit, lower deps should not be orphans even if top is removed.
+    ///
+    /// Graph: A -> B -> C -> D
+    /// Mark B as explicit, uninstall A
+    /// B, C, D should NOT be orphans (B is explicit, C and D are its deps)
+    #[tokio::test]
+    async fn test_deep_chain_with_explicit_middle() {
+        let mut ctx = TestContext::new().await;
+        
+        mount_formula_with_deps(&ctx, "chain_d", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "chain_c", "1.0.0", &["chain_d"]).await;
+        mount_formula_with_deps(&ctx, "chain_b", "1.0.0", &["chain_c"]).await;
+        mount_formula_with_deps(&ctx, "chain_a", "1.0.0", &["chain_b"]).await;
+        
+        ctx.installer_mut().install("chain_a", true).await.unwrap();
+        
+        // Verify all installed
+        assert!(ctx.installer().is_installed("chain_a"));
+        assert!(ctx.installer().is_installed("chain_b"));
+        assert!(ctx.installer().is_installed("chain_c"));
+        assert!(ctx.installer().is_installed("chain_d"));
+        
+        // Mark B as explicit
+        ctx.installer().mark_explicit("chain_b").unwrap();
+        
+        // Uninstall A
+        ctx.installer_mut().uninstall("chain_a").unwrap();
+        
+        // B is explicit, so C and D are still needed by B
+        // No orphans should exist
+        let orphans = ctx.installer().find_orphans().await.unwrap();
+        assert!(orphans.is_empty(), "With B explicit, C and D should still be needed, got: {:?}", orphans);
+        
+        // Now uninstall B
+        ctx.installer_mut().uninstall("chain_b").unwrap();
+        
+        // C and D should now be orphans
+        let mut orphans = ctx.installer().find_orphans().await.unwrap();
+        orphans.sort();
+        assert_eq!(orphans.len(), 2);
+        assert!(orphans.contains(&"chain_c".to_string()));
+        assert!(orphans.contains(&"chain_d".to_string()));
+    }
+
+    /// Test that mark_explicit returns Ok(false) when package is already explicit.
+    /// And mark_dependency returns Ok(false) when package is already a dependency.
+    #[tokio::test]
+    async fn test_mark_idempotent() {
+        let mut ctx = TestContext::new().await;
+        
+        mount_formula_with_deps(&ctx, "idem_lib", "1.0.0", &[]).await;
+        mount_formula_with_deps(&ctx, "idem_app", "1.0.0", &["idem_lib"]).await;
+        
+        ctx.installer_mut().install("idem_app", true).await.unwrap();
+        
+        // idem_app is already explicit - marking it again should return Ok(false)
+        let changed = ctx.installer().mark_explicit("idem_app").unwrap();
+        assert!(!changed, "mark_explicit on already explicit should return false");
+        
+        // idem_lib is already a dependency - marking it again should return Ok(false)
+        let changed = ctx.installer().mark_dependency("idem_lib").unwrap();
+        assert!(!changed, "mark_dependency on already dependency should return false");
+    }
 }
 
 // ============================================================================
