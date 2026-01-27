@@ -7,6 +7,58 @@ use std::process::Command;
 use zb_io::install::Installer;
 use zb_io::ServiceManager;
 
+/// Pluralize a word based on count.
+/// Extracted for testability.
+pub(crate) fn pluralize(count: usize, singular: &str, plural: &str) -> &str {
+    if count == 1 { singular } else { plural }
+}
+
+/// Format the count suffix for orphaned services.
+/// Extracted for testability.
+pub(crate) fn format_orphan_count_message(count: usize, dry_run: bool) -> String {
+    let suffix = pluralize(count, "", "s");
+    if dry_run {
+        format!("Would remove {} orphaned service{}", count, suffix)
+    } else {
+        format!("Removing {} orphaned service{}", count, suffix)
+    }
+}
+
+/// Select the appropriate log file to display.
+/// Returns the log file path to use (prefers stdout if it exists).
+/// Extracted for testability.
+pub(crate) fn select_log_file<'a>(
+    stdout_log: &'a Path,
+    stderr_log: &'a Path,
+) -> Option<&'a Path> {
+    if stdout_log.exists() {
+        Some(stdout_log)
+    } else if stderr_log.exists() {
+        Some(stderr_log)
+    } else {
+        None
+    }
+}
+
+/// Get the last N lines from content.
+/// Extracted for testability.
+pub(crate) fn get_last_lines(content: &str, lines: usize) -> Vec<&str> {
+    let all_lines: Vec<&str> = content.lines().collect();
+    let start = if all_lines.len() > lines {
+        all_lines.len() - lines
+    } else {
+        0
+    };
+    all_lines[start..].to_vec()
+}
+
+/// Format cleanup completion message.
+/// Extracted for testability.
+pub(crate) fn format_cleanup_complete_message(count: usize) -> String {
+    let suffix = pluralize(count, "", "s");
+    format!("Removed {} orphaned service{}", count, suffix)
+}
+
 /// Start a service.
 pub fn run_start(
     installer: &mut Installer,
@@ -338,14 +390,7 @@ pub fn run_log(
                 message: format!("failed to read log file: {}", e),
             })?;
 
-        let all_lines: Vec<&str> = content.lines().collect();
-        let start = if all_lines.len() > lines {
-            all_lines.len() - lines
-        } else {
-            0
-        };
-
-        for line in &all_lines[start..] {
+        for line in get_last_lines(&content, lines) {
             println!("{}", line);
         }
 
