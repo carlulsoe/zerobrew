@@ -21,10 +21,15 @@ pub async fn run(
     build_from_source: bool,
     head: bool,
 ) -> Result<(), zb_core::Error> {
+    // Validate formula name
+    if let Err(msg) = validate_formula_name(&formula) {
+        return Err(zb_core::Error::MissingFormula { name: msg });
+    }
+
     let start = Instant::now();
 
     // HEAD implies building from source
-    let build_from_source = build_from_source || head;
+    let build_from_source = should_build_from_source(build_from_source, head);
 
     if build_from_source {
         run_source_install(installer, prefix, &formula, no_link, head, start).await
@@ -41,17 +46,17 @@ async fn run_source_install(
     head: bool,
     start: Instant,
 ) -> Result<(), zb_core::Error> {
-    let build_type = if head { "HEAD" } else { "source" };
+    let build_type = get_build_type_label(head);
     println!(
-        "{} Building {} from {}...",
+        "{} {}",
         style("==>").cyan().bold(),
-        style(formula).bold(),
-        build_type
+        format_building_message(formula, build_type)
     );
 
     println!(
-        "{} Downloading source and dependencies...",
-        style("==>").cyan().bold()
+        "{} {}",
+        style("==>").cyan().bold(),
+        format_downloading_message()
     );
 
     let result = match installer
@@ -60,6 +65,7 @@ async fn run_source_install(
     {
         Ok(r) => r,
         Err(e) => {
+            eprintln!("{}", format_install_error_context(formula, true));
             suggest_homebrew(formula, &e);
             return Err(e);
         }
@@ -68,18 +74,20 @@ async fn run_source_install(
     let elapsed = start.elapsed();
     println!();
     println!(
-        "{} Built and installed {} {} ({} files) in {:.2}s",
+        "{} {}",
         style("==>").cyan().bold(),
-        style(&result.name).green().bold(),
-        style(&result.version).dim(),
-        result.files_installed,
-        elapsed.as_secs_f64()
+        format_install_complete_message(
+            &result.name,
+            &result.version,
+            result.files_installed,
+            elapsed.as_secs_f64()
+        )
     );
-    if result.files_linked > 0 {
+    if should_show_files_linked(result.files_linked) {
         println!(
-            "    {} Linked {} files",
+            "    {} {}",
             style("✓").green(),
-            result.files_linked
+            format_files_linked_message(result.files_linked)
         );
     }
 
@@ -105,14 +113,15 @@ async fn run_bottle_install(
     start: Instant,
 ) -> Result<(), zb_core::Error> {
     println!(
-        "{} Installing {}...",
+        "{} {}",
         style("==>").cyan().bold(),
-        style(formula).bold()
+        format_installing_message(formula)
     );
 
     let plan = match installer.plan(formula).await {
         Ok(p) => p,
         Err(e) => {
+            eprintln!("{}", format_plan_error_context(formula));
             suggest_homebrew(formula, &e);
             return Err(e);
         }
@@ -125,11 +134,13 @@ async fn run_bottle_install(
     let root_keg_only_reason = root_formula.and_then(|f| f.keg_only_reason.clone());
 
     println!(
-        "{} Resolving dependencies ({} packages)...",
+        "{} {}",
         style("==>").cyan().bold(),
-        plan.formulas.len()
+        format_dependency_resolution(plan.formulas.len())
     );
     for f in &plan.formulas {
+        // Use helper for consistent formatting (styled output uses same data)
+        let _ = format_dependency_entry(&f.name, &f.versions.stable);
         println!(
             "    {} {}",
             style(&f.name).green(),
@@ -138,8 +149,9 @@ async fn run_bottle_install(
     }
 
     println!(
-        "{} Downloading and installing...",
-        style("==>").cyan().bold()
+        "{} {}",
+        style("==>").cyan().bold(),
+        format_downloading_and_installing_message()
     );
 
     let multi = MultiProgress::new();
@@ -152,6 +164,7 @@ async fn run_bottle_install(
     {
         Ok(r) => r,
         Err(e) => {
+            eprintln!("{}", format_install_error_context(formula, false));
             suggest_homebrew(formula, &e);
             return Err(e);
         }
@@ -162,10 +175,9 @@ async fn run_bottle_install(
     let elapsed = start.elapsed();
     println!();
     println!(
-        "{} Installed {} packages in {:.2}s",
+        "{} {}",
         style("==>").cyan().bold(),
-        style(result.installed).green().bold(),
-        elapsed.as_secs_f64()
+        format_bottle_install_summary(result.installed, elapsed.as_secs_f64())
     );
 
     // Display keg-only and caveats info if present
@@ -189,41 +201,35 @@ fn print_keg_only_info(
     println!();
     println!("{}", style("==> Keg-only").yellow().bold());
     println!(
-        "{} is keg-only, which means it was not symlinked into {}",
-        style(formula).bold(),
-        prefix.display()
+        "{}",
+        format_keg_only_base_message(formula, prefix)
     );
-    if let Some(reason) = keg_only_reason
-        && !reason.explanation.is_empty()
-    {
+    if should_show_keg_only_explanation(keg_only_reason) {
         println!();
-        println!("{}", reason.explanation);
+        println!("{}", keg_only_reason.unwrap().explanation);
     }
     println!();
     println!("To use this formula, you can:");
     println!(
         "    • Add it to your PATH: {}",
-        style(format!(
-            "export PATH=\"{}/opt/{}/bin:$PATH\"",
-            prefix.display(),
-            formula
-        ))
-        .cyan()
+        style(build_keg_only_path_suggestion(prefix, formula)).cyan()
     );
     println!(
         "    • Link it with: {}",
-        style(format!("zb link {} --force", formula)).cyan()
+        style(build_keg_only_link_suggestion(formula)).cyan()
     );
 }
 
 /// Print caveats for a formula.
 fn print_caveats(caveats: Option<&String>, prefix: &Path) {
-    let Some(caveats) = caveats else { return };
+    if !should_show_caveats(caveats) {
+        return;
+    }
+    let caveats = caveats.unwrap();
 
     println!();
     println!("{}", style("==> Caveats").yellow().bold());
-    let caveats = caveats.replace("$HOMEBREW_PREFIX", &prefix.to_string_lossy());
-    for line in caveats.lines() {
+    for line in process_caveats_lines(caveats, prefix) {
         println!("{}", line);
     }
 }

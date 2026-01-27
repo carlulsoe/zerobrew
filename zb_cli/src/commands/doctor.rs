@@ -65,6 +65,8 @@ pub fn format_check_line(check: &DoctorCheck) -> String {
 }
 
 /// Format the complete doctor output (plain text, for testing).
+/// Used by unit tests to verify output structure without ANSI styling.
+#[allow(dead_code)]
 pub fn format_doctor_output_plain(result: &DoctorResult) -> String {
     let mut output = String::from("==> Running diagnostics...\n\n");
 
@@ -79,6 +81,55 @@ pub fn format_doctor_output_plain(result: &DoctorResult) -> String {
     output
 }
 
+/// Format a single check result line (styled for terminal).
+/// Uses plain_status_marker internally for the symbol, then applies styling.
+pub fn format_check_line_styled(check: &DoctorCheck) -> String {
+    let marker = format_status_marker(&check.status);
+    let mut line = format!("{} {}", marker, check.message);
+    if let Some(ref fix) = check.fix {
+        line.push_str(&format!("\n    {} {}", style("→").dim(), style(fix).dim()));
+    }
+    line
+}
+
+/// Format the issue count with styling for terminal output.
+/// Wraps format_issue_count_plain with appropriate colors.
+pub fn format_issue_count_styled(count: usize, issue_type: &str) -> String {
+    let color_fn = match issue_type {
+        "error" => |s: String| style(s).red().bold().to_string(),
+        "warning" => |s: String| style(s).yellow().bold().to_string(),
+        _ => |s: String| s,
+    };
+    let noun = pluralize_issue(count, issue_type);
+    format!(
+        "{} {} {} found",
+        style("==>").cyan().bold(),
+        color_fn(count.to_string()),
+        noun
+    )
+}
+
+/// Format the summary message with styling for terminal output.
+/// Uses format_summary_message internally for the text content.
+pub fn format_summary_styled(result: &DoctorResult) -> Vec<String> {
+    if result.is_healthy() {
+        vec![format!(
+            "{} {}",
+            style("==>").cyan().bold(),
+            format_summary_message(result)
+        )]
+    } else {
+        let mut lines = Vec::new();
+        if result.errors > 0 {
+            lines.push(format_issue_count_styled(result.errors, "error"));
+        }
+        if result.warnings > 0 {
+            lines.push(format_issue_count_styled(result.warnings, "warning"));
+        }
+        lines
+    }
+}
+
 /// Run the doctor command.
 pub async fn run(installer: &mut Installer) -> Result<(), zb_core::Error> {
     println!("{} Running diagnostics...\n", style("==>").cyan().bold());
@@ -86,38 +137,12 @@ pub async fn run(installer: &mut Installer) -> Result<(), zb_core::Error> {
     let result = installer.doctor().await;
 
     for check in &result.checks {
-        let marker = format_status_marker(&check.status);
-
-        println!("{} {}", marker, check.message);
-
-        if let Some(ref fix) = check.fix {
-            println!("    {} {}", style("→").dim(), style(fix).dim());
-        }
+        println!("{}", format_check_line_styled(check));
     }
 
     println!();
-    if result.is_healthy() {
-        println!(
-            "{} Your system is ready to brew!",
-            style("==>").cyan().bold()
-        );
-    } else {
-        if result.errors > 0 {
-            println!(
-                "{} {} {} found",
-                style("==>").cyan().bold(),
-                style(result.errors).red().bold(),
-                pluralize_issue(result.errors, "error")
-            );
-        }
-        if result.warnings > 0 {
-            println!(
-                "{} {} {} found",
-                style("==>").cyan().bold(),
-                style(result.warnings).yellow().bold(),
-                pluralize_issue(result.warnings, "warning")
-            );
-        }
+    for line in format_summary_styled(&result) {
+        println!("{}", line);
     }
 
     Ok(())

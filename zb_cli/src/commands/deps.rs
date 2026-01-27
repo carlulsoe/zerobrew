@@ -166,8 +166,8 @@ pub async fn run_uses(
         );
         println!();
 
-        for name in &uses {
-            println!("  {}", name);
+        for line in format_deps_plain(&uses) {
+            println!("{}", line);
         }
     }
 
@@ -186,8 +186,8 @@ pub async fn run_leaves(installer: &mut Installer) -> Result<(), zb_core::Error>
         println!("{}", format_leaves_result_header(leaves.len()));
         println!();
 
-        for name in &leaves {
-            println!("  {}", name);
+        for line in format_deps_plain(&leaves) {
+            println!("{}", line);
         }
     }
 
