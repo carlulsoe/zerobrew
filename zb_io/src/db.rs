@@ -236,7 +236,7 @@ impl Database {
     pub fn list_installed(&self) -> Result<Vec<InstalledKeg>, Error> {
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT name, version, store_key, installed_at, pinned, explicit FROM installed_kegs ORDER BY name",
             )
             .map_err(|e| Error::StoreCorruption {
@@ -269,7 +269,7 @@ impl Database {
     pub fn list_pinned(&self) -> Result<Vec<InstalledKeg>, Error> {
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT name, version, store_key, installed_at, pinned, explicit FROM installed_kegs WHERE pinned = 1 ORDER BY name",
             )
             .map_err(|e| Error::StoreCorruption {
@@ -302,7 +302,7 @@ impl Database {
     pub fn list_dependencies(&self) -> Result<Vec<InstalledKeg>, Error> {
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT name, version, store_key, installed_at, pinned, explicit FROM installed_kegs WHERE explicit = 0 ORDER BY name",
             )
             .map_err(|e| Error::StoreCorruption {
@@ -428,7 +428,7 @@ impl Database {
     pub fn get_unreferenced_store_keys(&self) -> Result<Vec<String>, Error> {
         let mut stmt = self
             .conn
-            .prepare("SELECT store_key FROM store_refs WHERE refcount <= 0")
+            .prepare_cached("SELECT store_key FROM store_refs WHERE refcount <= 0")
             .map_err(|e| Error::StoreCorruption {
                 message: format!("failed to prepare statement: {e}"),
             })?;
@@ -450,7 +450,7 @@ impl Database {
     pub fn get_linked_files(&self, name: &str) -> Result<Vec<(String, String)>, Error> {
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT linked_path, target_path FROM keg_files WHERE name = ?1 ORDER BY linked_path",
             )
             .map_err(|e| Error::StoreCorruption {
@@ -566,7 +566,7 @@ impl Database {
     pub fn list_taps(&self) -> Result<Vec<InstalledTap>, Error> {
         let mut stmt = self
             .conn
-            .prepare("SELECT name, url, added_at FROM taps ORDER BY name")
+            .prepare_cached("SELECT name, url, added_at FROM taps ORDER BY name")
             .map_err(|e| Error::StoreCorruption {
                 message: format!("failed to prepare statement: {e}"),
             })?;
@@ -687,7 +687,7 @@ impl Database {
     pub fn list_services(&self) -> Result<Vec<ServiceRecord>, Error> {
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare_cached(
                 "SELECT name, formula, status, pid, started_at, config FROM services ORDER BY name",
             )
             .map_err(|e| Error::StoreCorruption {

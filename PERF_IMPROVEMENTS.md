@@ -123,11 +123,18 @@ For packages with deep dependency trees (50+ packages), expect 20-40% improvemen
 
 Use rayon to parallelize file writes after reading entries. Challenge: Tar format is sequential for reading.
 
-### 4. Prepared Statement Caching (Low-Medium Impact, Medium Effort)
-**File:** `zb_io/src/db.rs` (lines 232-240, 265-270, 299-306, 447-454)
-**Potential:** 10-15% faster database operations
+### 4. Prepared Statement Caching ✅ IMPLEMENTED
+**File:** `zb_io/src/db.rs`
+**Actual Impact:** Minimal for typical installs; more significant for repeated queries
 
-Cache prepared statements instead of recompiling SQL on each query.
+Changed all `prepare()` calls to `prepare_cached()` which uses rusqlite's built-in statement cache. This avoids recompiling SQL on repeated calls to the same function.
+
+**Findings:** The improvement is difficult to measure in isolation because:
+1. Database operations are a small fraction of total install time
+2. Each statement was only prepared once per function call anyway
+3. The cache helps most when the same query is called many times in a loop
+
+This is a low-risk, low-overhead optimization that provides incremental benefit.
 
 ### 5. Download Body Parallelization (Medium Impact, Hard Effort)
 **File:** `zb_io/src/download.rs:163, 221-230`
