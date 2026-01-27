@@ -4,6 +4,10 @@
 #![allow(clippy::useless_vec)]
 // Allow collapsible_if for complex nested conditions
 #![allow(clippy::collapsible_if)]
+// Allow too_many_arguments for test helper functions
+#![allow(clippy::too_many_arguments)]
+// Allow is_some + unwrap pattern for clarity
+#![allow(clippy::unnecessary_unwrap)]
 
 //! Zerobrew CLI - A fast Homebrew-compatible package installer.
 
