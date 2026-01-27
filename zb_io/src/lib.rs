@@ -7,8 +7,9 @@
 #![allow(clippy::empty_line_after_doc_comments)]
 // Allow skip().next() pattern for clarity
 #![allow(clippy::iter_skip_next)]
-// Allow unused variables for platform-specific code
+// Allow unused variables and imports for platform-specific code
 #![allow(unused_variables)]
+#![allow(unused_imports)]
 
 //! I/O layer for zerobrew - a fast Homebrew-compatible package manager.
 //!
