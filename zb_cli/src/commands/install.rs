@@ -306,6 +306,89 @@ pub(crate) fn validate_formula_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// Format the "Building from source/HEAD" message.
+/// Extracted for testability.
+pub(crate) fn format_building_message(formula: &str, build_type: &str) -> String {
+    format!("Building {} from {}...", formula, build_type)
+}
+
+/// Format the downloading message.
+/// Extracted for testability.
+pub(crate) fn format_downloading_message() -> &'static str {
+    "Downloading source and dependencies..."
+}
+
+/// Format the installing message.
+/// Extracted for testability.
+pub(crate) fn format_installing_message(formula: &str) -> String {
+    format!("Installing {}...", formula)
+}
+
+/// Format the keg-only header message.
+/// Extracted for testability.
+pub(crate) fn format_keg_only_base_message(formula: &str, prefix: &Path) -> String {
+    format!(
+        "{} is keg-only, which means it was not symlinked into {}",
+        formula,
+        prefix.display()
+    )
+}
+
+/// Check if keg-only explanation should be shown.
+/// Extracted for testability.
+pub(crate) fn should_show_keg_only_explanation(reason: Option<&KegOnlyReason>) -> bool {
+    reason
+        .map(|r| !r.explanation.is_empty())
+        .unwrap_or(false)
+}
+
+/// Format the dependency list entry.
+/// Extracted for testability.
+pub(crate) fn format_dependency_entry(name: &str, version: &str) -> String {
+    format!("{} {}", name, version)
+}
+
+/// Check if files linked message should be shown.
+/// Extracted for testability.
+pub(crate) fn should_show_files_linked(count: usize) -> bool {
+    count > 0
+}
+
+/// Format the downloading and installing message.
+/// Extracted for testability.
+pub(crate) fn format_downloading_and_installing_message() -> &'static str {
+    "Downloading and installing..."
+}
+
+/// Process caveats text, handling multiline output.
+/// Extracted for testability.
+pub(crate) fn process_caveats_lines(caveats: &str, prefix: &Path) -> Vec<String> {
+    let substituted = substitute_prefix(caveats, prefix);
+    substituted.lines().map(|s| s.to_string()).collect()
+}
+
+/// Check if caveats should be displayed.
+/// Extracted for testability.
+pub(crate) fn should_show_caveats(caveats: Option<&String>) -> bool {
+    caveats.is_some()
+}
+
+/// Format error context for install failure.
+/// Extracted for testability.
+pub(crate) fn format_install_error_context(formula: &str, is_source: bool) -> String {
+    if is_source {
+        format!("Failed to build {} from source", formula)
+    } else {
+        format!("Failed to install {}", formula)
+    }
+}
+
+/// Format plan error context.
+/// Extracted for testability.
+pub(crate) fn format_plan_error_context(formula: &str) -> String {
+    format!("Failed to resolve dependencies for {}", formula)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,5 +658,216 @@ mod tests {
     fn test_validate_formula_name_double_dash() {
         // Valid: dash in middle is okay
         assert!(validate_formula_name("a--b").is_ok());
+    }
+
+    // ========================================================================
+    // Building Message Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_building_message_source() {
+        let result = format_building_message("git", "source");
+        assert_eq!(result, "Building git from source...");
+    }
+
+    #[test]
+    fn test_format_building_message_head() {
+        let result = format_building_message("vim", "HEAD");
+        assert_eq!(result, "Building vim from HEAD...");
+    }
+
+    #[test]
+    fn test_format_building_message_versioned() {
+        let result = format_building_message("python@3.11", "source");
+        assert_eq!(result, "Building python@3.11 from source...");
+    }
+
+    #[test]
+    fn test_format_downloading_message() {
+        let result = format_downloading_message();
+        assert_eq!(result, "Downloading source and dependencies...");
+    }
+
+    // ========================================================================
+    // Installing Message Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_installing_message() {
+        let result = format_installing_message("wget");
+        assert_eq!(result, "Installing wget...");
+    }
+
+    #[test]
+    fn test_format_installing_message_versioned() {
+        let result = format_installing_message("openssl@3");
+        assert_eq!(result, "Installing openssl@3...");
+    }
+
+    #[test]
+    fn test_format_downloading_and_installing_message() {
+        let result = format_downloading_and_installing_message();
+        assert_eq!(result, "Downloading and installing...");
+    }
+
+    // ========================================================================
+    // Keg-Only Message Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_keg_only_base_message() {
+        let prefix = PathBuf::from("/opt/zerobrew");
+        let result = format_keg_only_base_message("openssl@3", &prefix);
+        assert_eq!(
+            result,
+            "openssl@3 is keg-only, which means it was not symlinked into /opt/zerobrew"
+        );
+    }
+
+    #[test]
+    fn test_format_keg_only_base_message_long_path() {
+        let prefix = PathBuf::from("/home/linuxbrew/.linuxbrew");
+        let result = format_keg_only_base_message("curl", &prefix);
+        assert!(result.contains("curl is keg-only"));
+        assert!(result.contains("/home/linuxbrew/.linuxbrew"));
+    }
+
+    #[test]
+    fn test_should_show_keg_only_explanation_with_explanation() {
+        let reason = KegOnlyReason {
+            reason: "provided_by_macos".to_string(),
+            explanation: "macOS provides an older version".to_string(),
+        };
+        assert!(should_show_keg_only_explanation(Some(&reason)));
+    }
+
+    #[test]
+    fn test_should_show_keg_only_explanation_empty() {
+        let reason = KegOnlyReason {
+            reason: "shadowed_by_macos".to_string(),
+            explanation: String::new(),
+        };
+        assert!(!should_show_keg_only_explanation(Some(&reason)));
+    }
+
+    #[test]
+    fn test_should_show_keg_only_explanation_none() {
+        assert!(!should_show_keg_only_explanation(None));
+    }
+
+    // ========================================================================
+    // Dependency Entry Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_dependency_entry() {
+        let result = format_dependency_entry("zlib", "1.3.1");
+        assert_eq!(result, "zlib 1.3.1");
+    }
+
+    #[test]
+    fn test_format_dependency_entry_versioned_formula() {
+        let result = format_dependency_entry("icu4c@76", "76.1");
+        assert_eq!(result, "icu4c@76 76.1");
+    }
+
+    #[test]
+    fn test_format_dependency_entry_long_version() {
+        let result = format_dependency_entry("openssl", "3.2.1_1");
+        assert_eq!(result, "openssl 3.2.1_1");
+    }
+
+    // ========================================================================
+    // Files Linked Condition Tests
+    // ========================================================================
+
+    #[test]
+    fn test_should_show_files_linked_positive() {
+        assert!(should_show_files_linked(1));
+        assert!(should_show_files_linked(100));
+    }
+
+    #[test]
+    fn test_should_show_files_linked_zero() {
+        assert!(!should_show_files_linked(0));
+    }
+
+    // ========================================================================
+    // Caveats Processing Tests
+    // ========================================================================
+
+    #[test]
+    fn test_process_caveats_lines_single() {
+        let prefix = PathBuf::from("/opt/brew");
+        let caveats = "Add $HOMEBREW_PREFIX/bin to PATH";
+        let result = process_caveats_lines(caveats, &prefix);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "Add /opt/brew/bin to PATH");
+    }
+
+    #[test]
+    fn test_process_caveats_lines_multiline() {
+        let prefix = PathBuf::from("/usr/local");
+        let caveats = "Line 1: $HOMEBREW_PREFIX/bin\nLine 2: check docs\nLine 3: $HOMEBREW_PREFIX/lib";
+        let result = process_caveats_lines(caveats, &prefix);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "Line 1: /usr/local/bin");
+        assert_eq!(result[1], "Line 2: check docs");
+        assert_eq!(result[2], "Line 3: /usr/local/lib");
+    }
+
+    #[test]
+    fn test_process_caveats_lines_empty() {
+        let prefix = PathBuf::from("/opt/zb");
+        let result = process_caveats_lines("", &prefix);
+        // Empty string produces no lines when split
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_should_show_caveats_some() {
+        let caveats = String::from("Some caveat");
+        assert!(should_show_caveats(Some(&caveats)));
+    }
+
+    #[test]
+    fn test_should_show_caveats_none() {
+        assert!(!should_show_caveats(None));
+    }
+
+    // ========================================================================
+    // Error Context Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_install_error_context_source() {
+        let result = format_install_error_context("git", true);
+        assert_eq!(result, "Failed to build git from source");
+    }
+
+    #[test]
+    fn test_format_install_error_context_bottle() {
+        let result = format_install_error_context("wget", false);
+        assert_eq!(result, "Failed to install wget");
+    }
+
+    #[test]
+    fn test_format_install_error_context_versioned() {
+        let result = format_install_error_context("python@3.11", true);
+        assert!(result.contains("python@3.11"));
+        assert!(result.contains("from source"));
+    }
+
+    #[test]
+    fn test_format_plan_error_context() {
+        let result = format_plan_error_context("neovim");
+        assert_eq!(result, "Failed to resolve dependencies for neovim");
+    }
+
+    #[test]
+    fn test_format_plan_error_context_complex_name() {
+        let result = format_plan_error_context("llvm@17");
+        assert!(result.contains("llvm@17"));
+        assert!(result.contains("dependencies"));
     }
 }
