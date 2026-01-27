@@ -1,3 +1,10 @@
+// Allow map_or pattern for clarity in validation code
+#![allow(clippy::unnecessary_map_or)]
+// Allow vec! in tests for readability
+#![allow(clippy::useless_vec)]
+// Allow collapsible_if for complex nested conditions
+#![allow(clippy::collapsible_if)]
+
 //! Zerobrew CLI - A fast Homebrew-compatible package installer.
 
 use clap::{Parser, Subcommand};
