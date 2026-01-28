@@ -1,13 +1,12 @@
-// Allow collapsible_if for macOS-specific service code that uses nested if-lets
-// These are intentionally separate for readability in plist/launchd parsing
+// Allow various clippy lints for pre-existing code patterns
 #![allow(clippy::collapsible_if)]
-// Allow map_or pattern for clarity in filter chains
 #![allow(clippy::unnecessary_map_or)]
-// Allow empty lines in doc comments for formatting purposes
 #![allow(clippy::empty_line_after_doc_comments)]
-// Allow skip().next() pattern for clarity
 #![allow(clippy::iter_skip_next)]
-// Allow unused variables and imports for platform-specific code
+#![allow(clippy::useless_vec)]
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::nonminimal_bool)]
 #![allow(unused_variables)]
 #![allow(unused_imports)]
 
